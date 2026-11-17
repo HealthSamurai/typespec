@@ -69,6 +69,194 @@ src/app/patients.clj:25:30  TSP2345  42 is not assignable to :patient/id (string
 
 The specs are ordinary spec. The signature is a quoted vector in the `defn` attr-map: the compiler stores it and does nothing with it.
 
+## More examples
+
+Every `today` line was run on Clojure 1.13.0-alpha11. The `TSP` lines are the designed output: there is no implementation yet.
+
+### Type hints are types
+
+Hints you already have work as a signature, and the checker tells you when a hint is wrong or in the wrong place.
+
+```clojure
+(defn slug ^String [^String title ^long max]          ; the hints are the signature
+  (subs (.toLowerCase title) 0 (min max (.length title))))
+
+(slug 42 "hello")
+;;    ^^ TSP2345: 42 is not assignable to String
+;;       ^^^^^^^ TSP2345: "hello" is not assignable to long
+;; today: ClassCastException at run time
+
+(defn ^long total [xs] (reduce + xs))
+;;    ^^^^^ TSP7021: a hint on the name is not a return type; write (defn total ^long [xs] ...)
+;; today: every caller fails to compile: "Unable to resolve classname: clojure.core$long@…"
+
+(defn first-len
+  {:t/sig '[(s/coll-of int?) :-> int?]}
+  [ids]
+  (let [^String s (first ids)]
+;;      ^^^^^^^ TSP2322: hint String contradicts the type: (first ids) is (s/nilable int?)
+    (.length s)))
+;; today: ClassCastException: Long cannot be cast to String
+```
+
+### Java interop
+
+Java types are read from bytecode, so interop is checked without any declarations. Because the checker knows types the compiler does not see, it can also insert the hints that remove reflection.
+
+```clojure
+(defn size
+  {:t/sig '[java.io.File :-> long]}
+  [f]
+  (.length f))
+;; TSP7023: reflective call, but f is known to be java.io.File
+;;          fix (safe): (.length ^java.io.File f)
+;; today: a reflection warning and a slow call; (size "abc") quietly returns 3
+
+(defn request-id-length ^long [^java.util.Map headers]
+  (.length ^String (.get headers "x-request-id")))
+;; TSP2531 (with :strict-nil true): (.get headers "x-request-id") may be nil
+;; today: NullPointerException when the header is absent
+
+(def by-pair
+  (reify java.util.Comparator
+    (compare [_ a b] (str a b))))
+;;                   ^^^^^^^^^ TSP2322: String is not assignable to int, the return type of Comparator.compare
+;; today: compiles; ClassCastException on the first comparison
+```
+
+### Destructuring
+
+Destructuring is checked against the declared type, so a typo in a key is an error and not a silent nil.
+
+```clojure
+(defn display-name
+  {:t/sig '[::patient :-> string?]}
+  [{:patient/keys [id nmae]}]
+;;                    ^^^^ TSP2339: :patient/nmae is not a key of ::patient. Did you mean :patient/name?
+  (str id " " nmae))
+;; today: returns "p1 " and nobody notices
+
+(s/def :job/retries (s/nilable int?))
+
+(defn next-try
+  {:t/sig '[(s/keys :opt [:job/retries]) :-> int?]}
+  [{:job/keys [retries] :or {retries 0}}]
+  (inc retries))
+;;     ^^^^^^^ TSP2345: (s/nilable int?) is not assignable to number?: :or applies only when the key is absent
+;; today: (next-try {:job/retries nil}) throws NullPointerException
+```
+
+### Clojure 1.13: `:keys!`, required keyword arguments, `:missing`
+
+The new directives throw at run time when a key is missing. Typespec reports the same thing at the call site, before anything runs.
+
+```clojure
+(s/def :address/city string?)
+(s/def :contact/address (s/keys :req [:address/city]))
+(s/def ::contact (s/keys :req [:contact/id] :opt [:contact/address]))
+
+(defn city
+  {:t/sig '[::contact :-> string?]}
+  [{{:address/keys! [city]} :contact/address}]
+;;                          ^^^^^^^^^^^^^^^^ TSP2741: :keys! below requires :contact/address, but it is optional in ::contact
+  city)
+;; today: (city {:contact/id "c1"}) throws "Missing required key: :address/city"
+
+(defn- connect [& {:keys! [host port]}] ...)
+
+(connect :host "localhost")
+;; TSP2741: required key :port is missing
+;; today: IllegalArgumentException: Missing required key: :port
+
+(defn- register [{:user/keys! [email name] :missing m}]
+  (if m
+    {:error m}                    ; here email and name may be nil
+    (send-welcome email name)))   ; here both are narrowed back to non-nil
+```
+
+### Maps and narrowing
+
+```clojure
+(assoc patient :patient/status "archived")
+;;                             ^^^^^^^^^^ TSP2322: "archived" is not assignable to :patient/status (#{"active" "inactive"})
+;; today: the map now holds a status that no code expects
+
+(get-in bundle [:bundle/entry 0 :entry/resourse])
+;;                              ^^^^^^^^^^^^^^^ TSP2339: no such key. Did you mean :entry/resource?
+;; today: nil
+
+(defn label
+  {:t/sig '[(s/nilable ::patient) :-> string?]}
+  [p]
+  (if p (:patient/id p) "unknown"))     ; ok: p is narrowed to ::patient inside the branch
+```
+
+### What an agent gets
+
+The same error as JSON, with a fix the agent can apply without thinking, and commands to ask about types instead of guessing.
+
+```json
+{"id": "e3f1…", "code": "TSP2339", "file": "src/app/patients.clj",
+ "range": {"start": [14, 23], "end": [14, 27]},
+ "message": ":patient/nmae is not a key of ::patient",
+ "expected": "(s/keys :req [:patient/id :patient/status] :opt [:patient/name])",
+ "fixes": [{"title": "Rename to :patient/name", "risk": "safe",
+            "edits": [{"range": {"start": [14, 23], "end": [14, 27]}, "text": "name"}]}]}
+```
+
+```
+$ typespec type-at src/app/patients.clj:20:24
+(s/nilable string?)
+
+$ typespec sig app.patients
+find-patient  [::db :patient/id :-> (s/nilable ::patient)]
+greeting      [::patient :-> string?]
+greet-first   [::db :-> string?]
+```
+
+## Typespec and TypeScript
+
+`+` Typespec is ahead by design, `=` the same idea, `−` TypeScript is ahead. The Typespec column describes the design, not a working tool.
+
+| | TypeScript | Typespec | |
+|---|---|---|:-:|
+| Where types are written | syntax of the language, erased by the compiler | quoted data in metadata, `s/def`, EDN; nothing to erase | = |
+| Shape of an object | `interface`, `type` | `s/keys` | = |
+| Type of a field | declared per interface | declared per key, once for the whole project | + |
+| Structural typing, open objects | yes | yes | = |
+| Extra-key check on literals | yes | yes | = |
+| Exact (closed) objects | no | `t/exact` | + |
+| Unions and literal types | `"a" \| "b"` | `#{"a" "b"}`, `s/or` | = |
+| Intersections | `A & B` | `s/merge`, `t/and` | = |
+| Null safety | `strictNullChecks` | `s/nilable`; rules for nil-punning | = |
+| Narrowing | `typeof`, `in`, `instanceof`, type predicates | `if`/`when`/`cond`/`case`, `some?`, `instance?`, `contains?`, checked guards | = |
+| Exhaustiveness | the `never` idiom | built in: `case`, `cond`, closed multimethods | + |
+| Generics with bounds | `<T extends X>` | `(t/all [(a :< X)] ...)` | = |
+| Utility types | `Pick`, `Omit`, `Partial`, `keyof`, `T[K]` | `t/pick`, `t/omit`, `t/partial`, `t/keys-of`, `t/get` | = |
+| Conditional, mapped, template literal types | yes | no | − |
+| `unknown` vs `any` | yes | `t/unknown` vs `any?` with a reason | = |
+| `as const` | yes | `#_(t/const)` | = |
+| Escape hatches | `as`, `@ts-ignore`, `@ts-expect-error` | `#_(t/cast)`, `#_(t/ignore "reason")`, counted by the trust budget | + |
+| Overloads | yes | several signatures in one `t/sig` | = |
+| Inference | local, contextual for callbacks | local; contextual for `map`/`filter`/`reduce`; partial for `comp`, `partial`, transducers | − |
+| Modules | file; `isolatedDeclarations` | namespace; public signatures required in strict mode | = |
+| Types for libraries | `.d.ts`, DefinitelyTyped | EDN externs, `typespec.exports/` in jars; no ecosystem yet | − |
+| Platform types | `lib.d.ts`, maintained separately from the runtime | Java types read from bytecode | + |
+| Nominal types | no (brands by convention) | records and Java classes; `t/brand` (optional) | + |
+| Runtime validation | a separate tool (zod, io-ts) | the same `s/def` validates at run time | + |
+| Mutation and variance | `readonly`, known unsound spots | data is immutable; atoms and channels are invariant | + |
+| Macros | none in the language | must be described (`:lint-as`, hooks); weaker inside custom DSLs | − |
+| Dynamic code | `eval` is rare | REPL redefinition, `binding`, `resolve` are common; typed as `t/unknown` | − |
+| Data DSLs | typed builders and JSX are common | honeysql, hiccup, Integrant configs are typed as plain data, not by meaning | − |
+| Keys built at run time | template literal types | `t/unknown` or `s/map-of` | − |
+| Editor | tsserver | through clojure-lsp, planned | − |
+| Incremental checking | `--incremental`, project references | interface cache per namespace, parallel checking | = |
+| Gradual adoption | `allowJs`, strictness flags | `:strict`, baseline file | = |
+| Support for agents | text diagnostics, language server | JSON with stable ids and root causes, risk-rated fixes, `sig`/`type-at`/`order`, trust budget | + |
+| Maturity | 12+ years, huge ecosystem | a design document | − |
+
+The `−` rows are the honest limits. Some are permanent: the checker sees files and not the running REPL image, macros must be described, and data DSLs get their meaning only when interpreted. Others are a matter of work: externs for libraries, the editor, inference for `comp` and transducers.
+
 ## Design decisions
 
 Each decision has a default. Where a real project may need something else, there is an option.
@@ -106,22 +294,6 @@ A hinted value or a Java result is a *platform type*, as in Kotlin: nil is not c
 **13. Honest gaps.** Everything unproven is visible and counted: `t/unknown`, `any?` with a reason, casts, externs, platform types. The trust budget keeps that number from growing.
 
 **14. TypeScript first.** Where TypeScript has an answer, we take it: structural types, narrowing, literal unions, `unknown` vs `any`, `isolatedDeclarations`, error codes. A few ideas from OCaml and F# (type providers, brands, row polymorphism) are optional extensions, each behind a flag.
-
-## Limits
-
-Some things TypeScript covers cannot be covered in Clojure, and the design does not pretend otherwise.
-
-| Limit | What happens |
-|---|---|
-| REPL-driven change: redefinition, `binding`, `eval`, `resolve` | the checker sees files, not the running image; dynamic values are `t/unknown` |
-| Arbitrary macros | checked only when described or expanded; errors inside a custom DSL are weaker |
-| Data DSLs (honeysql, hiccup, Integrant configs) | typed as data structures, not by meaning |
-| Keys built at runtime | `t/unknown` or a `map-of` |
-| Type-level programming (conditional, mapped, template types) | only the common cases: `pick`, `omit`, `partial`, `keys-of` |
-| `comp`, `partial`, `apply`, transducers | partial support through overloads |
-| Ecosystem of ready-made types | none yet; externs are written by us and by agents |
-
-Some things are easier than in TypeScript: data is immutable, qualified keys are global, and Java types are already there in bytecode.
 
 ## Next to existing tools
 

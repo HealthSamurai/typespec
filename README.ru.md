@@ -69,6 +69,194 @@ src/app/patients.clj:25:30  TSP2345  42 is not assignable to :patient/id (string
 
 Spec здесь обычные. Сигнатура — цитированный вектор в attr-map `defn`: компилятор его сохраняет и ничего с ним не делает.
 
+## Ещё примеры
+
+Каждая строка `сейчас` проверена запуском на Clojure 1.13.0-alpha11. Строки `TSP` — задуманный вывод: реализации пока нет.
+
+### Type hints — это типы
+
+Хинты, которые уже есть в коде, работают как сигнатура, а тайпчекер говорит, когда хинт неверен или стоит не там.
+
+```clojure
+(defn slug ^String [^String title ^long max]          ; хинты и есть сигнатура
+  (subs (.toLowerCase title) 0 (min max (.length title))))
+
+(slug 42 "hello")
+;;    ^^ TSP2345: 42 is not assignable to String
+;;       ^^^^^^^ TSP2345: "hello" is not assignable to long
+;; сейчас: ClassCastException при запуске
+
+(defn ^long total [xs] (reduce + xs))
+;;    ^^^^^ TSP7021: a hint on the name is not a return type; write (defn total ^long [xs] ...)
+;; сейчас: каждый вызывающий не компилируется: "Unable to resolve classname: clojure.core$long@…"
+
+(defn first-len
+  {:t/sig '[(s/coll-of int?) :-> int?]}
+  [ids]
+  (let [^String s (first ids)]
+;;      ^^^^^^^ TSP2322: hint String contradicts the type: (first ids) is (s/nilable int?)
+    (.length s)))
+;; сейчас: ClassCastException: Long cannot be cast to String
+```
+
+### Работа с Java
+
+Java-типы читаются из байткода, поэтому interop проверяется без деклараций. Тайпчекер знает типы, которых не видит компилятор, и может сам вставить хинты, убирающие reflection.
+
+```clojure
+(defn size
+  {:t/sig '[java.io.File :-> long]}
+  [f]
+  (.length f))
+;; TSP7023: reflective call, but f is known to be java.io.File
+;;          fix (safe): (.length ^java.io.File f)
+;; сейчас: предупреждение о reflection и медленный вызов; (size "abc") молча вернёт 3
+
+(defn request-id-length ^long [^java.util.Map headers]
+  (.length ^String (.get headers "x-request-id")))
+;; TSP2531 (при :strict-nil true): (.get headers "x-request-id") may be nil
+;; сейчас: NullPointerException, когда заголовка нет
+
+(def by-pair
+  (reify java.util.Comparator
+    (compare [_ a b] (str a b))))
+;;                   ^^^^^^^^^ TSP2322: String is not assignable to int, the return type of Comparator.compare
+;; сейчас: компилируется; ClassCastException при первом сравнении
+```
+
+### Деструктуризация
+
+Деструктуризация сверяется с объявленным типом: опечатка в ключе — ошибка, а не молчаливый nil.
+
+```clojure
+(defn display-name
+  {:t/sig '[::patient :-> string?]}
+  [{:patient/keys [id nmae]}]
+;;                    ^^^^ TSP2339: :patient/nmae is not a key of ::patient. Did you mean :patient/name?
+  (str id " " nmae))
+;; сейчас: вернёт "p1 ", и никто не заметит
+
+(s/def :job/retries (s/nilable int?))
+
+(defn next-try
+  {:t/sig '[(s/keys :opt [:job/retries]) :-> int?]}
+  [{:job/keys [retries] :or {retries 0}}]
+  (inc retries))
+;;     ^^^^^^^ TSP2345: (s/nilable int?) is not assignable to number?: :or applies only when the key is absent
+;; сейчас: (next-try {:job/retries nil}) бросает NullPointerException
+```
+
+### Clojure 1.13: `:keys!`, обязательные именованные аргументы, `:missing`
+
+Новые директивы бросают исключение в рантайме, когда ключа нет. Typespec сообщает о том же в месте вызова, до запуска.
+
+```clojure
+(s/def :address/city string?)
+(s/def :contact/address (s/keys :req [:address/city]))
+(s/def ::contact (s/keys :req [:contact/id] :opt [:contact/address]))
+
+(defn city
+  {:t/sig '[::contact :-> string?]}
+  [{{:address/keys! [city]} :contact/address}]
+;;                          ^^^^^^^^^^^^^^^^ TSP2741: :keys! below requires :contact/address, but it is optional in ::contact
+  city)
+;; сейчас: (city {:contact/id "c1"}) бросает "Missing required key: :address/city"
+
+(defn- connect [& {:keys! [host port]}] ...)
+
+(connect :host "localhost")
+;; TSP2741: required key :port is missing
+;; сейчас: IllegalArgumentException: Missing required key: :port
+
+(defn- register [{:user/keys! [email name] :missing m}]
+  (if m
+    {:error m}                    ; здесь email и name могут быть nil
+    (send-welcome email name)))   ; здесь оба снова сужены до не-nil
+```
+
+### Мапы и сужение
+
+```clojure
+(assoc patient :patient/status "archived")
+;;                             ^^^^^^^^^^ TSP2322: "archived" is not assignable to :patient/status (#{"active" "inactive"})
+;; сейчас: в мапе теперь статус, которого не ждёт ни один кусок кода
+
+(get-in bundle [:bundle/entry 0 :entry/resourse])
+;;                              ^^^^^^^^^^^^^^^ TSP2339: no such key. Did you mean :entry/resource?
+;; сейчас: nil
+
+(defn label
+  {:t/sig '[(s/nilable ::patient) :-> string?]}
+  [p]
+  (if p (:patient/id p) "unknown"))     ; ok: внутри ветки p сужен до ::patient
+```
+
+### Что получает агент
+
+Та же ошибка в JSON, с фиксом, который агент применяет не раздумывая, и команды, чтобы спрашивать про типы, а не угадывать.
+
+```json
+{"id": "e3f1…", "code": "TSP2339", "file": "src/app/patients.clj",
+ "range": {"start": [14, 23], "end": [14, 27]},
+ "message": ":patient/nmae is not a key of ::patient",
+ "expected": "(s/keys :req [:patient/id :patient/status] :opt [:patient/name])",
+ "fixes": [{"title": "Rename to :patient/name", "risk": "safe",
+            "edits": [{"range": {"start": [14, 23], "end": [14, 27]}, "text": "name"}]}]}
+```
+
+```
+$ typespec type-at src/app/patients.clj:20:24
+(s/nilable string?)
+
+$ typespec sig app.patients
+find-patient  [::db :patient/id :-> (s/nilable ::patient)]
+greeting      [::patient :-> string?]
+greet-first   [::db :-> string?]
+```
+
+## Typespec и TypeScript
+
+`+` — Typespec по дизайну впереди, `=` — та же идея, `−` — впереди TypeScript. Колонка Typespec описывает дизайн, а не работающий инструмент.
+
+| | TypeScript | Typespec | |
+|---|---|---|:-:|
+| Где пишутся типы | синтаксис языка, стирается компилятором | цитированные данные в метаданных, `s/def`, EDN; стирать нечего | = |
+| Форма объекта | `interface`, `type` | `s/keys` | = |
+| Тип поля | объявляется в каждом интерфейсе | объявляется у ключа, один раз на весь проект | + |
+| Структурная типизация, открытые объекты | да | да | = |
+| Проверка лишних ключей в литералах | да | да | = |
+| Точные (закрытые) объекты | нет | `t/exact` | + |
+| Union и литеральные типы | `"a" \| "b"` | `#{"a" "b"}`, `s/or` | = |
+| Пересечения | `A & B` | `s/merge`, `t/and` | = |
+| Защита от null | `strictNullChecks` | `s/nilable`; правила для nil-punning | = |
+| Сужение | `typeof`, `in`, `instanceof`, type predicates | `if`/`when`/`cond`/`case`, `some?`, `instance?`, `contains?`, проверяемые guard-функции | = |
+| Полнота разбора | приём с `never` | встроена: `case`, `cond`, закрытые мультиметоды | + |
+| Generics с ограничениями | `<T extends X>` | `(t/all [(a :< X)] ...)` | = |
+| Утилитные типы | `Pick`, `Omit`, `Partial`, `keyof`, `T[K]` | `t/pick`, `t/omit`, `t/partial`, `t/keys-of`, `t/get` | = |
+| Conditional, mapped, template literal types | да | нет | − |
+| `unknown` и `any` | да | `t/unknown` и `any?` с причиной | = |
+| `as const` | да | `#_(t/const)` | = |
+| Обходы | `as`, `@ts-ignore`, `@ts-expect-error` | `#_(t/cast)`, `#_(t/ignore "причина")`, считаются бюджетом доверия | + |
+| Перегрузки | да | несколько сигнатур в одном `t/sig` | = |
+| Вывод типов | локальный, контекстный для колбэков | локальный; контекстный для `map`/`filter`/`reduce`; частично для `comp`, `partial`, трансдьюсеров | − |
+| Модули | файл; `isolatedDeclarations` | namespace; в strict публичные сигнатуры обязательны | = |
+| Типы для библиотек | `.d.ts`, DefinitelyTyped | externs в EDN, `typespec.exports/` в jar; экосистемы пока нет | − |
+| Типы платформы | `lib.d.ts`, написан руками | Java-типы читаются из байткода | + |
+| Номинальные типы | нет (бренды по соглашению) | records и Java-классы; `t/brand` (опция) | + |
+| Проверка в рантайме | отдельный инструмент (zod, io-ts) | тот же `s/def` проверяет и в рантайме | + |
+| Мутации и вариантность | `readonly`, известные дыры в надёжности | данные неизменяемые; atom и каналы инвариантны | + |
+| Макросы | в языке нет | нужно описывать (`:lint-as`, hooks); внутри своих DSL слабее | − |
+| Динамический код | `eval` редок | переопределение в REPL, `binding`, `resolve` — обычное дело; тип `t/unknown` | − |
+| Данные-DSL | типизированные билдеры и JSX — обычное дело | honeysql, hiccup, конфиги Integrant типизируются как обычные данные, без смысла | − |
+| Ключи, собранные в рантайме | template literal types | `t/unknown` или `s/map-of` | − |
+| Редактор | tsserver | через clojure-lsp, в плане | − |
+| Инкрементальная проверка | `--incremental`, project references | кеш интерфейсов по ns, параллельная проверка | = |
+| Постепенное внедрение | `allowJs`, флаги строгости | `:strict`, файл baseline | = |
+| Поддержка агентов | текстовые диагностики, language server | JSON со стабильными id и первопричинами, фиксы с уровнем риска, `sig`/`type-at`/`order`, бюджет доверия | + |
+| Зрелость | 12+ лет, огромная экосистема | дизайн-документ | − |
+
+Строки с `−` — честные пределы. Часть из них навсегда: тайпчекер видит файлы, а не запущенный образ REPL, макросы нужно описывать, а данные-DSL получают смысл только при интерпретации. Остальное — вопрос работы: externs для библиотек, редактор, вывод для `comp` и трансдьюсеров.
+
 ## Дизайн-решения
 
 У каждого решения есть значение по умолчанию. Там, где реальному проекту может понадобиться другое, есть опция.
@@ -106,22 +294,6 @@ Spec здесь обычные. Сигнатура — цитированный 
 **13. Честные дыры.** Всё недоказанное видно и посчитано: `t/unknown`, `any?` с причиной, cast, externs, платформенные типы. Бюджет доверия не даёт этому числу расти.
 
 **14. Сначала TypeScript.** Где у TypeScript есть ответ, берём его: структурные типы, сужение, union литералов, `unknown` против `any`, `isolatedDeclarations`, коды ошибок. Несколько идей из OCaml и F# (провайдеры типов, бренды, row-полиморфизм) — опциональные расширения, каждое за флагом.
-
-## Пределы
-
-Часть того, что покрывает TypeScript, в Clojure покрыть нельзя, и дизайн этого не скрывает.
-
-| Предел | Что происходит |
-|---|---|
-| Разработка в REPL: переопределение, `binding`, `eval`, `resolve` | тайпчекер видит файлы, а не запущенный образ; динамические значения — `t/unknown` |
-| Произвольные макросы | проверяются, только если описаны или раскрыты; ошибки внутри своего DSL слабее |
-| Данные-DSL (honeysql, hiccup, конфиги Integrant) | типизируются как структуры данных, без смысла |
-| Ключи, собранные в рантайме | `t/unknown` или `map-of` |
-| Вычисления на типах (conditional, mapped, template) | только частые случаи: `pick`, `omit`, `partial`, `keys-of` |
-| `comp`, `partial`, `apply`, трансдьюсеры | частично, через перегрузки |
-| Экосистема готовых типов | пока нет; externs пишем мы и агенты |
-
-Кое-что проще, чем в TypeScript: данные неизменяемые, квалифицированные ключи глобальные, а Java-типы уже лежат в байткоде.
 
 ## Рядом с существующими инструментами
 

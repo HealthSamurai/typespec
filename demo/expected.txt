@@ -26,5 +26,4 @@ src/clinic/patients.clj:67:34  TSP2322  "discharged" is not assignable to :patie
 src/clinic/patients.clj:74:21  TSP2345  "p1" is not assignable to :clinic/db
 src/clinic/patients.clj:74:26  TSP2345  :clinic/db is not assignable to :patient/id (string?)
 src/clinic/unresolved.clj:9:4  TSP2305  clojure.string has no var uppercase. Did you mean upper-case?
-src/clinic/unresolved.clj:9:24  TSP2531  (:patient/id patient) may be nil
 src/clinic/unresolved.clj:13:4  TSP2305  clinic.patients has no var find-patients. Did you mean find-patient?

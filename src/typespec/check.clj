@@ -95,14 +95,16 @@
         {:keys [status type]} (lookup-key ctx ty k)
         spec-keys (keys (:specs env))]
     (case status
-      :req {:type type :optional? (t/nilable? env ty) :declared? true}
+      :req {:type type :optional? (t/nilable? env ty) :declared? true :status :req}
       :opt {:type type :optional? true :declared? true}
       :nil {:type t/nil-t :optional? true :declared? true}
       :unknown (do (when (and (qualified-keyword? k) (not (get-in env [:specs k]))
                               (contains? (:key-nss env) (namespace k))
                               (or (:strict (:opts ctx)) (similar k spec-keys)))
                      (report! ctx node "TSP2304" (str "no spec for " k (hint-suffix k spec-keys))))
-                   {:type type :optional? true :declared? false})
+                   ;; nothing is known about the map: nil is not checked, as for other platform types
+                   {:type (if (#{:unknown :any} (:t type)) type (assoc type :platform true))
+                    :optional? false :declared? false})
       :missing (do (report! ctx node "TSP2339"
                             (str k " is not a key of " (t/show (t/remove-nil env ty))
                                  (hint-suffix k (concat (mapcat #(concat (keys (:req %)) (keys (:opt %))) (map-members ctx ty))
@@ -165,7 +167,7 @@
       :else
       (if-let [[k opt?] (missing-req ctx actual expected)]
         [["TSP2741" (str "required key " k " is missing in " (t/show actual) (when opt? " (it is optional there)"))]]
-        [["TSP2345" (str (t/show actual) " is not assignable to " (show-ref ctx expected))]]))))
+        [["TSP2345" (str (show-ref ctx actual) " is not assignable to " (show-ref ctx expected))]]))))
 
 (defn- assignable! [ctx node actual expected]
   (doseq [[code msg] (problems ctx node actual expected)] (report! ctx node code msg)))
@@ -225,13 +227,13 @@
   (and (= :map (:op pattern))
        (some (fn [[k _]] (or (:bang? (keys-directive k)) (has-bang? k))) (partition 2 (:children pattern)))))
 
-(defn- destructure-map [ctx pattern ty]
+(defn- destructure-map [ctx pattern ty outer-why]
   (let [env (:env ctx)
         pairs (partition 2 (:children pattern))
         special (into {} (for [[k v] pairs :when (and (= :kw (:op k)) (nil? (namespace (:val k))))] [(:val k) v]))
         defaults (into {} (for [[k v] (partition 2 (:children (:or special)))] [(:val k) v]))
         missing-sym (some-> (:missing special) :val)
-        tname (t/show ty)
+        tname (t/show (t/remove-nil env ty))
         ctx (cond-> ctx missing-sym (bind missing-sym (t/union (t/prim :map) t/nil-t)))
         ctx (reduce
              (fn [ctx [k v]]
@@ -244,7 +246,7 @@
                         ctx
                         (let [key (keyword (or (:ns kd) (namespace (:val s))) (name (:val s)))
                               sym (symbol (name (:val s)))
-                              {:keys [type optional? declared?]} (key-info ctx ty key s)
+                              {:keys [type optional? declared? status]} (key-info ctx ty key s)
                               default (get defaults sym)]
                           (cond
                             (and (:bang? kd) missing-sym)
@@ -261,7 +263,9 @@
                                               ", and :or applies only when the key is absent")))
                             optional?
                             (bind ctx sym (t/union type t/nil-t)
-                                  :why (if declared? (str key " is optional in " tname) (str key " may be absent")))
+                                  :why (cond (= :req status) (or outer-why "the destructured value may be nil")
+                                             declared? (str key " is optional in " tname)
+                                             :else (str key " may be absent")))
                             :else (bind ctx sym type)))))
                     ctx (:children v))
 
@@ -315,7 +319,7 @@
                 use-hint? (and h (or (#{:unknown :any} (:t (t/resolve-t env ty)))
                                      (not (t/sub? env (t/remove-nil env (eff ctx ty)) h))))]
             (bind ctx (:val pattern) (if use-hint? h ty) :why (when-not use-hint? why) :hinted (boolean h)))
-     :map (destructure-map ctx pattern ty)
+     :map (destructure-map ctx pattern ty why)
      :vector (let [el (elem-type ctx ty)]
                (loop [ctx ctx [p & more] (:children pattern)]
                  (cond (nil? p) ctx
@@ -1061,7 +1065,7 @@
         :else (if-let [[k opt?] (missing-req ctx actual expected)]
                 (report! ctx node "TSP2741" (str "the returned map has no required key " k " of " (t/show expected)
                                                  (when opt? " (it is optional in the returned map)")))
-                (report! ctx node "TSP2322" (str "returns " (t/show actual) ", but the signature says " (show-ref ctx expected))))))))
+                (report! ctx node "TSP2322" (str "returns " (show-ref ctx actual) ", but the signature says " (show-ref ctx expected))))))))
 
 (defn- check-defn [ctx node]
   (let [file (:file ctx) env (:env ctx)

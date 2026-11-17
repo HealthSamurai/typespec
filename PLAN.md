@@ -1,6 +1,6 @@
 # Typespec — implementation plan
 
-Design: [README.md](README.md) · [README.ru.md](README.ru.md). Estimates are rough.
+Design decisions: [README.md](README.md) · [README.ru.md](README.ru.md). Details: [docs/reference.md](docs/reference.md). Estimates are rough.
 
 ## Architecture in one picture
 
@@ -22,6 +22,38 @@ Design: [README.md](README.md) · [README.ru.md](README.ru.md). Estimates are ro
             reflection / boxing warnings, hint fixes
 ```
 
+## Implementation choices
+
+Design decisions live in the README. These are choices about *how* to build it; any of them may change without changing the design.
+
+| Topic | Choice | Fallback |
+|---|---|---|
+| Parser and ns graph | clj-kondo parser and analysis (rewrite-clj nodes: positions, comments, `#_` forms) | tools.reader + our own ns graph (decided in M0) |
+| Checker core | fork of Typed Clojure (`ts-features`) | extract only the checker core |
+| Macros | built-in rules → `:lint-as` → SCI hooks → `:t/macro` | opt-in expansion in a worker JVM: no network, project read-only, only macro namespaces loaded |
+| Java | read bytecode with ASM, no class loading | reflection in a worker JVM |
+| Ns interfaces | computed from one file's text (signatures only), cached in `.typespec/cache/<ns>.edn`, keyed by the hash of the source and of dependency interfaces | — |
+| Parallelism | one task per ns once interfaces are known | — |
+| Daemon | warm JVM holding the ns graph, used by `watch` and the LSP; target <300 ms per saved file, tracked as a CI benchmark | — |
+| Editor | plug into clojure-lsp | own LSP server |
+| Shipping interfaces | `typespec emit` writes `typespec.exports/<lib>.edn` into the jar | shared `typespec-externs` repo |
+| Destructuring rules | precise types for what the form expands into (`req!`, `get`, `select-keys`, `merge`, `dissoc`, `some-vals`) plus a syntax-level rule for messages; a differential test against the real `destructure` keeps them in sync | — |
+| Externs drafts | `typespec extern <lib>`: an agent drafts from arglists, docstrings, source and tests; `--verify` runs the library tests with `instrument` and `:ret` checks (a sample, not a proof) | — |
+
+## What already exists
+
+| Layer | Foundation | Status |
+|---|---|---|
+| Core: narrowing, generics, unions, body inference | Typed Clojure (a port of Typed Racket) | available |
+| TS-style errors, Did you mean, Why | fork [niquola/typedclojure@ts-features](https://github.com/niquola/typedclojure/tree/ts-features) | available |
+| Pick/Omit/Partial/Required, exhaustive `case` | fork | available |
+| spec forms → types | fork `74c55cc`, reads the spec registry | partial: must read source; no `or`/`and` groups in `s/keys`, no recursion, `s/and` takes the first part |
+| `req!`, nested destructuring | fork `c0f507b` | partial: literal-key lookup only |
+| Java classes and methods | Typed Clojure, via reflection | partial: must read bytecode; no hint checks |
+| reader-first declarations, `t/sig`, `types.edn`, EDN externs | — | new |
+| ns interfaces, cache, parallelism, daemon | — | new; the bulk of the work |
+| JSON, fix, coverage, baseline, trust budget | — | new |
+
 ## M0 — spike: front end on clj-kondo (2 weeks)
 
 Answer one question: can we build the front end on clj-kondo's parser and analysis?
@@ -29,14 +61,14 @@ Answer one question: can we build the front end on clj-kondo's parser and analys
 - [ ] Use clj-kondo as a library: parse a namespace, get positions, the ns graph and the analysis export.
 - [ ] Feed parsed forms into the Typed Clojure checker without loading the ns.
 - [ ] Handle `:lint-as` and one hook (SCI) for a project macro.
-- [ ] `#_:typespec/ignore` seen by the parser.
+- [ ] `#_(t/ignore ...)`, `#_(t/cast ...)` directives seen by the parser.
 - [ ] Measure: checking `app2` and context-clj, cold and warm.
 - **Exit:** a go/no-go on clj-kondo as the front end. Fallback: tools.reader + our own ns graph.
 
 ## M1 — declarations and the type language (4–6 weeks)
 
 - [ ] Type language from section 1: spec subset + `t/` forms; `TSP9001` for anything else.
-- [ ] Read `s/def`, `s/fdef`, `{:t/sig '[...]}` from source (no spec registry).
+- [ ] Read `s/def`, `s/fdef`, `{:t/sig '[...]}` and `typespec/types.edn` from source (no spec registry).
 - [ ] Type hints as signatures (`^String`, `^long`, `^[String]` param-tags); class names in the type language.
 - [ ] Java from bytecode: classes, subtyping, methods, overloads, generics; hint checks `TSP7020`–`TSP7026`.
 - [ ] `fix` for reflection: insert proven hints (`safe` when the overload is unique).
@@ -52,6 +84,7 @@ Answer one question: can we build the front end on clj-kondo's parser and analys
 - [ ] Interface cache keyed by source hash; parallel checking; `watch` daemon.
 - [ ] CI benchmark: <300 ms per saved file of average size.
 - [ ] Externs in EDN with versions; lookup order: own → `typespec.exports/` in jars → `s/fdef` in library sources → shared repo → `t/unknown`.
+- [ ] Opt-in macro expansion in a sandboxed worker (`:macros {:expand true}`).
 - [ ] Import from `clj-kondo.exports/`: `:lint-as`, hooks, `:type-mismatch` types and arities.
 - [ ] Externs for next.jdbc, ring, http-kit, aidbox-sdk.
 - **Exit:** a real Aidbox module checks incrementally in the editor loop.
@@ -62,19 +95,19 @@ Answer one question: can we build the front end on clj-kondo's parser and analys
 - [ ] Map operations: `assoc`, `dissoc`, `merge`, `update`, `select-keys`, `get-in`/`assoc-in`/`update-in` with literal paths.
 - [ ] Records, protocols (incl. `extend-*` in other namespaces), multimethods with keyword dispatch, atoms, core.async.
 - [ ] Java: platform types, JSpecify/`@Nullable`/`@NonNull`/`@NullMarked`, `:strict-nil`; `reify`/`proxy`/`deftype` against interfaces; functional interfaces; arrays; boxed-math warnings.
-- [ ] FHIR types generated from FHIR Schema (type provider, optional section 12).
+- [ ] FHIR types generated from FHIR Schema (type provider, an optional extension).
 - **Exit:** a typical Aidbox namespace checks in strict mode with a trust budget under an agreed threshold.
 
 ## M4 — editors and agents (ongoing)
 
 - [ ] Plug into clojure-lsp: diagnostics, `type-at` hover, go-to-definition for keys and specs.
-- [ ] Commands `sig`, `type-at`, `order`, `annotate --types-only`, `fix --risk safe`, `coverage --trust`.
+- [ ] Commands `sig`, `type-at`, `order`, `annotate` (inline or `:sidecar`), `fix --risk safe`, `coverage --trust`.
 - [ ] Baseline file; trust budget in CI (no growth of `any`/`cast`/`ignore`/weakening).
 - [ ] Agent loop on a real Aidbox module: `order` → `annotate` → `check --json` → fix → repeat.
 
 ## Optional (after M3)
 
-- Brands / units (`t/brand`), row polymorphism, counterexamples in exhaustiveness errors (README section 12).
+- Brands / units (`t/brand`), row polymorphism, counterexamples in exhaustiveness errors (reference, optional extensions).
 - `typespec emit`: ship interfaces inside library jars (`typespec.exports/`), like `.d.ts`.
 - CLJS / CLJC.
 
@@ -84,3 +117,5 @@ Answer one question: can we build the front end on clj-kondo's parser and analys
 2. Typed Clojure core: keep the fork or extract only the checker core?
 3. Where should the shared externs repo live, and who maintains it?
 4. Pin Clojure 1.13 semantics to which release, while it is still alpha?
+5. CLJS / CLJC: reader conditionals and a second platform — in scope for 1.0 or later?
+6. Should `types.edn` be one file or one per namespace?

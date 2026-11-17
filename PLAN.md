@@ -22,14 +22,43 @@ Design decisions: [README.md](README.md) · [README.ru.md](README.ru.md). Detail
             reflection / boxing warnings, hint fixes
 ```
 
+## Prototype (done)
+
+A first end-to-end slice exists in `src/typespec` (about 2,100 lines of Clojure) with a demo project and tests. Run `clojure -M:test`.
+
+| Part | File | What it does |
+|---|---|---|
+| Reader | `parse.clj` | rewrite-clj → a small AST with positions; `#_(t/...)` directives are kept; reader conditionals take the `:clj` branch |
+| Types | `types.clj` | representation, the type language (read and print), subtyping, Java class subtyping |
+| Declarations | `env.clj` | `s/def`, `s/fdef`, `{:t/sig}`, type hints, `:pre`, destructuring patterns → one environment, from text only |
+| Checker | `check.clj` | inference, narrowing, map and collection operations, Clojure 1.13 destructuring, Java calls, diagnostics |
+| Java | `java.clj` | members by reflection on classes that are loaded but not initialized |
+| Core signatures | `core_types.clj` | about 70 signatures of `clojure.core` and `clojure.string`, in the same notation as externs |
+| CLI | `main.clj` | `check` (text and JSON), `sig`, `type-at` |
+
+**Where the prototype differs from the plan below, and why:**
+
+- **Own checker core, not the Typed Clojure fork.** The fork resolves names through the live runtime; a from-scratch core over text was faster to get end to end. The fork stays as the reference for generics and for the algorithms to port.
+- **rewrite-clj, not the clj-kondo parser.** In a trial, clj-kondo's own parse entry point dropped `#_` forms, and the escape hatches need them. clj-kondo's `:lint-as`, hooks and exports are still the plan for macros.
+- **Java by reflection, not ASM.** Simpler to start with; classes are loaded without initialization. ASM is still needed for a GraalVM binary.
+- **Whole-program in one process.** No per-namespace interfaces, cache or daemon yet.
+
+M0's question is therefore answered differently than planned: the front end is rewrite-clj plus our own environment builder, and the checker core is ours.
+
+**First run on real code** (context-clj: `system`, `pg`, `http`; 5,800 lines, almost no specs): 1–4 s per module including JVM start, 1 true error (`BufferedReader` passed as `^InputStream`), 39 warnings, 0 false errors after about ten checker fixes. Lessons that went into the code: element access (`first`, `nth`, vector destructuring) is unchecked by default, as in TypeScript without `noUncheckedIndexedAccess`; a map whose type was inferred from a literal or a pattern is open to unknown keys; a spec the checker cannot read is a warning (`TSP9002`), not an error; a var defined in the namespace shadows a built-in rule of the same name; with an unknown argument and several overloads the result is unknown.
+
+**Prior art to watch:** [crabjure](https://github.com/ribelo/crabjure) (Rust, proof of concept, one author, no license file). It confirms the read-source architecture and its speed (17–21× clj-kondo by its own benchmarks), resolves macros by "archetypes" (`let-like`, `defn-params`, `for-like`) instead of hooks, and reads `.clj-kondo/config.edn`. Its type checker is a gated experiment with types in comments. Worth borrowing: archetypes as a simpler first step than SCI hooks.
+
+**Next steps for the prototype:** generics (`map`, `filter` and friends are special-cased today), `reify`/protocols/multimethods, `:lint-as` and hooks for project macros, externs for libraries, `fix` and `annotate`, a larger core signature table, then a first real namespace from context-clj.
+
 ## Implementation choices
 
 Design decisions live in the README. These are choices about *how* to build it; any of them may change without changing the design.
 
 | Topic | Choice | Fallback |
 |---|---|---|
-| Parser and ns graph | clj-kondo parser and analysis (rewrite-clj nodes: positions, comments, `#_` forms) | tools.reader + our own ns graph (decided in M0) |
-| Checker core | fork of Typed Clojure (`ts-features`) | extract only the checker core |
+| Parser and ns graph | rewrite-clj (positions, comments, `#_` forms) plus our own ns graph; clj-kondo for `:lint-as`, hooks and exports | clj-kondo's analysis, if we need more of it |
+| Checker core | our own, text-based; algorithms for generics ported from Typed Clojure | the Typed Clojure fork (`ts-features`), which stays as a reference |
 | Macros | built-in rules → `:lint-as` → SCI hooks → `:t/macro` | opt-in expansion in a worker JVM: no network, project read-only, only macro namespaces loaded |
 | Java | read bytecode with ASM, no class loading | reflection in a worker JVM |
 | Ns interfaces | computed from one file's text (signatures only), cached in `.typespec/cache/<ns>.edn`, keyed by the hash of the source and of dependency interfaces | — |

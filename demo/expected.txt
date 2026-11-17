@@ -1,0 +1,30 @@
+src/clinic/billing.clj:24:3  TSP2741  required key :invoice/lines of :clinic/invoice is missing
+src/clinic/billing.clj:26:4  TSP2304  no spec for :invoice/payed?. Did you mean :invoice/paid??
+src/clinic/billing.clj:33:11  TSP2345  + takes number?, but gets :line/title (string?)
+src/clinic/billing.clj:40:37  TSP2339  :line/prise is not a key of :clinic/line. Did you mean :line/price?
+src/clinic/billing.clj:52:21  TSP2345  "0.2" is not assignable to number?
+src/clinic/billing.clj:59:3  TSP2322  may return nil, but the signature says boolean?
+src/clinic/export.clj:16:14  TSP2345  40 is not assignable to String
+src/clinic/export.clj:16:17  TSP2345  String is not assignable to long
+src/clinic/export.clj:20:25  TSP2345  "30" is not assignable to long, the parameter of java.time.LocalDate.plusDays
+src/clinic/export.clj:24:20  TSP2531  (.get headers "x-request-id") may be nil: java.util.Map.get may return null
+src/clinic/export.clj:31:9  TSP2322  hint String contradicts the type: int?
+src/clinic/export.clj:39:3  TSP7023  reflective call, but file is known to be java.io.File  [warning]
+src/clinic/export.clj:43:20  TSP7020  reflective call: the type of f is unknown  [warning]
+src/clinic/export.clj:46:7  TSP7021  a hint on the name is not a return type: write (defn total-days ^long [...] ...)
+src/clinic/export.clj:51:4  TSP2339  java.time.LocalDate has no method getYears. Did you mean getYear?
+src/clinic/intake.clj:10:38  TSP2741  :keys! below requires :patient/address, but it is optional in :clinic/patient
+src/clinic/intake.clj:25:3  TSP2741  required key :port is missing
+src/clinic/intake.clj:41:17  TSP2531  email may be nil: :user/email is missing when m is not nil
+src/clinic/intake.clj:41:23  TSP2531  name may be nil: :user/name is missing when m is not nil
+src/clinic/legacy.clj:20:5  TSP2578  unused t/ignore: nothing to ignore here  [warning]
+src/clinic/patients.clj:17:40  TSP2339  :patient/nmae is not a key of :clinic/patient. Did you mean :patient/name?
+src/clinic/patients.clj:25:3  TSP8001  case is not exhaustive: "deceased" is not handled
+src/clinic/patients.clj:34:19  TSP2531  (:patient/name patient) may be nil: :patient/name is optional in :clinic/patient
+src/clinic/patients.clj:50:13  TSP2531  (find-patient db id) may be nil: find-patient returns (s/nilable :clinic/patient)
+src/clinic/patients.clj:67:34  TSP2322  "discharged" is not assignable to :patient/status (#{"active" "deceased" "inactive"})
+src/clinic/patients.clj:74:21  TSP2345  "p1" is not assignable to :clinic/db
+src/clinic/patients.clj:74:26  TSP2345  :clinic/db is not assignable to :patient/id (string?)
+src/clinic/unresolved.clj:9:4  TSP2305  clojure.string has no var uppercase. Did you mean upper-case?
+src/clinic/unresolved.clj:9:24  TSP2531  (:patient/id patient) may be nil
+src/clinic/unresolved.clj:13:4  TSP2305  clinic.patients has no var find-patients. Did you mean find-patient?

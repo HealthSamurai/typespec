@@ -1,0 +1,3 @@
+{:paths ["src"]
+ ;; 1.13 alpha: the demo uses the new destructuring (:keys!, :missing)
+ :deps {org.clojure/clojure {:mvn/version "1.13.0-alpha11"}}}

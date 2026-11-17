@@ -1,0 +1,10 @@
+src/ex/more.clj:17:18  TSP2345  42 is not assignable to String
+src/ex/more.clj:17:21  TSP2345  "hello" is not assignable to long
+src/ex/more.clj:19:7  TSP7021  a hint on the name is not a return type: write (defn total ^long [...] ...)
+src/ex/more.clj:24:9  TSP2322  hint String contradicts the type: int?
+src/ex/more.clj:30:3  TSP7023  reflective call, but f is known to be java.io.File  [warning]
+src/ex/more.clj:33:20  TSP2531  (.get headers "x-request-id") may be nil: java.util.Map.get may return null
+src/ex/more.clj:41:23  TSP2339  :patient/nmae is not a key of ::patient. Did you mean :patient/name?
+src/ex/more.clj:47:8  TSP2531  retries may be nil: :job/retries is (s/nilable int?), and :or applies only when the key is absent
+src/ex/more.clj:52:34  TSP2322  "archived" is not assignable to :patient/status (#{"active" "inactive"})
+src/ex/more.clj:53:35  TSP2339  :entry/resourse is not a key of ::entry. Did you mean :entry/resource?

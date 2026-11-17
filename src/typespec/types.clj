@@ -1,0 +1,352 @@
+(ns typespec.types
+  "Type representation, the spec-style type language (read and print), and subtyping."
+  (:require [clojure.string :as str]))
+
+(def any {:t :any})
+(def unknown {:t :unknown})
+(def never {:t :never})
+(def nil-t {:t :nil})
+(defn prim [n] {:t :prim :name n})
+(defn lit [v] {:t :lit :val v})
+(defn ref-t [k] {:t :ref :name k})
+(defn strip [t] (dissoc t :platform :as))
+
+(defn union [& ts]
+  (let [flat (loop [xs (seq ts) seen #{} out []]
+               (if (empty? xs)
+                 out
+                 (let [x (first xs) more (rest xs)]
+                   (cond (= :union (:t x)) (recur (concat (:types x) more) seen out)
+                         (or (= :never (:t x)) (seen (strip x))) (recur more seen out)
+                         :else (recur more (conj seen (strip x)) (conj out x))))))]
+    (cond (empty? flat) never
+          (some #(= :any (:t %)) flat) any
+          (some #(= :unknown (:t %)) flat) unknown
+          (= 1 (count flat)) (first flat)
+          :else {:t :union :types flat})))
+
+(defn lit-prim [v]
+  (prim (cond (string? v) :string (keyword? v) :keyword (integer? v) :int
+              (number? v) :double (boolean? v) :boolean :else :symbol)))
+
+;; ---- Java classes ----
+
+(def primitives #{"long" "int" "double" "float" "boolean" "short" "byte" "char"})
+
+(def load-class
+  (memoize
+   (fn [^String n]
+     (case n
+       "long" Long/TYPE "int" Integer/TYPE "double" Double/TYPE "float" Float/TYPE
+       "boolean" Boolean/TYPE "short" Short/TYPE "byte" Byte/TYPE "char" Character/TYPE "void" Void/TYPE
+       (try (Class/forName n false (.getContextClassLoader (Thread/currentThread)))
+            (catch Throwable _ nil))))))
+
+(def class->prim
+  {"java.lang.String" :string
+   "long" :int "int" :int "short" :int "byte" :int
+   "java.lang.Long" :int "java.lang.Integer" :int "java.lang.Short" :int "java.lang.Byte" :int
+   "double" :double "float" :double "java.lang.Double" :double "java.lang.Float" :double
+   "java.lang.Number" :number "boolean" :boolean "java.lang.Boolean" :boolean
+   "clojure.lang.Keyword" :keyword "clojure.lang.Symbol" :symbol "java.util.UUID" :uuid})
+
+(def prim->class
+  {:string "java.lang.String" :int "java.lang.Long" :double "java.lang.Double" :number "java.lang.Number"
+   :boolean "java.lang.Boolean" :keyword "clojure.lang.Keyword" :symbol "clojure.lang.Symbol"
+   :uuid "java.util.UUID" :inst "java.util.Date" :map "java.util.Map" :vector "java.util.List"
+   :set "java.util.Set" :seq "java.util.List" :coll "java.util.Collection" :fn "clojure.lang.IFn"})
+
+(def prim-supers
+  "Classes that every value of a collection predicate is an instance of (close enough for interop checks)."
+  {:map ["clojure.lang.APersistentMap"] :vector ["clojure.lang.APersistentVector"]
+   :set ["clojure.lang.APersistentSet"] :seq ["clojure.lang.ISeq" "java.util.List"]
+   :coll ["clojure.lang.IPersistentCollection" "java.lang.Iterable"]})
+
+(def prim-interface
+  "The class that guarantees a collection predicate."
+  {:map "clojure.lang.IPersistentMap" :vector "clojure.lang.IPersistentVector" :set "clojure.lang.IPersistentSet"
+   :seq "clojure.lang.ISeq" :coll "clojure.lang.IPersistentCollection"})
+
+(defn class-type [n]
+  (cond (= n "void") nil-t
+        (= n "java.lang.Object") any
+        :else (if-let [p (class->prim n)] (prim p) {:t :class :name n})))
+
+(defn platform
+  "A type that came from a hint or from Java: nil is not checked. `shown` is how it is printed."
+  [t shown]
+  (cond (#{:nil :any} (:t t)) t
+        (primitives shown) (assoc t :as shown)
+        :else (assoc t :platform true :as shown)))
+
+(defn resolve-class
+  "Full class name for a symbol in a file with these imports, or nil."
+  [imports s]
+  (let [s (str s)]
+    (or (get imports (symbol s))
+        (when (primitives s) s)
+        (when (and (str/includes? s ".") (load-class s)) s)
+        (when (and (re-matches #"[A-Z]\w*" s) (load-class (str "java.lang." s))) (str "java.lang." s)))))
+
+(defn- class-sub? [a b]
+  (let [ca (load-class a) cb (load-class b)]
+    (if (and ca cb) (.isAssignableFrom ^Class cb ^Class ca) true)))
+
+(defn- prim-is-class? [p cname]
+  (boolean (some #(class-sub? % cname) (or (prim-supers p) [(prim->class p)]))))
+
+(defn- class-is-prim? [cname p]
+  (class-sub? cname (or (prim-interface p) (prim->class p))))
+
+;; ---- resolving named types ----
+
+(defn members
+  "Flat list of alternatives of a type, with refs resolved."
+  ([env t] (members env t #{}))
+  ([env t seen]
+   (case (:t t)
+     :ref (if (seen (:name t))
+            [unknown]
+            (if-let [d (get-in env [:specs (:name t) :type])]
+              (members env d (conj seen (:name t)))
+              [unknown]))
+     :union (mapcat #(members env % seen) (:types t))
+     :merge (let [parts (map #(members env % seen) (:types t))]
+              (if (every? #(and (= 1 (count %)) (= :map (:t (first %)))) parts)
+                [(reduce (fn [a b] {:t :map :req (merge (:req a) (:req b))
+                                    :opt (apply dissoc (merge (:opt a) (:opt b)) (concat (keys (:req a)) (keys (:req b))))})
+                         (map first parts))]
+                [unknown]))
+     [t])))
+
+(defn resolve-t [env t] (apply union (members env t)))
+
+(defn nilable? [env t] (boolean (some #(= :nil (:t %)) (members env t))))
+
+(defn remove-nil [env t]
+  (case (:t t)
+    :nil never
+    :union (apply union (map #(remove-nil env %) (:types t)))
+    :ref (if (nilable? env t) (remove-nil env (get-in env [:specs (:name t) :type])) t)
+    t))
+
+;; ---- subtyping ----
+
+(declare sub?)
+(def ^:dynamic *depth* 0)
+
+(defn- prim-sub? [a b]
+  (or (= a b)
+      (contains? (get {:int #{:number} :double #{:number} :vector #{:coll} :set #{:coll}
+                       :seq #{:coll} :map #{:coll} :keyword #{:fn}} a) b)))
+
+(defn- map-sub? [env s t]
+  (and (every? (fn [[k tv]] (when-let [sv (get (:req s) k)] (sub? env sv tv))) (:req t))
+       (every? (fn [[k tv]] (if-let [sv (or (get (:req s) k) (get (:opt s) k))] (sub? env sv tv) true)) (:opt t))))
+
+(defn- sub1? [env s t]
+  (let [st (:t s) tt (:t t)]
+    (cond
+      (= (strip s) (strip t)) true
+      (#{:any :unknown} tt) true
+      (#{:any :unknown :never} st) true
+      (= :nil st) (boolean (:platform t))
+      (= :nil tt) false
+      (= :lit st) (if (= :lit tt) (= (:val s) (:val t)) (sub1? env (lit-prim (:val s)) t))
+      (= :lit tt) false
+      (= :prim st) (case tt
+                     :prim (prim-sub? (:name s) (:name t))
+                     :class (prim-is-class? (:name s) (:name t))
+                     :coll (contains? #{:vector :set :seq :coll} (:name s))
+                     :map-of (= :map (:name s))
+                     false)
+      (= :class st) (case tt
+                      :class (class-sub? (:name s) (:name t))
+                      :prim (class-is-prim? (:name s) (:name t))
+                      false)
+      (= :map st) (case tt
+                    :map (map-sub? env s t)
+                    :prim (contains? #{:map :coll} (:name t))
+                    :map-of (every? #(sub? env % (:v t)) (concat (vals (:req s)) (vals (:opt s))))
+                    :class (prim-is-class? :map (:name t))
+                    false)
+      (= :map-of st) (case tt
+                       :map-of (and (sub? env (:k s) (:k t)) (sub? env (:v s) (:v t)))
+                       :prim (contains? #{:map :coll} (:name t))
+                       :map (empty? (:req t))
+                       :class (prim-is-class? :map (:name t))
+                       false)
+      (= :coll st) (case tt
+                     :coll (and (or (nil? (:kind t)) (= (:kind s) (:kind t))) (sub? env (:of s) (:of t)))
+                     :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
+                     :class (prim-is-class? (or (:kind s) :coll) (:name t))
+                     false)
+      (= :fn st) (or (= :fn tt) (= :class tt) (and (= :prim tt) (= :fn (:name t))))
+      :else false)))
+
+(defn sub?
+  "Is every value of s also a value of t?"
+  [env s t]
+  (if (> *depth* 12)
+    true
+    (binding [*depth* (inc *depth*)]
+      (let [tt (members env t)]
+        (every? (fn [s1] (some #(sub1? env s1 %) tt)) (members env s))))))
+
+;; ---- printing ----
+
+(def ^:dynamic *cur-ns* nil)
+
+(defn show-kw [k]
+  (if (and *cur-ns* (= (namespace k) (str *cur-ns*))) (str "::" (name k)) (str k)))
+
+(defn show
+  "Prints a type in the type language, so it can be pasted back into code."
+  [t]
+  (if (:as t)
+    (:as t)
+    (case (:t t)
+      :any "any?" :unknown "t/unknown" :never "t/never" :nil "nil?"
+      :prim (str (name (:name t)) "?")
+      :lit (pr-str (:val t))
+      :ref (show-kw (:name t))
+      :class (:name t)
+      :union (let [ts (:types t)
+                   others (remove #(= :nil (:t %)) ts)
+                   core (cond (= 1 (count others)) (show (first others))
+                              (every? #(= :lit (:t %)) others) (str "#{" (str/join " " (map show others)) "}")
+                              :else (str "(t/or " (str/join " " (map show others)) ")"))]
+               (if (some #(= :nil (:t %)) ts) (str "(s/nilable " core ")") core))
+      :merge (str "(s/merge " (str/join " " (map show (:types t))) ")")
+      :map (if (:fresh t)
+             (str "{" (str/join ", " (map (fn [[k v]] (str k " " (show v))) (:req t))) "}")
+             (str "(s/keys"
+                  (when (seq (:req t)) (str " :req [" (str/join " " (map show-kw (keys (:req t)))) "]"))
+                  (when (seq (:opt t)) (str " :opt [" (str/join " " (map show-kw (keys (:opt t)))) "]"))
+                  ")"))
+      :map-of (str "(s/map-of " (show (:k t)) " " (show (:v t)) ")")
+      :coll (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?")) ")")
+      :fn (if-let [ars (seq (:arities t))]
+            (let [ar (fn [a] (str "[" (str/join " " (concat (map show (:params a))
+                                                            (when (:rest a) ["&" (show (:rest a))])
+                                                            (when (:kwargs a) ["&" (show (:kwargs a))])
+                                                            [":->" (show (:ret a))])) "]"))]
+              (if (= 1 (count ars)) (ar (first ars)) (str "(" (str/join " " (map ar ars)) ")")))
+            "fn?")
+      (pr-str t))))
+
+;; ---- reading the type language ----
+
+(def ^:private pred-prims
+  '{string? :string int? :int integer? :int pos-int? :int nat-int? :int neg-int? :int
+    double? :double float? :double number? :number pos? :number
+    keyword? :keyword simple-keyword? :keyword qualified-keyword? :keyword
+    symbol? :symbol boolean? :boolean uuid? :uuid inst? :inst
+    map? :map vector? :vector set? :set seq? :seq list? :seq sequential? :coll coll? :coll
+    fn? :fn ifn? :fn})
+
+(defn- op [ctx sym]
+  (when (symbol? sym)
+    (let [n (namespace sym)
+          full (when n (str (get (:aliases ctx) (symbol n) n)))]
+      (cond (#{"clojure.spec.alpha" "s"} full) (keyword "s" (name sym))
+            (= "t" n) (keyword "t" (name sym))
+            (nil? n) (keyword (name sym))
+            :else nil))))
+
+(declare parse-type)
+
+(defn- flat-keys [x] (cond (keyword? x) [x] (seq? x) (mapcat flat-keys (rest x)) :else []))
+
+(defn- parse-keys [args]
+  (let [{:keys [req opt req-un opt-un]} (apply hash-map args)
+        un (fn [ks] (into (array-map) (map (fn [k] [(keyword (name k)) (ref-t k)])) ks))
+        q (fn [ks] (into (array-map) (map (fn [k] [k (ref-t k)])) ks))
+        plain #(filter keyword? %)
+        grouped #(mapcat flat-keys (filter seq? %))]
+    {:t :map
+     :req (merge (q (plain req)) (un (plain req-un)))
+     :opt (merge (q (concat opt (grouped req))) (un (concat opt-un (grouped req-un))))}))
+
+(defn cat-items
+  "Items of (s/cat :a A :b (s/? B) :c (s/* C)), or nil when the form is not an s/cat."
+  [ctx form]
+  (when (and (seq? form) (= :s/cat (op ctx (first form))) (odd? (count form)))
+    (for [[_ f] (partition 2 (rest form))]
+      (let [o (when (seq? f) (op ctx (first f)))]
+        (case o
+          :s/? {:mod :opt :type (parse-type ctx (second f))}
+          (:s/* :s/+) {:mod :rest :type (parse-type ctx (second f))}
+          {:type (parse-type ctx f)})))))
+
+(defn cat->arities [items ret]
+  (let [[plain more] (split-with #(nil? (:mod %)) items)
+        opts (take-while #(= :opt (:mod %)) more)
+        after (drop (count opts) more)
+        rest-t (when (= :rest (:mod (first after))) (:type (first after)))]
+    (when (or (empty? after) (and rest-t (= 1 (count after))))
+      (let [ars (vec (reductions conj (mapv :type plain) (map :type opts)))]
+        (vec (map-indexed (fn [i ps] {:params ps :rest (when (= i (dec (count ars))) rest-t) :ret ret}) ars))))))
+
+(defn parse-sig
+  "[A B :-> R], [A & B :-> R], or a list of such vectors."
+  [ctx form]
+  (let [one (fn [v]
+              (let [[ps [arrow ret & extra]] (split-with #(not= :-> %) v)
+                    [fixed [_ r]] (split-with #(not= '& %) ps)]
+                (if (or (not= :-> arrow) extra (= 1 (count (drop-while #(not= :-> %) v))))
+                  (do ((:fail ctx) v) nil)
+                  {:params (mapv #(parse-type ctx %) fixed) :rest (when r (parse-type ctx r)) :ret (parse-type ctx ret)})))]
+    (cond (vector? form) (if-let [a (one form)] {:t :fn :arities [a]} unknown)
+          (and (seq? form) (seq form) (every? vector? form)) {:t :fn :arities (vec (keep one form))}
+          :else (do ((:fail ctx) form) unknown))))
+
+(defn parse-type
+  "Reads a type form (plain data). ctx: {:aliases :imports :fail (fn [form])}."
+  [ctx form]
+  (let [p #(parse-type ctx %)
+        fail #(do ((:fail ctx) form) unknown)]
+    (cond
+      (keyword? form) (if (namespace form) (ref-t form) (fail))
+      (symbol? form) (let [nm (if (= "clojure.core" (namespace form)) (symbol (name form)) form)]
+                       (cond (pred-prims nm) (prim (pred-prims nm))
+                             (#{'any? 'some?} nm) any
+                             (= 'nil? nm) nil-t
+                             (#{'true? 'false?} nm) (prim :boolean)
+                             (= 't/unknown nm) unknown
+                             (= 't/never nm) never
+                             :else (if-let [c (resolve-class (:imports ctx) nm)] (class-type c) (fail))))
+      (set? form) (if (and (seq form) (every? #(or (string? %) (keyword? %) (number? %) (boolean? %)) form))
+                    (apply union (map lit (sort-by pr-str form)))
+                    (fail))
+      (vector? form) (parse-sig ctx form)
+      (seq? form)
+      (case (op ctx (first form))
+        :quote (p (second form))
+        :s/nilable (union (p (second form)) nil-t)
+        :s/or (apply union (map p (take-nth 2 (drop 2 form))))
+        :t/or (apply union (map p (rest form)))
+        (:s/and :t/and :s/spec :t/exact) (p (second form))
+        :s/keys (if (even? (count (rest form))) (parse-keys (rest form)) (fail))
+        :s/merge {:t :merge :types (mapv p (rest form))}
+        (:s/coll-of :s/every) (let [[_ inner & {:keys [kind]}] form]
+                                {:t :coll :of (p inner)
+                                 :kind (get '{vector? :vector set? :set list? :seq seq? :seq} kind)})
+        :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
+        :s/tuple {:t :coll :kind :vector :of (apply union (map p (rest form)))}
+        :s/fspec (let [{:keys [args ret]} (apply hash-map (rest form))
+                       r (if ret (p ret) unknown)]
+                   {:t :fn :arities (some-> (cat-items ctx args) (cat->arities r)) :ret r})
+        :t/fn (parse-sig ctx (second form))
+        ;; #(instance? C %) and (partial instance? C): the usual way to say "a Java class" in spec
+        (:fn* :fn) (let [body (last form)]
+                     (if-let [c (and (seq? body) (= 'instance? (first body))
+                                     (resolve-class (:imports ctx) (second body)))]
+                       (class-type c)
+                       (fail)))
+        :partial (if-let [c (and (= 'instance? (second form)) (resolve-class (:imports ctx) (nth form 2 nil)))]
+                   (class-type c)
+                   (fail))
+        :t/class (if-let [c (resolve-class (:imports ctx) (second form))] (class-type c) (fail))
+        (fail))
+      :else (fail))))

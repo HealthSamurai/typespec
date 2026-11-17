@@ -2,9 +2,9 @@
 
 > 🇬🇧 [English](README.md) · 🇷🇺 Русский
 >
-> Статус: **дизайн-документ, кода пока нет.** Здесь только дизайн-решения. Детали — в [docs/reference.md](docs/reference.md), реализация и этапы — в [PLAN.md](PLAN.md) (оба на английском).
+> Статус: **дизайн и работающий прототип** (около 2000 строк, см. [Попробовать](#попробовать)). Здесь дизайн-решения. Детали — в [docs/reference.md](docs/reference.md), реализация и этапы — в [PLAN.md](PLAN.md) (оба на английском).
 
-Typespec проверяет код на Clojure до запуска, как `tsc` проверяет TypeScript. Типы пишутся как данные в стиле spec, type hints и Java-классы понимаются как есть, в рантайм ничего не добавляется.
+Typespec проверяет код на Clojure до запуска, как `tsc` проверяет TypeScript. Он начинает с того, что в коде уже есть: `s/def` для данных, `s/fdef` для сигнатур функций, type hints, условия `:pre` и Java-классы. В рантайм ничего не добавляется.
 
 ## Почему сейчас
 
@@ -43,35 +43,68 @@ Typespec проверяет код на Clojure до запуска, как `tsc
 (s/def :patient/status #{"active" "inactive"})
 (s/def ::patient (s/keys :req [:patient/id :patient/status] :opt [:patient/name]))
 
-(defn find-patient
-  {:t/sig '[::db :patient/id :-> (s/nilable ::patient)]}
-  [db id]
-  ...)
+(s/fdef find-patient
+  :args (s/cat :db ::db :id :patient/id)
+  :ret (s/nilable ::patient))
+(defn find-patient [db id]
+  (get db id))
 
-(defn greeting
-  {:t/sig '[::patient :-> string?]}
-  [{:patient/keys [name status]}]
+(s/fdef greeting
+  :args (s/cat :patient ::patient)
+  :ret string?)
+(defn greeting [{:patient/keys [name status]}]
   (str (case status "active" "Hi, ")
        (str/upper-case name)))
 
-(defn greet-first
-  {:t/sig '[::db :-> string?]}
-  [db]
+(defn greet-first [db]
   (greeting (find-patient db 42)))
 ```
 
 ```
-src/app/patients.clj:19:8   TSP8001  case is not exhaustive: "inactive" is not handled
-src/app/patients.clj:20:24  TSP2531  name may be nil: :patient/name is optional in ::patient
-src/app/patients.clj:25:13  TSP2345  (s/nilable ::patient) is not assignable to ::patient
+$ clojure -M:check check
+src/app/patients.clj:21:8  TSP8001  case is not exhaustive: "inactive" is not handled
+src/app/patients.clj:22:24  TSP2531  name may be nil: :patient/name is optional in ::patient
+src/app/patients.clj:25:13  TSP2531  (find-patient db 42) may be nil: find-patient returns (s/nilable ::patient)
 src/app/patients.clj:25:30  TSP2345  42 is not assignable to :patient/id (string?)
 ```
 
-Spec здесь обычные. Сигнатура — цитированный вектор в attr-map `defn`: компилятор его сохраняет и ничего с ним не делает.
+Это настоящий вывод прототипа. Код — обычный `clojure.spec`: `s/fdef` и есть сигнатура, для Typespec ничего не добавлено. У `greet-first` нет `s/fdef`, поэтому тип результата выведен из тела.
+
+## Попробовать
+
+```
+git clone https://github.com/HealthSamurai/typespec && cd typespec
+clojure -M:check check --root demo        # маленькое приложение клиники с 23 заложенными ошибками
+clojure -M:check check --root demo --json
+clojure -M:check sig clinic.billing --root demo
+clojure -M:check type-at src/clinic/patients.clj:57:9 --root demo
+clojure -M:test                           # сверяет вывод с файлами ожидаемого результата
+```
+
+В [демо](demo/README.md) перечислена каждая ошибка: что она делает в рантайме сейчас и что говорит Typespec. Восемь из 23 в рантайме проходят молча: код возвращает неверное значение, и ничего не падает.
+
+**Откуда прототип берёт типы**, в таком порядке:
+
+| Источник | Пример | Написано для Typespec? |
+|---|---|---|
+| `s/def` | `(s/def :patient/status #{"active" "inactive"})` | нет |
+| `s/fdef` | `(s/fdef greeting :args (s/cat :patient ::patient) :ret string?)` | нет |
+| type hints | `(defn slug ^String [^String title ^long max] ...)` | нет |
+| условия `:pre` | `{:pre [(s/valid? ::invoice invoice) (number? rate)]}` | нет |
+| Java-классы с classpath | `(.plusDays date "30")` | нет |
+| шаблоны деструктуризации | `[& {:keys! [host port]}]` | нет |
+| тело функции | тип результата, если он нигде не объявлен | нет |
+| `{:t/sig '[...]}` | короткая запись сигнатуры для кода без `s/fdef` | да |
+
+**Что работает в прототипе** (каждый пункт покрыт `clojure -M:test`): структурные мапы и чтение ключей с подсказками, union литералов и полнота `case`, отслеживание nil и сужение (`if`, `when`, `if-let`, `cond`, `and`/`or`, `some?`), `->` и `some->`, `map`/`filter`/`reduce` по типизированным коллекциям, `assoc`/`update`/`get-in`/`select-keys`/`merge`, `:keys!` и `:missing` из Clojure 1.13, хинты как сигнатуры, проверки хинтов, вызовы Java-методов с перегрузками, предупреждения о reflection с фиксом, несуществующие имена, `#_(t/cast)`/`#_(t/ignore)`/`#_(t/any)` со счётчиками доверия, вывод в JSON, `sig`, `type-at`, `--strict`, `--strict-nil`.
+
+**Что пока не работает:** generics, `reify`/`proxy`/протоколы/мультиметоды, макросы проекта (выдаётся `TSP7031`, тело пропускается), `typespec/types.edn` и externs для библиотек, кеш по ns и демон, `fix` и `annotate`, бюджет доверия в CI. Java-классы читаются через reflection, а не из байткода. Для стандартной библиотеки есть 64 сигнатуры; макросы core без правила пропускаются.
+
+**Первый запуск на настоящем коде.** Три модуля внутренней библиотеки (5800 строк, spec почти нет) проверяются за 1–4 секунды каждый, вместе со стартом JVM. Результат: 1 ошибка и 39 предупреждений. Ошибка настоящая: `BufferedReader` передаётся в параметр с хинтом `^InputStream`, в рантайме это `ClassCastException`. Предупреждения — вызовы через reflection и неописанные макросы проекта. В коде без spec тайпчекеру почти не за что зацепиться, поэтому и находок мало; чтобы дойти до нуля ложных ошибок, понадобилось около десяти правок тайпчекера.
 
 ## Ещё примеры
 
-Каждая строка `сейчас` проверена запуском на Clojure 1.13.0-alpha11. Строки `TSP` — задуманный вывод: реализации пока нет.
+Каждая строка `сейчас` проверена запуском на Clojure 1.13.0-alpha11. Прототип уже выдаёт все строки `TSP` ниже, кроме строки про `reify` (см. `test/examples` и демо); формулировки некоторых сообщений отличаются.
 
 ### Type hints — это типы
 
@@ -94,7 +127,7 @@ Spec здесь обычные. Сигнатура — цитированный 
   {:t/sig '[(s/coll-of int?) :-> int?]}
   [ids]
   (let [^String s (first ids)]
-;;      ^^^^^^^ TSP2322: hint String contradicts the type: (first ids) is (s/nilable int?)
+;;      ^^^^^^^ TSP2322: hint String contradicts the type: int?
     (.length s)))
 ;; сейчас: ClassCastException: Long cannot be cast to String
 ```
@@ -114,7 +147,7 @@ Java-типы читаются из байткода, поэтому interop п�
 
 (defn request-id-length ^long [^java.util.Map headers]
   (.length ^String (.get headers "x-request-id")))
-;; TSP2531 (при :strict-nil true): (.get headers "x-request-id") may be nil
+;; TSP2531: (.get headers "x-request-id") may be nil: java.util.Map.get may return null
 ;; сейчас: NullPointerException, когда заголовка нет
 
 (def by-pair
@@ -142,7 +175,7 @@ Java-типы читаются из байткода, поэтому interop п�
   {:t/sig '[(s/keys :opt [:job/retries]) :-> int?]}
   [{:job/keys [retries] :or {retries 0}}]
   (inc retries))
-;;     ^^^^^^^ TSP2345: (s/nilable int?) is not assignable to number?: :or applies only when the key is absent
+;;     ^^^^^^^ TSP2531: retries may be nil: :job/retries is (s/nilable int?), and :or applies only when the key is absent
 ;; сейчас: (next-try {:job/retries nil}) бросает NullPointerException
 ```
 
@@ -193,30 +226,32 @@ Java-типы читаются из байткода, поэтому interop п�
 
 ### Что получает агент
 
-Та же ошибка в JSON, с фиксом, который агент применяет не раздумывая, и команды, чтобы спрашивать про типы, а не угадывать.
+Диагностики в JSON, с фиксом, который агент применяет не раздумывая, и команды, чтобы спрашивать про типы, а не угадывать. Это настоящий вывод на демо.
 
 ```json
-{"id": "e3f1…", "code": "TSP2339", "file": "src/app/patients.clj",
- "range": {"start": [14, 23], "end": [14, 27]},
- "message": ":patient/nmae is not a key of ::patient",
- "expected": "(s/keys :req [:patient/id :patient/status] :opt [:patient/name])",
- "fixes": [{"title": "Rename to :patient/name", "risk": "safe",
-            "edits": [{"range": {"start": [14, 23], "end": [14, 27]}, "text": "name"}]}]}
+{"id": "a34443c4", "code": "TSP7023", "severity": "warning", "file": "src/clinic/export.clj",
+ "range": {"start": [39, 3], "end": [39, 17]},
+ "message": "reflective call, but file is known to be java.io.File",
+ "fixes": [{"title": "Add hint ^java.io.File", "risk": "safe",
+            "edits": [{"range": {"start": [39, 12], "end": [39, 12]}, "text": "^java.io.File "}]}]}
 ```
 
 ```
-$ typespec type-at src/app/patients.clj:20:24
-(s/nilable string?)
+$ clojure -M:check type-at src/clinic/patients.clj:57:9 --root demo
+(s/nilable :clinic/patient)
 
-$ typespec sig app.patients
-find-patient  [::db :patient/id :-> (s/nilable ::patient)]
-greeting      [::patient :-> string?]
-greet-first   [::db :-> string?]
+$ clojure -M:check sig clinic.billing --root demo
+line-total     [:clinic/line :-> number?]   ; from s/fdef
+total          [:clinic/invoice :-> number?]   ; from s/fdef
+new-invoice    [:invoice/id :clinic/patient :-> :clinic/invoice]   ; from s/fdef
+with-tax       [:clinic/invoice number? :-> number?]   ; from the body
+...
 ```
+
 
 ## Typespec и TypeScript
 
-`+` — Typespec по дизайну впереди, `=` — та же идея, `−` — впереди TypeScript. Колонка Typespec описывает дизайн, а не работающий инструмент.
+`+` — Typespec по дизайну впереди, `=` — та же идея, `−` — впереди TypeScript. Колонка Typespec описывает дизайн; прототип покрывает его часть (см. [Попробовать](#попробовать)).
 
 | | TypeScript | Typespec | |
 |---|---|---|:-:|
@@ -253,7 +288,7 @@ greet-first   [::db :-> string?]
 | Инкрементальная проверка | `--incremental`, project references | кеш интерфейсов по ns, параллельная проверка | = |
 | Постепенное внедрение | `allowJs`, флаги строгости | `:strict`, файл baseline | = |
 | Поддержка агентов | текстовые диагностики, language server | JSON со стабильными id и первопричинами, фиксы с уровнем риска, `sig`/`type-at`/`order`, бюджет доверия | + |
-| Зрелость | 12+ лет, огромная экосистема | дизайн-документ | − |
+| Зрелость | 12+ лет, огромная экосистема | дизайн и прототип | − |
 
 Строки с `−` — честные пределы. Часть из них навсегда: тайпчекер видит файлы, а не запущенный образ REPL, макросы нужно описывать, а данные-DSL получают смысл только при интерпретации. Остальное — вопрос работы: externs для библиотек, редактор, вывод для `comp` и трансдьюсеров.
 
@@ -269,7 +304,7 @@ greet-first   [::db :-> string?]
 **3. Ключ = тип.** Квалифицированный ключ `:patient/id` везде означает одно и то же. Это главная идея spec, и благодаря ей переименование и поиск опечаток работают по всему проекту.
 *Опция:* ключ объявляется в `s/def` (настоящий spec, годится и для рантайма) или только как тип в `typespec/types.edn`.
 
-**4. Сигнатуры на границах, вывод внутри.** Публичные функции объявляют сигнатуру; тела и приватные функции выводятся локально. Вывода через цепочки вызовов нет. Это модель TypeScript: она делает проверку быстрой, а ошибки локальными.
+**4. Сигнатуры на границах, вывод внутри.** У публичной функции есть сигнатура: `s/fdef`, type hints или `{:t/sig '[...]}`. Сначала используются существующие аннотации; `t/sig` — лишь короткая запись для кода, где их нет. Тела и приватные функции выводятся локально. Вывода через цепочки вызовов нет. Это модель TypeScript: она делает проверку быстрой, а ошибки локальными.
 *Опция:* `:strict false` и файл baseline для постепенного внедрения: старый код не блокируется, новые ошибки блокируются.
 
 **5. Исходник читается, а не загружается.** Декларации берутся из текста файлов. Проверка ns не исполняет его верхний уровень: нет побочных эффектов и нет устаревшего реестра.
@@ -301,6 +336,7 @@ greet-first   [::db :-> string?]
 |---|---|---|
 | clojure.spec, malli | проверка и генерация в рантайме | проверки срабатывают, когда код уже запущен |
 | clj-kondo | быстрый статический линтер, читает исходник | типы поверхностные: арность и простые несовпадения |
+| [crabjure](https://github.com/ribelo/crabjure) | линтер в духе clj-kondo на Rust, proof of concept, по своим замерам примерно в 20 раз быстрее clj-kondo | это линтер; его тайпчекер — эксперимент за флагом, типы пишутся в комментариях (`@param`, `@return`) |
 | Typed Clojure | настоящая статическая система типов (порт Typed Racket) | загружает проверяемый код, свой синтаксис типов, один мейнтейнер |
 
 Typespec берёт модель чтения у clj-kondo, ядро системы типов у Typed Clojure, запись типов у spec, а продуктовые решения у TypeScript.
@@ -308,4 +344,5 @@ Typespec берёт модель чтения у clj-kondo, ядро систе�
 ## Документы
 
 - [docs/reference.md](docs/reference.md) — язык типов, источники типов, правила системы типов, хинты и Java, externs, обходы, конфиг, CLI и JSON, опциональные расширения, коды ошибок.
+- [demo/README.md](demo/README.md) — демо-проект: 23 ошибки, что они делают в рантайме и что сообщает Typespec.
 - [PLAN.md](PLAN.md) — архитектура, выбор реализации, что уже есть, этапы, открытые вопросы.

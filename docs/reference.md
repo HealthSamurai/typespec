@@ -1,6 +1,6 @@
 # Typespec — reference
 
-Details behind the design in [README.md](../README.md). Implementation and milestones: [PLAN.md](../PLAN.md). Status: design, no code yet.
+Details behind the design in [README.md](../README.md). Implementation and milestones: [PLAN.md](../PLAN.md). Status: this is the design; the prototype implements part of it (the list is in the README, section "Try it").
 
 ## 1. Type language
 
@@ -51,7 +51,9 @@ Rules the type checker makes explicit:
 |---|---|---|
 | value of key `:ns/k` | `(s/def :ns/k T)`, or an entry in `typespec/types.edn` | alongside domain code (`specs.clj`), or type-only in EDN |
 | entity shape | `(s/def ::patient (s/keys ...))` | same place |
-| public function signature | `t/sig` at the start of `defn`, or `s/fdef`, or type hints on every parameter and the result | next to the function |
+| public function signature | `s/fdef`, or type hints on every parameter and the result, or `{:t/sig '[...]}` in the `defn` attr-map | next to the function |
+| parameter types without a signature | `:pre` conditions: `(string? x)`, `(s/valid? ::spec x)` | in the function |
+| return type without a signature | inferred from the body | — |
 | Java classes and methods | bytecode on the classpath | — |
 | private function signature | not required; inferred locally | — |
 | local values | inference | — |
@@ -382,14 +384,21 @@ Numbers match TypeScript only where the meaning matches.
 | Code | Meaning |
 |---|---|
 | `TSP2304` | no type for a qualified key |
+| `TSP2305` | the namespace has no such var |
 | `TSP2322` | value is not assignable to the declared type (also: hint contradicts the type) |
 | `TSP2339` | key does not exist on the type |
 | `TSP2345` | argument is not assignable to the parameter |
+| `TSP2353` | unknown key in a map literal |
 | `TSP2531` | value may be nil |
+| `TSP2554` | wrong number of arguments |
+| `TSP2578` | unused `t/ignore` |
+| `TSP2678` | a `case` clause that can never match |
 | `TSP2741` | required key is missing |
 | `TSP2790` | two declarations of one signature disagree (`t/sig`, `s/fdef`, sidecar, hints) |
 | `TSP2791` | `types.edn` entry is not a subtype of the `s/def` |
+| `TSP7010` | strict mode: a public function has no signature |
 | `TSP7020`–`TSP7026` | hints and interop (section 4.2) |
 | `TSP7031` | unknown macro: describe it with `:lint-as`, a hook or `:t/macro` |
 | `TSP8001` | `case`/`cond`/multimethod is not exhaustive |
 | `TSP9001` | form is not a type |
+| `TSP9002` | warning: a spec the checker cannot read (a custom predicate), treated as `t/unknown` |

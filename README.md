@@ -2,9 +2,9 @@
 
 > 🇬🇧 English · 🇷🇺 [Русский](README.ru.md)
 >
-> Status: **design document, no code yet.** This page holds the design decisions. Details are in [docs/reference.md](docs/reference.md), implementation and milestones in [PLAN.md](PLAN.md).
+> Status: **a design and a working prototype** (about 2,000 lines, see [Try it](#try-it)). This page holds the design decisions. Details are in [docs/reference.md](docs/reference.md), implementation and milestones in [PLAN.md](PLAN.md).
 
-Typespec checks Clojure code before it runs, the way `tsc` checks TypeScript. Types are written as spec-style data, type hints and Java classes are understood as they are, and nothing is added at runtime.
+Typespec checks Clojure code before it runs, the way `tsc` checks TypeScript. It starts from what the code already has: `s/def` for data, `s/fdef` for function signatures, type hints, `:pre` conditions and Java classes. Nothing is added at runtime.
 
 ## Why now
 
@@ -43,35 +43,68 @@ Because the annotator is an agent, the design adds guardrails a human-oriented c
 (s/def :patient/status #{"active" "inactive"})
 (s/def ::patient (s/keys :req [:patient/id :patient/status] :opt [:patient/name]))
 
-(defn find-patient
-  {:t/sig '[::db :patient/id :-> (s/nilable ::patient)]}
-  [db id]
-  ...)
+(s/fdef find-patient
+  :args (s/cat :db ::db :id :patient/id)
+  :ret (s/nilable ::patient))
+(defn find-patient [db id]
+  (get db id))
 
-(defn greeting
-  {:t/sig '[::patient :-> string?]}
-  [{:patient/keys [name status]}]
+(s/fdef greeting
+  :args (s/cat :patient ::patient)
+  :ret string?)
+(defn greeting [{:patient/keys [name status]}]
   (str (case status "active" "Hi, ")
        (str/upper-case name)))
 
-(defn greet-first
-  {:t/sig '[::db :-> string?]}
-  [db]
+(defn greet-first [db]
   (greeting (find-patient db 42)))
 ```
 
 ```
-src/app/patients.clj:19:8   TSP8001  case is not exhaustive: "inactive" is not handled
-src/app/patients.clj:20:24  TSP2531  name may be nil: :patient/name is optional in ::patient
-src/app/patients.clj:25:13  TSP2345  (s/nilable ::patient) is not assignable to ::patient
+$ clojure -M:check check
+src/app/patients.clj:21:8  TSP8001  case is not exhaustive: "inactive" is not handled
+src/app/patients.clj:22:24  TSP2531  name may be nil: :patient/name is optional in ::patient
+src/app/patients.clj:25:13  TSP2531  (find-patient db 42) may be nil: find-patient returns (s/nilable ::patient)
 src/app/patients.clj:25:30  TSP2345  42 is not assignable to :patient/id (string?)
 ```
 
-The specs are ordinary spec. The signature is a quoted vector in the `defn` attr-map: the compiler stores it and does nothing with it.
+This is the real output of the prototype. The code is plain `clojure.spec`: `s/fdef` is the signature, and nothing was added for Typespec. `greet-first` has no `s/fdef`, so its return type is inferred from the body.
+
+## Try it
+
+```
+git clone https://github.com/HealthSamurai/typespec && cd typespec
+clojure -M:check check --root demo        # a small clinic app with 23 planted mistakes
+clojure -M:check check --root demo --json
+clojure -M:check sig clinic.billing --root demo
+clojure -M:check type-at src/clinic/patients.clj:57:9 --root demo
+clojure -M:test                           # compares the output with the expected files
+```
+
+The [demo](demo/README.md) lists every mistake, what it does at run time today, and what Typespec says. Eight of the 23 fail silently at run time: the code returns a wrong value and nothing is thrown.
+
+**Where the prototype takes types from**, in this order:
+
+| Source | Example | Written for Typespec? |
+|---|---|---|
+| `s/def` | `(s/def :patient/status #{"active" "inactive"})` | no |
+| `s/fdef` | `(s/fdef greeting :args (s/cat :patient ::patient) :ret string?)` | no |
+| type hints | `(defn slug ^String [^String title ^long max] ...)` | no |
+| `:pre` conditions | `{:pre [(s/valid? ::invoice invoice) (number? rate)]}` | no |
+| Java classes on the classpath | `(.plusDays date "30")` | no |
+| destructuring patterns | `[& {:keys! [host port]}]` | no |
+| the function body | the return type, when nothing declares it | no |
+| `{:t/sig '[...]}` | a shorter way to write a signature, for code without `s/fdef` | yes |
+
+**What works in the prototype** (each item is covered by `clojure -M:test`): structural maps and key lookup with suggestions, literal unions and exhaustive `case`, nil tracking and narrowing (`if`, `when`, `if-let`, `cond`, `and`/`or`, `some?`), `->` and `some->`, `map`/`filter`/`reduce` over typed collections, `assoc`/`update`/`get-in`/`select-keys`/`merge`, Clojure 1.13 `:keys!` and `:missing`, hints as signatures, hint checks, Java method calls with overloads, reflection warnings with a fix, unresolved names, `#_(t/cast)`/`#_(t/ignore)`/`#_(t/any)` with trust counters, JSON output, `sig`, `type-at`, `--strict`, `--strict-nil`.
+
+**What does not work yet:** generics, `reify`/`proxy`/protocols/multimethods, project macros (reported as `TSP7031`, the body is skipped), `typespec/types.edn` and externs for libraries, per-namespace caching and the daemon, `fix` and `annotate`, the trust budget in CI. Java classes are read by reflection, not from bytecode. The standard library has 64 signatures; core macros without a rule are skipped.
+
+**First run on real code.** Three modules of an internal library (5,800 lines, almost no specs) check in 1–4 seconds each, JVM start included. The result is 1 error and 39 warnings. The error is real: a `BufferedReader` is passed to a parameter hinted `^InputStream`, a `ClassCastException` at run time. The warnings are reflective calls and undescribed project macros. Code without specs gives the checker little to work with, so little is reported; getting to zero false errors took about ten fixes to the checker.
 
 ## More examples
 
-Every `today` line was run on Clojure 1.13.0-alpha11. The `TSP` lines are the designed output: there is no implementation yet.
+Every `today` line was run on Clojure 1.13.0-alpha11. The prototype already reports all the `TSP` lines below except the one for `reify` (see `test/examples` and the demo); the wording of some messages differs.
 
 ### Type hints are types
 
@@ -94,7 +127,7 @@ Hints you already have work as a signature, and the checker tells you when a hin
   {:t/sig '[(s/coll-of int?) :-> int?]}
   [ids]
   (let [^String s (first ids)]
-;;      ^^^^^^^ TSP2322: hint String contradicts the type: (first ids) is (s/nilable int?)
+;;      ^^^^^^^ TSP2322: hint String contradicts the type: int?
     (.length s)))
 ;; today: ClassCastException: Long cannot be cast to String
 ```
@@ -114,7 +147,7 @@ Java types are read from bytecode, so interop is checked without any declaration
 
 (defn request-id-length ^long [^java.util.Map headers]
   (.length ^String (.get headers "x-request-id")))
-;; TSP2531 (with :strict-nil true): (.get headers "x-request-id") may be nil
+;; TSP2531: (.get headers "x-request-id") may be nil: java.util.Map.get may return null
 ;; today: NullPointerException when the header is absent
 
 (def by-pair
@@ -142,7 +175,7 @@ Destructuring is checked against the declared type, so a typo in a key is an err
   {:t/sig '[(s/keys :opt [:job/retries]) :-> int?]}
   [{:job/keys [retries] :or {retries 0}}]
   (inc retries))
-;;     ^^^^^^^ TSP2345: (s/nilable int?) is not assignable to number?: :or applies only when the key is absent
+;;     ^^^^^^^ TSP2531: retries may be nil: :job/retries is (s/nilable int?), and :or applies only when the key is absent
 ;; today: (next-try {:job/retries nil}) throws NullPointerException
 ```
 
@@ -193,30 +226,32 @@ The new directives throw at run time when a key is missing. Typespec reports the
 
 ### What an agent gets
 
-The same error as JSON, with a fix the agent can apply without thinking, and commands to ask about types instead of guessing.
+Diagnostics as JSON, with a fix the agent can apply without thinking, and commands to ask about types instead of guessing. This is real output for the demo.
 
 ```json
-{"id": "e3f1…", "code": "TSP2339", "file": "src/app/patients.clj",
- "range": {"start": [14, 23], "end": [14, 27]},
- "message": ":patient/nmae is not a key of ::patient",
- "expected": "(s/keys :req [:patient/id :patient/status] :opt [:patient/name])",
- "fixes": [{"title": "Rename to :patient/name", "risk": "safe",
-            "edits": [{"range": {"start": [14, 23], "end": [14, 27]}, "text": "name"}]}]}
+{"id": "a34443c4", "code": "TSP7023", "severity": "warning", "file": "src/clinic/export.clj",
+ "range": {"start": [39, 3], "end": [39, 17]},
+ "message": "reflective call, but file is known to be java.io.File",
+ "fixes": [{"title": "Add hint ^java.io.File", "risk": "safe",
+            "edits": [{"range": {"start": [39, 12], "end": [39, 12]}, "text": "^java.io.File "}]}]}
 ```
 
 ```
-$ typespec type-at src/app/patients.clj:20:24
-(s/nilable string?)
+$ clojure -M:check type-at src/clinic/patients.clj:57:9 --root demo
+(s/nilable :clinic/patient)
 
-$ typespec sig app.patients
-find-patient  [::db :patient/id :-> (s/nilable ::patient)]
-greeting      [::patient :-> string?]
-greet-first   [::db :-> string?]
+$ clojure -M:check sig clinic.billing --root demo
+line-total     [:clinic/line :-> number?]   ; from s/fdef
+total          [:clinic/invoice :-> number?]   ; from s/fdef
+new-invoice    [:invoice/id :clinic/patient :-> :clinic/invoice]   ; from s/fdef
+with-tax       [:clinic/invoice number? :-> number?]   ; from the body
+...
 ```
+
 
 ## Typespec and TypeScript
 
-`+` Typespec is ahead by design, `=` the same idea, `−` TypeScript is ahead. The Typespec column describes the design, not a working tool.
+`+` Typespec is ahead by design, `=` the same idea, `−` TypeScript is ahead. The Typespec column describes the design; the prototype covers part of it (see [Try it](#try-it)).
 
 | | TypeScript | Typespec | |
 |---|---|---|:-:|
@@ -253,7 +288,7 @@ greet-first   [::db :-> string?]
 | Incremental checking | `--incremental`, project references | interface cache per namespace, parallel checking | = |
 | Gradual adoption | `allowJs`, strictness flags | `:strict`, baseline file | = |
 | Support for agents | text diagnostics, language server | JSON with stable ids and root causes, risk-rated fixes, `sig`/`type-at`/`order`, trust budget | + |
-| Maturity | 12+ years, huge ecosystem | a design document | − |
+| Maturity | 12+ years, huge ecosystem | a design and a prototype | − |
 
 The `−` rows are the honest limits. Some are permanent: the checker sees files and not the running REPL image, macros must be described, and data DSLs get their meaning only when interpreted. Others are a matter of work: externs for libraries, the editor, inference for `comp` and transducers.
 
@@ -269,7 +304,7 @@ Each decision has a default. Where a real project may need something else, there
 **3. Key = type.** A qualified key such as `:patient/id` means the same thing everywhere. This is the core idea of spec, and it is why renaming and typo detection work across a whole project.
 *Option:* declare a key in `s/def` (real spec, also usable at runtime) or type-only in `typespec/types.edn`.
 
-**4. Signatures at boundaries, inference within.** Public functions declare a signature; bodies and private functions are inferred locally. There is no inference across call chains. This is the TypeScript model, and it is what makes checking fast and errors local.
+**4. Signatures at boundaries, inference within.** A public function has a signature: an `s/fdef`, type hints, or `{:t/sig '[...]}`. Existing annotations come first; `t/sig` is only a shorter notation for code that has none. Bodies and private functions are inferred locally. There is no inference across call chains. This is the TypeScript model, and it is what makes checking fast and errors local.
 *Option:* `:strict false` plus a baseline file for gradual adoption: old code is not blocked, new errors are.
 
 **5. Read source, do not load it.** Declarations come from the text of files. Checking a namespace does not run its top-level code, so there are no side effects and no stale registry.
@@ -301,6 +336,7 @@ A hinted value or a Java result is a *platform type*, as in Kotlin: nil is not c
 |---|---|---|
 | clojure.spec, malli | runtime validation and generation | checks happen when code runs |
 | clj-kondo | fast static linter that reads source | types are shallow: arity and basic type mismatches |
+| [crabjure](https://github.com/ribelo/crabjure) | a clj-kondo-style linter in Rust, a proof of concept, about 20× faster than clj-kondo by its own benchmarks | a linter; its type checker is a gated experiment with types written in comments (`@param`, `@return`) |
 | Typed Clojure | a real static type system (a port of Typed Racket) | loads the code it checks, has its own type syntax, one maintainer |
 
 Typespec takes the reading model from clj-kondo, the type system core from Typed Clojure, the type notation from spec, and the product decisions from TypeScript.
@@ -308,4 +344,5 @@ Typespec takes the reading model from clj-kondo, the type system core from Typed
 ## Documents
 
 - [docs/reference.md](docs/reference.md) — type language, sources of types, type system rules, hints and Java, externs, escape hatches, configuration, CLI and JSON, optional extensions, error codes.
+- [demo/README.md](demo/README.md) — the demo project: 23 mistakes, what they do at run time, what Typespec reports.
 - [PLAN.md](PLAN.md) — architecture, implementation choices, what already exists, milestones, open questions.

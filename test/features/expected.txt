@@ -1,0 +1,20 @@
+src/f/core.clj:36:3  TSP2322  may return nil, but the signature says string?
+src/f/core.clj:45:22  TSP2531  (-> (find-user id) :u/id) may be nil
+src/f/core.clj:51:38  TSP7023  reflective call, but x is known to be java.time.LocalDate  [warning]
+src/f/core.clj:59:5  TSP2678  :guest is not a possible value of :u/role (#{:admin :user})
+src/f/core.clj:66:22  TSP2531  inc takes int?, but may get nil: (s/nilable :u/age)
+src/f/core.clj:71:3  TSP2741  the returned map has no required key :u/id of ::user
+src/f/core.clj:75:25  TSP2339  :u/nmae is not a key of ::user. Did you mean :u/name?
+src/f/core.clj:79:20  TSP2322  "42" is not assignable to :u/age (int?)
+src/f/core.clj:87:24  TSP2339  :u/email is not a key of ::user
+src/f/core.clj:98:3  TSP2322  returns (s/coll-of (s/nilable :u/name) :kind seq?), but the signature says (s/coll-of string?)
+src/f/core.clj:110:27  TSP2339  :u/nme is not a key of ::user. Did you mean :u/name?
+src/f/core.clj:124:3  TSP2554  f1 expects 1 or 2 argument(s), got 3
+src/f/core.clj:132:7  TSP2790  t/sig and s/fdef of f4 disagree: [int? :-> string?] vs [string? :-> string?]
+src/f/core.clj:134:18  TSP9001  not a type: strng?
+src/f/core.clj:136:10  TSP7025  functions taking primitives support only 4 or fewer parameters
+src/f/core.clj:142:4  TSP7031  macro unless is not described: its body is not checked  [warning]
+src/f/core.clj:149:12  TSP2531  (System/getenv "PORT") may be nil: System.getenv may return null
+src/f/core.clj:152:29  TSP2345  "2" is not assignable to int, a parameter of java.time.LocalDate.of
+src/f/core.clj:160:4  TSP2339  String has no method lenght. Did you mean length?
+src/f/core.clj:179:15  TSP2531  n may be nil: :u/name is optional in ::user

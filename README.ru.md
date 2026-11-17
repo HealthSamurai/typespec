@@ -289,7 +289,7 @@ nil?     any?      t/unknown  t/never                ; any? = явный отк�
  :clojure      "1.13.0-alpha11"     ; семантика деструктуризации
  :externs      ["typespec/externs"]
  :strict       true                 ; сигнатуры у публичных fn, нет spec у ключа = ошибка, нет implicit unknown
- :strict-interop false              ; результаты Java-методов — платформенные типы
+ :strict-nil   false              ; true: платформенные типы (^String, результаты Java) становятся T | nil
  :baseline     ".typespec/baseline.edn"  ; старые ошибки не блокируют, новые — да
  :ignore-ns    [aidbox.legacy.*]}
 ```

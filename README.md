@@ -289,7 +289,7 @@ Suppression is a reader-discard comment in the clj-kondo style (`#_:clj-kondo/ig
  :clojure      "1.13.0-alpha11"     ; destructuring semantics
  :externs      ["typespec/externs"]
  :strict       true                 ; public fn signatures, missing key spec = error, no implicit unknown
- :strict-interop false              ; Java method results are platform types
+ :strict-nil   false              ; true: platform types (^String, Java results) become T | nil
  :baseline     ".typespec/baseline.edn"  ; existing errors do not block; new ones do
  :ignore-ns    [aidbox.legacy.*]}
 ```

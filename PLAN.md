@@ -5,16 +5,21 @@ Design: [README.md](README.md) · [README.ru.md](README.ru.md). Estimates are ro
 ## Architecture in one picture
 
 ```
-source files ──► clj-kondo parser + analysis ──► ns graph, cache, :lint-as / hooks
+ source .clj ──► clj-kondo parser + analysis ──► ns graph, cache, :lint-as / hooks
                         │
                         ▼
-           reader-first declarations (s/def, t/sig, s/fdef, externs EDN)
-                        │
-                        ▼
-           Typed Clojure core (fork ts-features): narrowing, generics, unions
-                        │
-                        ▼
-           TSP diagnostics (text / JSON) ──► CLI, CI, clojure-lsp, agents
+   declarations, read from source:              Java, read from bytecode:
+   s/def · t/sig · s/fdef · externs EDN         classes · methods · overloads ·
+   type hints ^String ^long ^[String]           generics · @Nullable / JSpecify
+                        │                              │
+                        └──────────────┬───────────────┘
+                                       ▼
+            Typed Clojure core (fork ts-features): narrowing, generics, unions,
+            subtyping of Clojure maps and Java classes, overload resolution
+                                       │
+                                       ▼
+            TSP diagnostics (text / JSON) ──► CLI, CI, clojure-lsp, agents
+            reflection / boxing warnings, hint fixes
 ```
 
 ## M0 — spike: front end on clj-kondo (2 weeks)
@@ -32,6 +37,9 @@ Answer one question: can we build the front end on clj-kondo's parser and analys
 
 - [ ] Type language from section 1: spec subset + `t/` forms; `TSP9001` for anything else.
 - [ ] Read `s/def`, `s/fdef`, `{:t/sig '[...]}` from source (no spec registry).
+- [ ] Type hints as signatures (`^String`, `^long`, `^[String]` param-tags); class names in the type language.
+- [ ] Java from bytecode: classes, subtyping, methods, overloads, generics; hint checks `TSP7020`–`TSP7026`.
+- [ ] `fix` for reflection: insert proven hints (`safe` when the overload is unique).
 - [ ] Recursive specs, `(or ...)`/`(and ...)` groups in `s/keys`, `s/?`/`s/*` as arities.
 - [ ] Check destructuring against declared types (`TSP2339`, Did you mean), `TSP2304` for keys without a spec.
 - [ ] JSON diagnostics v1: stable ids, `cause_of`, `fixes` with `risk`.
@@ -53,7 +61,7 @@ Answer one question: can we build the front end on clj-kondo's parser and analys
 - [ ] Clojure 1.13 destructuring table (`:keys!`, `:req!`, `:select`, `:excess`, `:missing`, `:all`, `selector`) with a differential test against the real `destructure`.
 - [ ] Map operations: `assoc`, `dissoc`, `merge`, `update`, `select-keys`, `get-in`/`assoc-in`/`update-in` with literal paths.
 - [ ] Records, protocols (incl. `extend-*` in other namespaces), multimethods with keyword dispatch, atoms, core.async.
-- [ ] Java: platform types, `@Nullable`/`@NonNull`, `:strict-interop`.
+- [ ] Java: platform types, JSpecify/`@Nullable`/`@NonNull`/`@NullMarked`, `:strict-nil`; `reify`/`proxy`/`deftype` against interfaces; functional interfaces; arrays; boxed-math warnings.
 - [ ] FHIR types generated from FHIR Schema (type provider, optional section 12).
 - **Exit:** a typical Aidbox namespace checks in strict mode with a trust budget under an agreed threshold.
 

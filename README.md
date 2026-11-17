@@ -6,13 +6,32 @@
 
 ## 0. Principles
 
-1. **Zero runtime impact.** Typespec does not change a single byte of compiled code. Annotations are data that the compiler skips.
+1. **Zero runtime impact.** Typespec itself does not change a single byte of compiled code. Its annotations are data that the compiler skips. Type hints are ordinary code: Typespec reads and checks them, and inserts them only as a reviewed fix.
 2. **One type language.** The same notation is used in `s/def`, signatures, externs, error messages, and JSON. Whatever the type checker prints can be pasted into code.
 3. **Key = type.** A qualified key such as `:patient/id` means the same thing everywhere: whatever `(s/def :patient/id ...)` declares. This is spec's core idea, and Typespec sticks to it.
 4. **Signatures at boundaries, inference within.** Public functions have declared signatures; their bodies are inferred locally. No inference “across three calls”—this is how TS works, and why it is fast.
 5. **Read source, don't load it.** Declarations come from file contents. Project code is not executed (except project macros; see section 7).
 6. **Honesty.** Everything the type checker has not proven is visible: `Unknown`, `Any` with a reason, `cast`, externs. CI counts these gaps.
 7. **Agents write, the type checker judges.** Annotations are designed to be added at scale by LLM agents; humans review diffs and errors.
+8. **Type hints and Java are first-class.** `^String`, `^long`, `^[String]` are types, Java classes are types, and bytecode is a source of declarations. Hints you already have give you types for free, and the type checker tells you where a hint is missing, wrong or useless.
+
+```
+ source .clj ──► clj-kondo parser + analysis ──► ns graph, cache, :lint-as / hooks
+                        │
+                        ▼
+   declarations, read from source:              Java, read from bytecode:
+   s/def · t/sig · s/fdef · externs EDN         classes · methods · overloads ·
+   type hints ^String ^long ^[String]           generics · @Nullable / JSpecify
+                        │                              │
+                        └──────────────┬───────────────┘
+                                       ▼
+            Typed Clojure core (fork ts-features): narrowing, generics, unions,
+            subtyping of Clojure maps and Java classes, overload resolution
+                                       │
+                                       ▼
+            TSP diagnostics (text / JSON) ──► CLI, CI, clojure-lsp, agents
+            reflection / boxing warnings, hint fixes
+```
 
 ---
 
@@ -156,12 +175,54 @@ Implementation: precise rules for the functions the form expands into (`req!`, `
 
 ---
 
-## 4. Java and JVM hints
+## 4. Type hints and Java types
 
-- `:tag` controls **compilation**; it is not a Typespec type. Hints are optional: the type checker neither requires nor inserts them.
-- The type checker interprets `^String x` as `(t/class String)` **including nil**: the compiler does not prohibit nil, and plenty of code relies on this. Only primitives (`^long`) and signatures establish non-nil types.
-- Java method results default to **platform types**, as in Kotlin: nil is not checked, but the site is included in coverage. `:strict-interop true` makes the result `T | nil`. Bytecode annotations `@Nullable`/`@NonNull` are respected.
-- Reflection produces a separate warning, `TSP7020`. The “add `^Class`” autofix is classified as `review`: it can change Java overload resolution.
+Clojure on the JVM already has a type system — Java's. Typespec uses it fully instead of hiding it.
+
+### 4.1 Hints are types
+
+```clojure
+(defn slug ^String [^String title ^long max]          ; hints = signature, no t/sig needed
+  (subs (.toLowerCase title) 0 (min max (.length title))))
+
+(defn parse-ts ^java.time.Instant [^CharSequence s] (java.time.Instant/parse s))
+
+(map ^[String] String/.trim lines)                     ; Clojure 1.12 param-tags: exact overload
+```
+
+- A hinted parameter or return has that type. Hints count as a signature: a function with hints on all parameters and the return value needs no `t/sig`.
+- Class names are part of the type language: `{:t/sig '[String long :-> (s/nilable java.time.Instant)]}`, `(s/coll-of java.util.UUID)`, `(t/class java.util.List String)` for Java generics.
+- `^String` allows nil (the compiler allows it) — the type is the **platform type** `String!`, as in Kotlin: method calls are allowed, nil flows are counted in coverage. With `:strict-nil` it becomes `String | nil`, and `(.length s)` requires narrowing. Primitives `^long`/`^double` are never nil.
+- `t/sig` and hints must agree: `^long` in the code and `string?` in the signature give `TSP2322`.
+
+### 4.2 The type checker checks hints
+
+| Check | Example | Code |
+|---|---|---|
+| hint contradicts the inferred type — a `ClassCastException` caught before running | `(let [^String s (count xs)] ...)` | `TSP2322` |
+| return hint on the name instead of the arg vector (breaks callers) | `(defn ^long f [x] ...)` | `TSP7021` |
+| reflection: the class is unknown | `(.getName x)` with `x : t/unknown` | `TSP7020` |
+| reflection: the class is known, but the compiler does not see it | `x` is proven `File`, no hint | `TSP7023` + fix |
+| ambiguous overload for the given types | `(.write w x)` with `x : Object` | `TSP7022` |
+| boxed math on a hot path | `(+ a b)` with `a : Long` boxed | `TSP7024` (opt-in) |
+| primitive hints on more than 4 arguments | `(fn [^long a ^long b ^long c ^long d ^long e])` | `TSP7025` |
+| useless hint: the type is already known to the compiler | `^String (str x)` | `TSP7026` (hint) |
+
+**Hint fixes.** Because the type checker knows types the compiler does not see, `fix` can insert hints that remove reflection. A fix is `safe` when exactly one overload matches the proven type and it is the same one reflection would pick. Otherwise it is `review`. This is the main everyday win: `*warn-on-reflection*` warnings turn into automatic, proven fixes.
+
+### 4.3 Java types from bytecode
+
+- **Classes, interfaces, inheritance**: subtyping follows Java (`ArrayList <: List <: Collection`), and Clojure collections are Java collections too (`IPersistentVector <: java.util.List`).
+- **Methods, constructors, static fields, varargs**: arity and argument types are checked; overload resolution follows the Clojure compiler's rules.
+- **Generics** from signatures: `Map<String, List<UUID>>` → `(t/class java.util.Map String (t/class java.util.List UUID))`; `.get` returns `(List UUID)!`.
+- **Nullability**: JSpecify, JetBrains, jakarta, Android `@Nullable`/`@NonNull`, and `@NullMarked` packages. Without annotations, results are platform types (section 4.1).
+- **`instance?`, `cond->` and `case` on classes** narrow types; `(instance? Long x)` narrows to `Long`.
+- **`reify`, `proxy`, `deftype`, `defrecord` implementing interfaces**: method signatures are checked against the interface.
+- **Functional interfaces** (Clojure 1.12): a Clojure fn passed where `java.util.function.Function` is expected is checked as `(t/fn [A :-> B])`.
+- **Arrays**: `^bytes`, `^"[Ljava.lang.String;"`, `(t/array String)`; `aget`/`aset` are typed.
+- **Checked exceptions** are not tracked: Clojure does not have them.
+
+Java declarations need no externs: the bytecode on the classpath is the `.d.ts`. Externs are only for nullability overrides, e.g. `{java.util.Map/get [K :-> (s/nilable V)]}`.
 
 ---
 

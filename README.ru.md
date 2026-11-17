@@ -294,3 +294,45 @@ typespec order                       # порядок разметки: сниз
 2. **M2, 4–6 недель.** Интерфейсы ns, кеш, параллельная проверка, `watch`. Плюс externs: next.jdbc, ring, http-kit, aidbox-sdk.
 3. **M3, 6–8 недель.** Деструктуризация 1.13 с дифференциальным тестом, records, протоколы, мультиметоды, рекурсивные FHIR-типы из FHIR Schema.
 4. **M4.** LSP, `annotate` и агентный цикл на реальном модуле Aidbox, бюджет доверия в CI.
+
+---
+
+## 12. Опционально: идеи из OCaml / F#
+
+Основа — **TypeScript**, и мы держимся за его идеи по максимуму. Идеи ниже — **опциональные** расширения. Каждая включается флагом в `typespec.edn`, и для каждой указан ближайший аналог в TS, чтобы не уходить от его модели.
+
+| Идея | Откуда | Ближайшее в TS | Флаг |
+|---|---|---|---|
+| Типы из внешних схем | F# type providers | кодогенерация `.d.ts` (openapi-typescript) | `:providers` |
+| Метки на значениях | F# units of measure, OCaml phantom types | branded types `string & {__brand: "PatientId"}` | `:brands` |
+| Открытые мапы с хвостом | OCaml row polymorphism | generic `T extends {id: string}` → `T` | `:rows` |
+| Пример непокрытого случая | OCaml exhaustiveness | `never`-проверка в `switch` | `:exhaustive-examples` |
+| Устойчивый к ошибкам анализ для IDE | OCaml Merlin | tsserver | — (часть LSP) |
+
+**12.1 Провайдеры типов.** `s/def` генерируются в момент проверки из FHIR Schema, схемы БД, OpenAPI или примеров JSON. Сгенерированное лежит в кеше и в git не попадает:
+
+```clojure
+{:providers [{:kind :fhir-schema :package "hl7.fhir.r4.core@4.0.1" :ns :fhir}
+             {:kind :openapi :file "api/openapi.yaml" :ns :api}]}
+```
+
+**12.2 Бренды.** Метки существуют только при проверке и стираются, как в TS:
+
+```clojure
+(s/def :patient/id   (t/brand string? :patient/id))
+(s/def :encounter/id (t/brand string? :encounter/id))
+(find-patient ctx (:encounter/id e))
+;; TSP2345: :encounter/id is not assignable to :patient/id
+```
+
+Единицы измерения — частный случай: `(t/brand double? :unit/mg)`.
+
+**12.3 Row-полиморфизм.** Функция может принять мапу с нужными ключами и вернуть её «остальное» без `Any`. Это то же, что в TS дают generic с ограничением и `T & {...}`:
+
+```clojure
+{:t/sig '(t/all [(m :< (s/keys :req [:db/id]))] [m :-> (t/and m (s/keys :req [:db/version]))])}
+```
+
+**12.4 Пример в ошибке полноты.** Ошибка показывает конкретный пропущенный случай: `TSP8001: case is not exhaustive, e.g. "inactive"`, а для вложенных мап — `{:status "active" :kind nil}`.
+
+**Не берём:** полный вывод Хиндли–Милнера без сигнатур (противоречит принципу «сигнатуры на границах» и плохо работает с мапами и макросами), функторы и GADT (сложность без пользы для приложений на Clojure).

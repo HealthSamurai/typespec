@@ -294,3 +294,44 @@ typespec order                       # annotation order: bottom-up through the n
 2. **M2, 4–6 weeks.** Ns interfaces, cache, parallel checking, `watch`. Plus externs: next.jdbc, ring, http-kit, aidbox-sdk.
 3. **M3, 6–8 weeks.** Clojure 1.13 destructuring with differential testing, records, protocols, multimethods, recursive FHIR types from FHIR Schema.
 4. **M4.** LSP, `annotate`, and the agent loop on a real Aidbox module; trust budget in CI.
+---
+
+## 12. Optional: ideas from OCaml / F#
+
+The foundation is **TypeScript**, and we stick to its ideas as much as possible. The ideas below are **optional** extensions. Each one is enabled by a flag in `typespec.edn` and is mapped to its closest TS counterpart, so we stay within the TS model.
+
+| Idea | From | Closest in TS | Flag |
+|---|---|---|---|
+| Types from external schemas | F# type providers | `.d.ts` codegen (openapi-typescript) | `:providers` |
+| Value tags | F# units of measure, OCaml phantom types | branded types `string & {__brand: "PatientId"}` | `:brands` |
+| Open maps with a row tail | OCaml row polymorphism | generic `T extends {id: string}` → `T` | `:rows` |
+| Counterexample for a missing case | OCaml exhaustiveness | `never` check in `switch` | `:exhaustive-examples` |
+| Error-tolerant analysis for IDEs | OCaml Merlin | tsserver | — (part of LSP) |
+
+**12.1 Type providers.** `s/def`s are generated at check time from FHIR Schema, a DB schema, OpenAPI or sample JSON. The output lives in the cache and is not committed:
+
+```clojure
+{:providers [{:kind :fhir-schema :package "hl7.fhir.r4.core@4.0.1" :ns :fhir}
+             {:kind :openapi :file "api/openapi.yaml" :ns :api}]}
+```
+
+**12.2 Brands.** Tags exist only during checking and are erased, as in TS:
+
+```clojure
+(s/def :patient/id   (t/brand string? :patient/id))
+(s/def :encounter/id (t/brand string? :encounter/id))
+(find-patient ctx (:encounter/id e))
+;; TSP2345: :encounter/id is not assignable to :patient/id
+```
+
+Units of measure are a special case: `(t/brand double? :unit/mg)`.
+
+**12.3 Row polymorphism.** A function can take a map with the keys it needs and return "the rest" without `Any`. This is what generics with a constraint and `T & {...}` give you in TS:
+
+```clojure
+{:t/sig '(t/all [(m :< (s/keys :req [:db/id]))] [m :-> (t/and m (s/keys :req [:db/version]))])}
+```
+
+**12.4 Counterexample in exhaustiveness errors.** The error shows a concrete missing case: `TSP8001: case is not exhaustive, e.g. "inactive"`, and for nested maps, `{:status "active" :kind nil}`.
+
+**Not adopted:** full Hindley–Milner inference without signatures (contradicts "signatures at boundaries" and works poorly with maps and macros); functors and GADTs (complexity without payoff for Clojure applications).

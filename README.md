@@ -209,12 +209,12 @@ This is what makes TS fast, and Typespec copies it directly.
 ## 8. Suppression and trust
 
 ```clojure
-(t/ignore "AIDBOX-123: legacy" (legacy-call x))     ; macro → simply (legacy-call x)
+#_:typespec/ignore #_"AIDBOX-123: legacy" (legacy-call x)   ; visible to our parser, invisible to Clojure
 (t/cast ::patient row)                              ; → row
 (t/any "dynamic plugin api")                        ; type any? with a reason
 ```
 
-`t/ignore`, `t/cast`, and `t/any` are identity macros from a tiny runtime library (about 20 lines, no dependencies). An unused `ignore` produces a warning (like `@ts-expect-error`).
+Suppression is a reader-discard comment in the clj-kondo style (`#_:clj-kondo/ignore`): Typespec reads source with its own parser, so `#_` stays visible, and no runtime library is needed. `t/cast` and `t/any` are identity macros from a tiny runtime library (about 20 lines, no dependencies). An unused `ignore` produces a warning (like `@ts-expect-error`).
 
 **Trust budget**: CI fails if a PR increases the number of `any`, `cast`, `ignore`, `guard!`, or platform types, or weakens a type. Weakening includes adding `nilable`, removing a `:req`, changing `:keys!` → `:keys`, or replacing a signature with `any?`.
 
@@ -335,3 +335,21 @@ Units of measure are a special case: `(t/brand double? :unit/mg)`.
 **12.4 Counterexample in exhaustiveness errors.** The error shows a concrete missing case: `TSP8001: case is not exhaustive, e.g. "inactive"`, and for nested maps, `{:status "active" :kind nil}`.
 
 **Not adopted:** full Hindley–Milner inference without signatures (contradicts "signatures at boundaries" and works poorly with maps and macros); functors and GADTs (complexity without payoff for Clojure applications).
+
+---
+
+## 13. Built on clj-kondo
+
+clj-kondo is the existing proof of the "read source, don't load it" principle: a fast native binary, no JVM, no code loading, used by nearly every Clojure team. Typespec reuses its ideas and, where possible, its code.
+
+| From clj-kondo | Use in Typespec |
+|---|---|
+| `:lint-as` | `{my.app/defhandler clojure.core/defn}` describes a project macro without expanding it. Covers most in-house DSLs; the macro worker process (section 7) becomes the rare fallback |
+| hooks (SCI) | for complex macros, a small SCI function rewrites the form into something analyzable — safer than running the real macro |
+| `clj-kondo.exports/` in jars | the delivery channel for externs: libraries ship `typespec.exports/`, and existing kondo exports (`:lint-as`, hooks, type specs) are reused |
+| per-ns analysis cache, analysis export | the base for ns interfaces (section 5); plug into clojure-lsp instead of writing an LSP from scratch |
+| per-linter levels `:off`/`:warning`/`:error` | the same for every `TSP` code in `typespec.edn` |
+| `#_:clj-kondo/ignore` | `#_:typespec/ignore` (section 8) |
+| `:type-mismatch` types and arity data | imported as a starter layer of externs |
+
+**Bold option:** build the Typespec front end (parsing, ns graph, macro handling, cache) directly on clj-kondo's parser and analysis, and put the Typed Clojure core on top. Speed and editor integration come almost for free.

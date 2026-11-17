@@ -343,6 +343,8 @@ Typespec takes the reading model from clj-kondo, the type system core from Typed
 
 ## Documents
 
+- [Feature cards](features/README.md) — accepted Flow-inspired proposals, examples, implementation status and open questions.
+
 - [docs/reference.md](docs/reference.md) — type language, sources of types, type system rules, hints and Java, externs, escape hatches, configuration, CLI and JSON, optional extensions, error codes.
 - [demo/README.md](demo/README.md) — the demo project: 23 mistakes, what they do at run time, what Typespec reports.
 - [PLAN.md](PLAN.md) — architecture, implementation choices, what already exists, milestones, open questions.

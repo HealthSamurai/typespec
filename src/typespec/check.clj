@@ -1,6 +1,7 @@
 (ns typespec.check
   "The checker: walks forms, infers types, reports diagnostics."
   (:require [clojure.string :as str]
+            [clojure.walk :as walk]
             [typespec.parse :as parse]
             [typespec.types :as t]
             [typespec.solver :as solver]
@@ -402,16 +403,25 @@
                 p (problems ctx vn vt exp)]
             [vn p])))))))
 
-(defn- unresolved-type? [ty]
+(defn- unresolved-type?
+  "Contains unknown/any or an unsolved variable. A rigid type parameter is a
+  known type: its (possibly unknown) bound is not part of the value's type."
+  [ty]
   (boolean (some #(and (map? %) (#{:ivar :var :unknown :any :all} (:t %)))
-                 (tree-seq coll? seq ty))))
+                 (tree-seq #(and (coll? %) (not (and (map? %) (= :rigid (:t %))))) seq ty))))
+
+(defn- trusted-substitution
+  "Candidates that may be used as types: not the ones the solver marks uncertain
+  (an unknown lower bound or evidence it could not decompose)."
+  [solved]
+  (apply dissoc (:substitution solved) (:uncertain solved)))
 
 (defn- generic-result [ctx node label state]
-  (let [{:keys [status type issues]} (solver/solve (:env ctx) state)
+  (let [{:keys [status issues] :as solved} (solver/solve (:env ctx) state)
         issue (or (first (filter #(= :mismatch (:status %)) issues)) (first issues))
-        ret (:ret (first (:arities type)))
-        ;; Only the solver snapshot keeps unsolved ivars. Do not leak them into
-        ;; subsequent ordinary inference after the final diagnostic is emitted.
+        ret (solver/substitute (:ret (first (:arities (:type state)))) (trusted-substitution solved))
+        ;; Only the solver snapshot keeps unsolved ivars. Do not leak them, or an
+        ;; incomplete candidate, into ordinary inference after the diagnostic.
         ret (solver/substitute ret (into {} (for [v (:vars state)] [(:id v) t/unknown])))]
     ;; A solve snapshot is pure. Only this final solve emits, once per call.
     (when issue
@@ -423,7 +433,62 @@
                       (str/join ", " (sort (map name (into #{} (mapcat :reasons issues))))) ")")
                  :severity (if (:strict (:opts ctx)) :error :warning)
                  :reasons (into #{} (mapcat :reasons issues)))))
-    (cond-> (or ret t/unknown) (not= :proved status) (assoc :generic-failure true))))
+    ;; The flag silences follow-up checks of a result that means nothing: after
+    ;; a mismatch, or when the result itself is not known. A fully known result
+    ;; of a merely unchecked call is still checked where it is used.
+    (cond-> (or ret t/unknown)
+      (or (= :mismatch status) (and (not= :proved status) (unresolved-type? ret)))
+      (assoc :generic-failure true))))
+
+(defn- ivar-ids [ty]
+  (into #{} (keep #(when (and (map? %) (= :ivar (:t %))) (:id %))) (tree-seq coll? seq ty)))
+
+(defn- callback-substitution
+  "The partial solution as callbacks may see it. A variable that some callback
+  returns can still grow from that callback's result, so its seed is only a
+  start: a literal seed 0 means int?, and an empty collection says nothing."
+  [partial callback-types]
+  (let [growing (into #{} (mapcat #(ivar-ids (:ret (first (:arities %)))) callback-types))
+        widen-all (fn [ty] (walk/postwalk
+                            (fn [x] (cond (and (map? x) (= :lit (:t x))) (t/lit-prim (:val x))
+                                          (and (map? x) (= :union (:t x))) (apply t/union (:types x))
+                                          :else x)) ty))
+        empty-seed? (fn [ty] (some #(and (map? %) (= :never (:t %))) (tree-seq coll? seq ty)))]
+    (reduce (fn [sub id]
+              (cond (not (contains? sub id)) sub
+                    (empty-seed? (get sub id)) (dissoc sub id)
+                    :else (update sub id widen-all)))
+            partial growing)))
+
+(defn- callback-context
+  "Parameter types a callback may assume, or nil when they are not fully known."
+  [expected partial]
+  (let [context (solver/substitute expected partial)
+        ca (first (:arities context))]
+    (when (and (= :fn (:t context)) (= 1 (count (:arities context)))
+               (not (:rest ca)) (not (:kwargs ca))
+               (not-any? unresolved-type? (:params ca)))
+      (:params ca))))
+
+(defn- fn-lit-arity
+  "Number of positional parameters of #(...), or nil when it uses %&."
+  [node]
+  (let [syms (keep #(when (= :sym (:op %)) (name (:val %))) (tree-seq :children :children node))]
+    (when-not (some #{"%&"} syms)
+      (reduce max 0 (keep #(cond (= "%" %) 1
+                                 (re-matches #"%[1-9][0-9]*" %) (parse-long (subs % 1)))
+                          syms)))))
+
+(defn- infer-fn-lit
+  "Type of #(...) when the context gives its parameter types."
+  [ctx node arg-types]
+  (let [n (fn-lit-arity node)
+        ptypes (mapv #(nth arg-types % t/unknown) (range n))
+        ctx' (reduce (fn [c [i ty]] (cond-> (bind c (symbol (str "%" (inc i))) ty)
+                                      (zero? i) (bind '% ty)))
+                     ctx (map-indexed vector ptypes))]
+    {:t :fn :arities [{:params ptypes :rest nil
+                       :ret (infer ctx' {:op :list :children (:children node) :pos (:pos node)})}]}))
 
 (defn- call-generic
   "Rank-1, single fixed arity: infer ordinary arguments before contextual callbacks.
@@ -432,8 +497,9 @@
   (let [state (solver/instantiate ftype)
         ars (:arities (:type state)) ar (first ars)
         n (count (or typed-args arg-nodes))
-        inline? (fn [nd] (and (= :list (:op nd))
-                              (#{'fn 'fn* 'clojure.core/fn} (:val (first (:children nd))))))]
+        inline? (fn [nd] (or (= :fn-lit (:op nd))
+                             (and (= :list (:op nd))
+                                  (#{'fn 'fn* 'clojure.core/fn} (:val (first (:children nd)))))))]
     (cond
       (or (not= 1 (count ars)) (:rest ar) (:kwargs ar))
       (do (when-not typed-args (run! #(infer ctx %) arg-nodes))
@@ -452,17 +518,18 @@
             state (reduce (fn [st {:keys [i expected node]}]
                             (solver/constrain st (eff ctx (if typed-args (nth typed-args i) (infer ctx node)))
                                               expected {:argument i})) state ordinary)
-            partial (:substitution (solver/solve (:env ctx) state))
+            partial (callback-substitution (trusted-substitution (solver/solve (:env ctx) state))
+                                           (map :expected callbacks))
             state (reduce
                    (fn [st {:keys [i expected node]}]
-                     (let [context (solver/substitute expected partial)
-                           ca (first (:arities context))
-                           supported (and (= :fn (:t context)) (= 1 (count (:arities context)))
-                                          (not (:rest ca)) (not (:kwargs ca))
-                                          (not-any? unresolved-type? (:params ca)))
-                           actual (if supported
-                                    (infer-fn ctx node (:params ca))
-                                    (do (infer-fn ctx node nil) t/unknown))]
+                     (let [params (callback-context expected partial)
+                           actual (cond
+                                    (= :fn-lit (:op node))
+                                    (if (and params (fn-lit-arity node))
+                                      (infer-fn-lit ctx node params)
+                                      (do (infer ctx node) t/unknown))
+                                    params (infer-fn ctx node params)
+                                    :else (do (infer-fn ctx node nil) t/unknown))]
                        ;; Keep the original expected return ivar: the callback's result solves it.
                        (solver/constrain st actual expected {:argument i :callback true})))
                    state callbacks)]
@@ -1321,8 +1388,12 @@
             core-sym (if (namespace head) head (symbol "clojure.core" (name head)))
             extern? (= :extern (get-in ctx [:env :vars core-sym :source]))
             has-rule? (and (not own?) (not extern?) (not= (get-method special head) (get-method special ::none)))
-            contract-sym (if (namespace head) head (symbol (str (:ns file)) (name head)))
-            contract (get-in ctx [:env :macro-contracts contract-sym])
+            ;; An unqualified, unreferred head names a contract only when this
+            ;; namespace itself defines that macro: never a function or core form.
+            local-sym (symbol (str (:ns file)) (name head))
+            contract-sym (cond (namespace head) head
+                               (contains? (:macros (:env ctx)) local-sym) local-sym)
+            contract (when contract-sym (get-in ctx [:env :macro-contracts contract-sym]))
             r (cond contract (check-macro-body ctx node contract)
                     has-rule? (special ctx node head)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
@@ -1472,7 +1543,9 @@
   "Checks parsed files. Returns {:diagnostics [...] :types [...] :trust {...} :env env}."
   [files opts]
   (let [[env0 env-diags] (env/build files (:extern-contracts opts))
-        compiled (macros/compile-contracts (get opts :macro-contracts {}) env0)
+        compiled (macros/compile-contracts
+                  (get opts :macro-contracts {}) env0
+                  #(not= (get-method special %) (get-method special ::none)))
         env-diags (concat env-diags (:diagnostics compiled))
         env (assoc env0 :macro-contracts (:contracts compiled)
                    :nss (set (map :ns files))

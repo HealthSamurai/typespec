@@ -1,5 +1,9 @@
 # Проверки
 
+## Обновление после независимого review
+
+Контракт `system/defstart` уточнён: config — `(t/or map? nil?)`. Проверено запуском закреплённого `context/system` без БД и HTTP: модуль, чей манифест не объявляет `:config`, получает `nil` (так устроен и `todo.app`). Статический повтор на исправленном checker: `clojure -M:check` — 0 errors / 0 warnings, exit 0; `clojure -M:check src negative` — exit 1, два TSP2345. Общий suite Typespec: 88 тестов / 471 assertions, golden/CLI PASS. Runtime-тесты с PostgreSQL и HTTP после этого изменения не перезапускались: `typespec.edn` читает только checker. Находки и исправления: `docs/review-fable-5.2.md`.
+
 ## Обновление после refs/maps и lifecycle-контрактов
 
 Статический повтор: `clojure -M:check` — 0 errors / 0 warnings; `clojure -M:check src negative` — ожидаемый exit 1, два TSP2345 (числовой title в обычном вызове и внутри defstart). Response body теперь явный union Todo/vector Todo/error вместо any?. Контракты defstart/defstop заданы в typespec.edn, тело проверяется без macroexpand. `defstop` допускает nil state согласно upstream.

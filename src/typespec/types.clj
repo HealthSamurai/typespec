@@ -10,7 +10,8 @@
 (defn prim [n] {:t :prim :name n})
 (defn lit [v] {:t :lit :val v})
 (defn ref-t [k] {:t :ref :name k})
-(defn strip [t] (dissoc t :platform :as))
+;; :generic-failure is a checker note on a result, not part of the type's identity.
+(defn strip [t] (dissoc t :platform :as :generic-failure))
 
 (defn union [& ts]
   (let [flat (loop [xs (seq ts) seen #{} out []]
@@ -18,7 +19,11 @@
                  out
                  (let [x (first xs) more (rest xs)]
                    (cond (= :union (:t x)) (recur (concat (:types x) more) seen out)
-                         (or (= :never (:t x)) (seen (strip x))) (recur more seen out)
+                         (= :never (:t x)) (recur more seen out)
+                         ;; the same type twice: keep the copy without the failure note
+                         (seen (strip x)) (recur more seen
+                                                 (if (:generic-failure x) out
+                                                   (mapv #(if (= (strip %) (strip x)) (dissoc % :generic-failure) %) out)))
                          :else (recur more (conj seen (strip x)) (conj out x))))))]
     (cond (empty? flat) never
           (some #(= :any (:t %)) flat) any
@@ -136,6 +141,11 @@
 (declare sub?)
 (def ^:dynamic *depth* 0)
 (def ^:dynamic *inconclusive* nil)
+(def ^:dynamic *strict-shapes*
+  "When true, a bare collection predicate (vector?, map?) is not evidence about
+  its elements: vector? to (s/coll-of string?) is inconclusive instead of proved.
+  The solver binds it; ordinary gradual checks keep the lenient rule."
+  false)
 
 (defn- inconclusive! [reason]
   (when *inconclusive* (swap! *inconclusive* conj reason))
@@ -189,8 +199,10 @@
       (#{:any :never} st) true
       (= :unknown st) (inconclusive! :unknown)
       (= :rigid tt) false
+      ;; An arbitrary type parameter fits only itself and top (handled above):
+      ;; without a bound this is a definite mismatch, not missing information.
       (= :rigid st) (if (#{:unknown :any} (:t (:bound s)))
-                     (inconclusive! :unbounded-rigid)
+                     false
                      (sub? env (:bound s) t))
       (or (#{:var :ivar :all} st) (#{:var :ivar :all} tt))
       (inconclusive! :unresolved-variable)
@@ -201,8 +213,12 @@
       (= :prim st) (case tt
                      :prim (prim-sub? (:name s) (:name t))
                      :class (prim-is-class? (:name s) (:name t))
-                     :coll (contains? #{:vector :set :seq :coll} (:name s))
-                     :map-of (= :map (:name s))
+                     ;; A known kind never fits a different :kind (set? is not a vector).
+                     :coll (and (contains? #{:vector :set :seq :coll} (:name s))
+                                (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
+                                (if *strict-shapes* (inconclusive! :unsupported) true))
+                     :map-of (and (= :map (:name s))
+                                  (if *strict-shapes* (inconclusive! :unsupported) true))
                      false)
       (= :class st) (case tt
                       :class (class-sub? (:name s) (:name t))

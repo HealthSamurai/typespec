@@ -3,7 +3,8 @@
  ;; Trusted descriptions of pinned upstream binding-body macros, not macro expansion.
  :macro-contracts
  {system/defstart {:shape :binding-body
-                   :bindings [:context/context map?]
+                   ;; config is nil when the module manifest declares no :config schema
+                   :bindings [:context/context (t/or map? nil?)]
                    :ret (t/or map? nil?)}
   system/defstop {:shape :binding-body
                   :bindings [:context/context (t/or map? nil?)]

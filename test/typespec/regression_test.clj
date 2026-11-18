@@ -14,7 +14,8 @@
     typespec.generic-integration-test
     typespec.generic-extern-test
     typespec.generic-maps-test
-    typespec.macro-contracts-test])
+    typespec.macro-contracts-test
+    typespec.review-fixes-test])
 
 (defn run-suites []
   ;; Missing namespaces are an error, never a silently skipped test group.

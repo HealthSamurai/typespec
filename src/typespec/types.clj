@@ -1,6 +1,7 @@
 (ns typespec.types
   "Type representation, the spec-style type language (read and print), and subtyping."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [clojure.walk :as walk]))
 
 (def any {:t :any})
 (def unknown {:t :unknown})
@@ -187,6 +188,12 @@
       (#{:any :unknown} tt) true
       (#{:any :never} st) true
       (= :unknown st) (inconclusive! :unknown)
+      (= :rigid tt) false
+      (= :rigid st) (if (#{:unknown :any} (:t (:bound s)))
+                     (inconclusive! :unbounded-rigid)
+                     (sub? env (:bound s) t))
+      (or (#{:var :ivar :all} st) (#{:var :ivar :all} tt))
+      (inconclusive! :unresolved-variable)
       (= :nil st) (boolean (:platform t))
       (= :nil tt) false
       (= :lit st) (if (= :lit tt) (= (:val s) (:val t)) (sub1? env (lit-prim (:val s)) t))
@@ -264,6 +271,12 @@
     (:as t)
     (case (:t t)
       :any "any?" :unknown "t/unknown" :never "t/never" :nil "nil?"
+      (:var :ivar :rigid) (str (:name t))
+      :all (str "(t/all ["
+                (str/join " " (map (fn [{:keys [name bound]}]
+                                      (if (= :unknown (:t bound)) (str name)
+                                        (str "(" name " :< " (show bound) ")"))) (:binders t)))
+                "] " (show (:body t)) ")")
       :prim (str (name (:name t)) "?")
       :lit (pr-str (:val t))
       :ref (show-kw (:name t))
@@ -358,6 +371,45 @@
           (and (seq? form) (seq form) (every? vector? form)) {:t :fn :arities (vec (keep one form))}
           :else (do ((:fail ctx) form) unknown))))
 
+(defn- parse-all [ctx form]
+  (let [[_ declarations body & extra] form
+        failed (atom false)
+        bad (fn [f] (reset! failed true) ((:fail ctx) f))
+        c (assoc ctx :fail bad :inside-all true)
+        binders (when (vector? declarations)
+                  (loop [xs (seq declarations) out []]
+                    (if-not xs out
+                      (let [decl (first xs) bounded? (seq? decl)
+                            n (if bounded? (first decl) decl)
+                            b (if bounded? (nth decl 2 nil) 't/unknown)]
+                        (if (or (not (symbol? n)) (namespace n)
+                                (some #(= n (:name %)) out) (nil? b)
+                                (and bounded? (or (not= 3 (count decl)) (not= :< (second decl)))))
+                          (do (bad declarations) nil)
+                          (let [bound (parse-type (assoc c :bound-context true) b)]
+                            (if-not (#{:prim :unknown} (:t bound))
+                              (do (bad b) nil)
+                              (recur (next xs)
+                                     (conj out {:id (gensym "binder") :name n :bound bound})))))))))
+        vars (into {} (map (fn [{:keys [id name]}] [name {:t :var :id id :name name}]) binders))]
+    (if (or (:inside-all ctx) extra (not (seq binders)) (not (vector? body))
+            (some #{'&} body) (not= 1 (count (filter #{:->} body))))
+      (do (bad form) unknown)
+      (let [t (parse-type (assoc c :type-vars vars) body)]
+        (if @failed unknown {:t :all :binders binders :body t})))))
+
+(defn alpha-equivalent?
+  "Equality modulo names/identities of top-level rank-1 binders. Metadata is retained."
+  [a b]
+  (let [normalize (fn [ty]
+                    (if-not (= :all (:t ty)) ty
+                      (let [ids (zipmap (map :id (:binders ty)) (range))]
+                        (walk/postwalk
+                         (fn [node]
+                           (if (and (map? node) (contains? ids (:id node)))
+                             (-> node (assoc :id (get ids (:id node))) (dissoc :name)) node)) ty))))]
+    (= (normalize a) (normalize b))))
+
 (defn parse-type
   "Reads a type form (plain data). ctx: {:aliases :imports :fail (fn [form])}."
   [ctx form]
@@ -366,19 +418,22 @@
     (cond
       (keyword? form) (if (namespace form) (ref-t form) (fail))
       (symbol? form) (let [nm (if (= "clojure.core" (namespace form)) (symbol (name form)) form)]
-                       (cond (pred-prims nm) (prim (pred-prims nm))
+                       (cond (get (:type-vars ctx) nm) (get (:type-vars ctx) nm)
+                             (pred-prims nm) (prim (pred-prims nm))
                              (#{'any? 'some?} nm) any
                              (= 'nil? nm) nil-t
                              (#{'true? 'false?} nm) (prim :boolean)
                              (= 't/unknown nm) unknown
                              (= 't/never nm) never
+                             (:inside-all ctx) (fail)
                              :else (if-let [c (resolve-class (:imports ctx) nm)] (class-type c) (fail))))
       (set? form) (if (and (seq form) (every? #(or (string? %) (keyword? %) (number? %) (boolean? %)) form))
                     (apply union (map lit (sort-by pr-str form)))
                     (fail))
-      (vector? form) (parse-sig ctx form)
+      (vector? form) (if (and (:inside-all ctx) (some #{'&} form)) (fail) (parse-sig ctx form))
       (seq? form)
       (case (op ctx (first form))
+        :t/all (parse-all ctx form)
         :quote (p (second form))
         :s/nilable (union (p (second form)) nil-t)
         :s/or (apply union (map p (take-nth 2 (drop 2 form))))
@@ -391,10 +446,12 @@
                                  :kind (get '{vector? :vector set? :set list? :seq seq? :seq} kind)})
         :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
         :s/tuple {:t :coll :kind :vector :of (apply union (map p (rest form)))}
-        :s/fspec (let [{:keys [args ret]} (apply hash-map (rest form))
+        :s/fspec (if (:inside-all ctx) (fail) (let [{:keys [args ret]} (apply hash-map (rest form))
                        r (if ret (p ret) unknown)]
-                   {:t :fn :arities (some-> (cat-items ctx args) (cat->arities r)) :ret r})
-        :t/fn (parse-sig ctx (second form))
+                   {:t :fn :arities (some-> (cat-items ctx args) (cat->arities r)) :ret r}))
+        :t/fn (if (:inside-all ctx)
+                (if (and (= 2 (count form)) (vector? (second form))) (p (second form)) (fail))
+                (parse-sig ctx (second form)))
         ;; #(instance? C %) and (partial instance? C): the usual way to say "a Java class" in spec
         (:fn* :fn) (let [body (last form)]
                      (if-let [c (and (seq? body) (= 'instance? (first body))

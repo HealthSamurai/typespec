@@ -44,14 +44,18 @@
                         (throw (ex-info "extern key must be a qualified symbol or keyword" {})))
                       (let [ctx {:aliases {} :imports {}
                                  :fail (fn [bad] (throw (ex-info (str "not a type: " (pr-str bad)) {})))}
-                            ty ((if (symbol? k) t/parse-sig t/parse-type) ctx form)
+                            ty (if (and (symbol? k) (seq? form) (every? vector? form))
+                                 (t/parse-sig ctx form)
+                                 (t/parse-type ctx form))
+                            _ (when (and (symbol? k) (not (#{:fn :all} (:t ty))))
+                                (throw (ex-info "extern var must have a callable signature" {})))
                             bucket (if (symbol? k) :vars :specs)
                             old (get-in acc [bucket k])
                             builtin? (and (symbol? k) (or (= "clojure.core" (namespace k)) (contains? core/table k)))]
                         (cond
                           (and builtin? (not= :override policy))
                           (do (error! f (str "extern " k " requires :externs-core :override")) acc)
-                          (and old (not= ty (:type old)))
+                          (and old (not (t/alpha-equivalent? ty (:type old))))
                           (do (error! f (str "conflicting extern " k "; first declared in " (:extern/path old))) acc)
                           :else (assoc-in acc [bucket k]
                                           {:type ty :source :extern :extern/path path
@@ -79,7 +83,7 @@
                      (let [old (get-in env [bucket k])
                            source-contract? (and old (or (= bucket :specs) (not= :hints (:source old)) (:tagged? old)))]
                        (if source-contract?
-                         (do (when (not= (:type old) (:type ext))
+                         (do (when (not (t/alpha-equivalent? (:type old) (:type ext)))
                                (swap! diags conj (diagnostic (:file ext) "TSP2790"
                                                             (str "extern " k " conflicts with source contract in " (:file old)))))
                              env)

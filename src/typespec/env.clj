@@ -173,7 +173,7 @@
                          :let [fd (get-in acc [:fdefs sym])
                                declared (or (:sig d) (:type fd))]]
                      (do
-                       (when (and (:sig d) fd (not= (:sig d) (:type fd)))
+                       (when (and (:sig d) fd (not (t/alpha-equivalent? (:sig d) (:type fd))))
                          (note diags (:file d) (:name (:parts d)) "TSP2790"
                                (str "t/sig and s/fdef of " (name sym) " disagree: "
                                     (t/show (:sig d)) " vs " (t/show (:type fd)))))

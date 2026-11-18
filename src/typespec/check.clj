@@ -3,6 +3,7 @@
   (:require [clojure.string :as str]
             [typespec.parse :as parse]
             [typespec.types :as t]
+            [typespec.solver :as solver]
             [typespec.env :as env]
             [typespec.java :as java]
             [typespec.core-types :as core]))
@@ -13,7 +14,7 @@
 (def ^:dynamic *trust* nil)
 (def ^:dynamic *rets* nil)
 
-(declare infer infer-body bind-pattern apply-fn-node why-of var-type)
+(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn)
 
 (defn- report! [ctx node code msg & {:as extra}]
   (when-not (:quiet ctx)
@@ -175,6 +176,7 @@
   (let [env (:env ctx) actual (eff ctx actual)
         result (t/sub-result env actual expected)]
     (cond
+      (:generic-failure actual) []
       (= :proved (:status result)) (if (:fresh actual) (filter #(= "TSP2353" (first %)) (fresh-problems ctx actual expected)) [])
       (seq (fresh-problems ctx actual expected)) (fresh-problems ctx actual expected)
       (= :inconclusive (:status result)) [(incomplete-problem ctx actual expected result)]
@@ -399,8 +401,76 @@
                 p (problems ctx vn vt exp)]
             [vn p])))))))
 
+(defn- unresolved-type? [ty]
+  (boolean (some #(and (map? %) (#{:ivar :var :unknown :any :all} (:t %)))
+                 (tree-seq coll? seq ty))))
+
+(defn- generic-result [ctx node label state]
+  (let [{:keys [status type issues]} (solver/solve (:env ctx) state)
+        issue (or (first (filter #(= :mismatch (:status %)) issues)) (first issues))
+        ret (:ret (first (:arities type)))
+        ;; Only the solver snapshot keeps unsolved ivars. Do not leak them into
+        ;; subsequent ordinary inference after the final diagnostic is emitted.
+        ret (solver/substitute ret (into {} (for [v (:vars state)] [(:id v) t/unknown])))]
+    ;; A solve snapshot is pure. Only this final solve emits, once per call.
+    (when issue
+      (if (= :mismatch status)
+        (report! ctx node "TSP2345"
+                 (str label ": " (t/show (:left issue)) " is not assignable to " (t/show (:right issue))))
+        (report! ctx node "TSP210-01"
+                 (str label ": generic call not checked ("
+                      (str/join ", " (sort (map name (into #{} (mapcat :reasons issues))))) ")")
+                 :severity (if (:strict (:opts ctx)) :error :warning)
+                 :reasons (into #{} (mapcat :reasons issues)))))
+    (cond-> (or ret t/unknown) (not= :proved status) (assoc :generic-failure true))))
+
+(defn- call-generic
+  "Rank-1, single fixed arity: infer ordinary arguments before contextual callbacks.
+  Typed arguments are used by apply-type; node arguments are visited at most once."
+  [ctx node label ftype arg-nodes typed-args]
+  (let [state (solver/instantiate ftype)
+        ars (:arities (:type state)) ar (first ars)
+        n (count (or typed-args arg-nodes))
+        inline? (fn [nd] (and (= :list (:op nd))
+                              (#{'fn 'fn* 'clojure.core/fn} (:val (first (:children nd))))))]
+    (cond
+      (or (not= 1 (count ars)) (:rest ar) (:kwargs ar))
+      (do (when-not typed-args (run! #(infer ctx %) arg-nodes))
+          (report! ctx node "TSP210-01" "generic overloads and variadic contracts are unsupported"
+                   :severity (if (:strict (:opts ctx)) :error :warning))
+          (assoc t/unknown :generic-failure true))
+      (not= n (count (:params ar)))
+      (do (when-not typed-args (run! #(infer ctx %) arg-nodes))
+          (report! ctx node "TSP2554" (str label " expects " (count (:params ar)) " argument(s), got " n))
+          (assoc t/unknown :generic-failure true))
+      :else
+      (let [entries (mapv (fn [i pt] {:i i :expected pt :node (nth arg-nodes i nil)})
+                          (range n) (:params ar))
+            callbacks (if typed-args [] (filter #(inline? (:node %)) entries))
+            ordinary (if typed-args entries (remove #(inline? (:node %)) entries))
+            state (reduce (fn [st {:keys [i expected node]}]
+                            (solver/constrain st (eff ctx (if typed-args (nth typed-args i) (infer ctx node)))
+                                              expected {:argument i})) state ordinary)
+            partial (:substitution (solver/solve (:env ctx) state))
+            state (reduce
+                   (fn [st {:keys [i expected node]}]
+                     (let [context (solver/substitute expected partial)
+                           ca (first (:arities context))
+                           supported (and (= :fn (:t context)) (= 1 (count (:arities context)))
+                                          (not (:rest ca)) (not (:kwargs ca))
+                                          (not-any? unresolved-type? (:params ca)))
+                           actual (if supported
+                                    (infer-fn ctx node (:params ca))
+                                    (do (infer-fn ctx node nil) t/unknown))]
+                       ;; Keep the original expected return ivar: the callback's result solves it.
+                       (solver/constrain st actual expected {:argument i :callback true})))
+                   state callbacks)]
+        (generic-result ctx node label state)))))
+
 (defn- call-fn [ctx node fname ftype arg-nodes]
-  (let [n (count arg-nodes)
+  (if (= :all (:t ftype))
+    (call-generic ctx node fname ftype arg-nodes nil)
+    (let [n (count arg-nodes)
         arg-types (mapv #(infer ctx %) arg-nodes)
         ars (:arities ftype)
         fits (filter #(arity-fits? % n) ars)]
@@ -428,7 +498,7 @@
                            (some (fn [ps] (some #(= "TSP210-01" (first (second %))) ps)) all)
                            (next (distinct (map :ret fits)))))
                 t/unknown
-                (:ret (nth fits i)))))))
+                (:ret (nth fits i))))))))
 
 ;; ---- inference ----
 
@@ -578,7 +648,9 @@
 (defn- apply-type
   "Result of calling a function type with these argument types; mismatches are reported at `at`."
   [ctx ftype arg-types at label]
-  (if-let [fits (seq (filter #(arity-fits? % (count arg-types)) (:arities ftype)))]
+  (if (= :all (:t ftype))
+    (call-generic ctx at label ftype nil arg-types)
+    (if-let [fits (seq (filter #(arity-fits? % (count arg-types)) (:arities ftype)))]
     (let [bad (fn [ar] (first (for [[a p] (map vector arg-types (concat (:params ar) (repeat (:rest ar))))
                                     :when (and p (not (t/sub? (:env ctx) (eff ctx a) p)))]
                                 [a p])))
@@ -601,7 +673,7 @@
       (if (and vague? (next (distinct (map :ret ok)))) t/unknown (:ret ar)))
     (if (seq (:arities ftype))
       (do (report! ctx at "TSP2554" (str label " is called with " (count arg-types) " argument(s)")) t/unknown)
-      t/unknown)))
+      t/unknown))))
 
 (defn apply-fn-node [ctx fnode arg-types]
   (case (:op fnode)
@@ -1143,7 +1215,7 @@
 ;; ---- defn ----
 
 (defn- check-return! [ctx node actual expected]
-  (when-not (#{:unknown :any} (:t expected))
+  (when-not (or (:generic-failure actual) (#{:unknown :any} (:t expected)))
     (let [env (:env ctx) actual (eff ctx actual)
           result (t/sub-result env actual expected)
           emit (fn [[c m extra]] (apply report! ctx node c m (mapcat identity extra)))]
@@ -1166,7 +1238,7 @@
         nm (:name parts)
         sym (symbol (str (:ns file)) (str (:val nm)))
         v (get-in env [:vars sym])
-        ftype (:type v)]
+        ftype (if (= :all (:t (:type v))) (solver/open-rigid (:type v)) (:type v))]
     (when-let [tn (env/tag-node nm)]
       (when (t/primitives (str (:val tn)))
         (report! ctx tn "TSP7021"
@@ -1225,7 +1297,7 @@
                           (read-key ctx ty (:val h) h)))
       (not= :sym (:op h)) (do (infer ctx h) (run! #(infer ctx %) args) t/unknown)
       (contains? (:locals ctx) (:val h)) (let [ft (get-in ctx [:locals (:val h)])]
-                                           (if (seq (:arities ft))
+                                           (if (or (= :all (:t ft)) (seq (:arities ft)))
                                              (call-fn ctx node (str (:val h)) ft args)
                                              (do (run! #(infer ctx %) args) t/unknown)))
       :else

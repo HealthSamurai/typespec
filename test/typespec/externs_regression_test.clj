@@ -2,7 +2,9 @@
   (:require [clojure.test :refer :all]
             [clojure.java.io :as io]
             [clojure.data.json :as json]
-            [typespec.main :as main]))
+            [typespec.main :as main]
+            [typespec.externs :as externs]
+            [typespec.types :as t]))
 
 (defn project [source extern cfg f]
   (let [root (.toFile (java.nio.file.Files/createTempDirectory "typespec-extern-" (make-array java.nio.file.attribute.FileAttribute 0)))]
@@ -16,6 +18,19 @@
       (finally (doseq [file (reverse (file-seq root))] (.delete file))))))
 
 (defn codes [res] (set (map :code (:diagnostics res))))
+
+(deftest generic-extern-loading-and-equivalence
+  (project "(ns app)" "{vendor/id (t/all [a] [a :-> a])}" {}
+           (fn [res]
+             (is (empty? (:diagnostics res)))
+             (is (= :all (get-in res [:env :vars 'vendor/id :type :t])))))
+  (let [parse #(t/parse-type {:fail (fn [f] (throw (ex-info "bad type" {:form f})))} %)
+        source {:type (parse '(t/all [a] [a :-> a])) :source :sig}
+        ext {:type (parse '(t/all [b] [b :-> b])) :source :extern :file "api.edn"}
+        [_ ds] (externs/merge-contracts {:vars {'app/f source}} {:vars {'app/f ext}})]
+    (is (empty? ds)))
+  (project "(ns app)" "{vendor/id string?}" {}
+           (fn [res] (is (contains? (codes res) "TSP9003")))))
 
 (deftest third-party-and-keyword-contracts
   (project "(ns app (:require [not.loaded.library :as lib]))\n(lib/f 1)\n{:api/name 42}"

@@ -59,6 +59,25 @@ origin: Research
 
 Это проект общего протокола; soundness произвольных mutable graphs, stateful predicates и dynamic redefinition не заявляется. Для pure-предикатов связь с F450 требует отдельной спецификации.
 
+### Planned: зависимости от destructuring и сохранённого условия
+
+Связь `local ↔ [subject, literal-key]` создавать при деструктуризации без default; отсутствие ключа при чтении всё ещё отображается в nil. Положительный `string?` local исключает отсутствие и сужает путь владельца. При `:or` это уже не identity: локальная строка могла прийти из default. Представлять такую связь отдельным условным ребром либо на первом этапе не переносить факт обратно.
+
+```clojure
+(let [{:keys [name] :as person} input]
+  (when (string? name)
+    (clojure.string/upper-case (:name person)))) ; planned: связь с владельцем
+
+(let [{:keys [name] :or {name "guest"} :as person} {}]
+  (when (string? name) (:name person))) ; nil, не string?
+```
+
+Ограниченный граф зависимостей связывает subjects, paths и boolean-импликации F240. Worklist распространяет поддержанные факты до стабилизации; обратный индекс находит зависимые факты при инвалидации. Join не сохраняет ребро, гарантированное только одной достижимой веткой. При лимите отбросить недоказанное уточнение, не заменить его `any` или выводом unreachable. Mutable referent не становится стабильным из-за immutable binding.
+
+Дополнительные тесты: оба примера, nested literal path, boolean alias после shadowing, цикл зависимостей/лимит и совпадение warm/cold результата после смены внешнего summary. Внешние декларации core/библиотек обязательны и входят в зависимости; никакого автоматического доверия boolean-return.
+
+Источники: [Elixir `Pattern.of_head`](https://github.com/elixir-lang/elixir/blob/v1.20.5/lib/elixir/lib/module/types/pattern.ex), [Sorbet flow-sensitive typing](https://sorbet.org/docs/flow-sensitive). [Отчёт Elixir](../docs/research-elixir.md) читает описание и начало `of_head`, не весь solver; [отчёт Sorbet](../docs/research-sorbet.md) — структуры `KnowledgeFact`/`TestedKnowledge` в `environment.h`, не весь inference. Здесь прочитаны отчёты; граф для Clojure — предложение, без повторного аудита первоисточников и гарантии soundness.
+
 ## Матрица тестов
 
 Stable local через вызов; shadowing; повторный deref; alias на mutable объект; ветки с разными фактами; spec reload при тёплом запуске; trusted guard; stateful predicate. Для инкрементального анализа результат должен совпадать с чистой проверкой того же снимка.

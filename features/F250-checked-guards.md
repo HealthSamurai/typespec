@@ -133,6 +133,21 @@ origin: Flow
 ;; полноте типизации atom/deref. Current не применяет оба custom guard.
 ```
 
+## Planned: экспорт summary и higher-order применение
+
+Summary хранить отдельно от возвращаемого `boolean?`: обычная сигнатура не кодирует импликации. При экспорте удалить факты о локальных объектах, не выразимые через параметры; BindingId параметра абстрагировать в номер аргумента. При вызове подставлять только стабильные objects F251; `object=none` не создаёт адресата сужения. Смена тела, summary либо внешней декларации должна инвалидировать зависимые результаты. Проверка тела не повышает используемый trusted extern до verified.
+
+После базовых guards возможен ограниченный потребитель summary в `filter`: создать символический элемент, применить **truthy**-факт callback и получить тип элемента результата. `remove` требует отдельно доказанного **falsy**-факта, а не дополнения truthy-типа.
+
+```clojure
+(mapv inc (filter some? [1 nil 2])) ; planned: int? элементы
+(remove nonblank-string? ["" "a" 1]) ; "" остаётся: нельзя исключить все строки
+```
+
+Добавить тесты экспорта/импорта summary через обычный boolean-return, отсечения фактов о приватных locals, подстановки stable local против повторного deref и этих двух HOF-примеров. Внешние декларации core и библиотек обязательны: HOF transfer-rule дополняет контракт, не заменяет его. Lazy-выполнение требует оговорённых стабильности callback/Var и зависимостей до реализации seq; transducer arities не покрыты этим правилом. `pure` не означает compile-time termination: callback не исполняется checker-ом.
+
+Источник: [Typed Racket: propositions, one-sided predicates](https://docs.racket-lang.org/ts-guide/occurrence-typing.html), [Logical Types for Untyped Languages](https://www2.ccs.neu.edu/racket/pubs/icfp10-thf.pdf); [отчёт](../docs/research-typed-racket.md), findings 2 и 5. В отчёте прочитаны Guide, выборочные §2–3 и `abstract-results`, не полное доказательство; здесь прочитан отчёт, без нового аудита или запуска. Это следующий этап F250/F230, не реализованная поддержка HOF.
+
 ## Алгоритм проверки (проект, не доказательство soundness)
 
 Минимальная первая версия: одна арность, один обычный позиционный параметр,

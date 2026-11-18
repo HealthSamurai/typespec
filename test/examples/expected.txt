@@ -1,6 +1,7 @@
 src/ex/more.clj:17:18  TSP2345  42 is not assignable to String
 src/ex/more.clj:17:21  TSP2345  "hello" is not assignable to long
 src/ex/more.clj:19:7  TSP7021  a hint on the name is not a return type: write (defn total ^long [...] ...)
+src/ex/more.clj:19:32  TSP210-01  compatibility not checked: t/unknown to number? (unknown)  [warning]
 src/ex/more.clj:24:9  TSP2322  hint String contradicts the type: int?
 src/ex/more.clj:30:3  TSP7023  reflective call, but f is known to be java.io.File  [warning]
 src/ex/more.clj:33:20  TSP2531  (.get headers "x-request-id") may be nil: java.util.Map.get may return null

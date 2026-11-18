@@ -24,7 +24,9 @@
   [nodes opts]
   (loop [[x & more :as xs] (seq nodes), pending [], out []]
     (if (empty? xs)
-      out
+      (cond-> out
+        (seq pending) (conj {:op :opaque :pos (:pos (first pending))
+                            :directives pending :missing-directive-target true}))
       (let [tag (n/tag x)]
         (cond
           (skip-tags tag) (recur more pending out)

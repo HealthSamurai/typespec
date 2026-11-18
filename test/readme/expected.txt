@@ -1,4 +1,6 @@
+src/app/patients.clj:15:3  TSP210-01  compatibility not checked: t/unknown to (s/nilable ::patient) (unknown)  [warning]
 src/app/patients.clj:21:8  TSP8001  case is not exhaustive: "inactive" is not handled
 src/app/patients.clj:22:24  TSP2531  name may be nil: :patient/name is optional in ::patient
 src/app/patients.clj:25:13  TSP2531  (find-patient db 42) may be nil: find-patient returns (s/nilable ::patient)
+src/app/patients.clj:25:27  TSP210-01  compatibility not checked: t/unknown to ::db (map?) (unknown)  [warning]
 src/app/patients.clj:25:30  TSP2345  42 is not assignable to :patient/id (string?)

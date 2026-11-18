@@ -124,6 +124,29 @@ Current: ни одна первая форма не передаёт сужен�
 
 Это изменение требуется не только `do`: вычисление аргументов, `let`-инициализаторов и условий тоже должно сохранять отсутствие нормального продолжения. Локальная правка одного `infer-body` недостаточна.
 
+### 2а. Условные факты и эффекты обработчиков — разные компоненты
+
+Уточнение внутреннего Result: помимо `normal/facts/coverage` условие использует общий summary фактов F240/F251 (здесь условные имена полей: `truthy-prop`, `falsy-prop`, `object` — стабильный BindingId/путь либо none). Это контракт интеграции, не второй независимый формат. Ветка потребляет соответствующий факт, а не повторно распознаёт имя предиката. Сохранённый boolean может хранить ограниченные импликации; отрицательный факт нельзя получать простым отрицанием положительного summary пользовательского guard. При превышении бюджета формул терять уточнение, не создавать доказательство.
+
+```clojure
+;; x : string | nil; внешний контракт some? известен
+(let [present (some? x)]
+  (when-not present (throw (Exception. "missing")))
+  (clojure.string/upper-case x)) ; факт приходит по нормальному пути
+
+(try (dangerous)
+     (catch IllegalArgumentException e
+       (println e)
+       (throw (ex-info "failed" {}))))
+```
+
+В первом примере нужны контракты core-макроса и предиката; для `some? false` истинная ветка сохраняет false. Декларации core и внешних библиотек обязательны: неизвестный guard не создаёт фактов, `unknown` — безопасный top. Во втором примере normal может быть `never`, но summary F450 отдельно сохраняет I/O и новое исключение обработчика. Не вычитать общий `may-throw` после частичного catch; эффекты `finally` добавляются отдельно. Это не вводит checked exceptions или списки `throws` в сигнатуры.
+
+Planned-тесты: boolean alias с ранним throw переносит факт; shadowing не переносит его на новый binding; one-sided guard не исключает весь тип на falsy-пути; `some? false` не смешивается с обычной truthiness; rethrow и I/O обработчика сохраняются, частичный catch не очищает may-throw.
+
+Основание: [Typed Racket, Findings 1–2](../docs/research-typed-racket.md), [Sorbet, Finding 4](../docs/research-sorbet.md), [Koka, Finding 6](../docs/research-koka.md). Перенос основан на чтении отчётов, не новом аудите первоисточников. В отчётах целиком прочитан [tc-if.rkt](https://github.com/racket/typed-racket/blob/7fe7e11fae2b04e04525d63b01b33efe5ffad075/typed-racket-lib/typed-racket/typecheck/tc-if.rkt), выборочно — [Sorbet environment.h](https://github.com/sorbet/sorbet/blob/0d4730546f8c4e6c5c5735a146b1b949d8a132ef/infer/environment.h) и §2.4 [Koka 2014](https://arxiv.org/pdf/1406.2061). Полный inference и доказательства не аудированы; интеграция с Clojure — проект.
+
+
 ### 3. Throw
 
 1. Проверить форму и ровно один операнд; ошибку формы привязать к `throw`.

@@ -6,7 +6,8 @@
             [clojure.string :as str]
             [typespec.parse :as parse]
             [typespec.types :as t]
-            [typespec.check :as check]))
+            [typespec.check :as check]
+            [typespec.externs :as externs]))
 
 (defn source-files [paths]
   (->> paths
@@ -26,7 +27,7 @@
         files (mapv parse/parse-file (source-files (map #(str (io/file root %)) paths)))
         prefix (str (.getPath (io/file root)) "/")
         rel #(if (str/starts-with? (str %) prefix) (subs (str %) (count prefix)) (str %))
-        res (check/check-files files cfg)]
+        res (check/check-files files (assoc cfg :extern-contracts (externs/load-contracts root cfg)))]
     (-> res
         (update :diagnostics (fn [ds] (mapv #(update % :file rel) ds)))
         (update :types (fn [ts] (mapv #(update % :file rel) ts)))
@@ -40,6 +41,7 @@
   (cond-> {:id (:id d) :code (:code d) :severity (name (:severity d)) :file (:file d)
            :range {:start [(:row (:pos d)) (:col (:pos d))] :end [(:end-row (:pos d)) (:end-col (:pos d))]}
            :message (:message d)}
+    (:reasons d) (assoc :reasons (vec (sort (map name (:reasons d)))))
     (:fixes d) (assoc :fixes (:fixes d))))
 
 (defn sig-lines [res ns-sym]
@@ -53,6 +55,7 @@
                (format (str "%-" width "s  %s   ; from %s") (name sym) (t/show ty)
                        (case (:source v)
                          :sig "t/sig" :fdef "s/fdef"
+                         :extern (str "extern " (:extern/path v))
                          :hints (cond (some :inferred (:arities ty)) "the body"
                                       :else "hints")))))))))
 

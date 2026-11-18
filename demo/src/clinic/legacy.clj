@@ -15,7 +15,8 @@
   #_(t/ignore "CLINIC-12: legacy ids are numbers")
   (patients/greet-or-default db 42))
 
-;; WARNING 23: nothing to ignore here
+;; Legacy broad suppression now matches an incomplete db compatibility warning.
+;; Targeted/unused suppressions are covered by diagnostics_regression_test.clj.
 (defn greeting [db]
   #_(t/ignore "was needed before the fix")
   (patients/greet-or-default db "p1"))

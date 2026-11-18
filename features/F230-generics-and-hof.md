@@ -3,12 +3,19 @@ id: F230
 title: Generics и функции высшего порядка
 status: designed
 decision: accepted
-implementation: not-implemented
+implementation: partial
 area: core
 origin: Typespec
 ---
 
 # F230 · Generics и функции высшего порядка
+
+## Обновление реализации — топ-10
+
+Добавлена совместимость функциональных типов: контравариантность параметров и ковариантность результата, фиксированные и ограниченные homogeneous-rest арности. Это НЕ generic solver; t/all и общий HOF inference остаются планом.
+
+Проверено набором `clojure -M:test`: 34 регрессионных теста / 239 assertions и существующие golden/CLI-тесты. Подробности: [implementation-top10](../docs/implementation-top10.md). Ниже сохранён проект полного механизма; прежние пометки current, противоречащие этому обновлению, описывают состояние до данного изменения. Иллюстрации карточки не стали автоматически исполняемыми тестами.
+
 
 ## Зачем это Clojure
 

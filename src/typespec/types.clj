@@ -134,6 +134,11 @@
 
 (declare sub?)
 (def ^:dynamic *depth* 0)
+(def ^:dynamic *inconclusive* nil)
+
+(defn- inconclusive! [reason]
+  (when *inconclusive* (swap! *inconclusive* conj reason))
+  false)
 
 (defn- prim-sub? [a b]
   (or (= a b)
@@ -144,12 +149,44 @@
   (and (every? (fn [[k tv]] (when-let [sv (get (:req s) k)] (sub? env sv tv))) (:req t))
        (every? (fn [[k tv]] (if-let [sv (or (get (:req s) k) (get (:opt s) k))] (sub? env sv tv) true)) (:opt t))))
 
+(defn- arity-sub?
+  "Source accepts every call described by target; arguments are contravariant.
+  Supports fixed positional parameters and a homogeneous rest parameter only."
+  [env s t]
+  (let [sp (:params s) tp (:params t)
+        sr (:rest s) tr (:rest t)]
+    (and (not (:kwargs s)) (not (:kwargs t))
+         (vector? sp) (vector? tp) (:ret s) (:ret t)
+         (if tr
+           (and sr (<= (count sp) (count tp)))
+           (if sr (<= (count sp) (count tp)) (= (count sp) (count tp))))
+         (every? true? (map-indexed
+                       (fn [i p] (sub? env p (if (< i (count sp)) (nth sp i) sr))) tp))
+         (or (nil? tr) (sub? env tr sr))
+         (sub? env (:ret s) (:ret t)))))
+
+(defn- fn-sub?
+  "Every target arity needs a source arity. Mixed fixed/rest dispatch and kwargs
+  are deliberately unsupported (except identical types), not guessed compatible."
+  [env s t]
+  (let [sa (:arities s) ta (:arities t)]
+    (if (and (seq sa) (seq ta)
+             (not-any? :kwargs sa) (not-any? :kwargs ta)
+             (or (= 1 (count sa))
+                 (and (not-any? :rest sa)
+                      (= (count sa) (count (distinct (map #(count (:params %)) sa)))))))
+      (every? (fn [target] (some #(arity-sub? env % target) sa)) ta)
+      (inconclusive! :unsupported-function))))
+
 (defn- sub1? [env s t]
   (let [st (:t s) tt (:t t)]
     (cond
+      ;; Reflexivity is valid even for opaque kwargs or unknown components:
+      ;; it establishes no conversion between different callable contracts.
       (= (strip s) (strip t)) true
       (#{:any :unknown} tt) true
-      (#{:any :unknown :never} st) true
+      (#{:any :never} st) true
+      (= :unknown st) (inconclusive! :unknown)
       (= :nil st) (boolean (:platform t))
       (= :nil tt) false
       (= :lit st) (if (= :lit tt) (= (:val s) (:val t)) (sub1? env (lit-prim (:val s)) t))
@@ -181,17 +218,37 @@
                      :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
                      :class (prim-is-class? (or (:kind s) :coll) (:name t))
                      false)
-      (= :fn st) (or (= :fn tt) (= :class tt) (and (= :prim tt) (= :fn (:name t))))
+      (= :fn st) (case tt
+                    :fn (boolean (fn-sub? env s t))
+                    :class (let [c (load-class (:name t))]
+                             (boolean (and c (.isAssignableFrom ^Class c clojure.lang.IFn))))
+                    :prim (= :fn (:name t))
+                    false)
       :else false)))
 
 (defn sub?
-  "Is every value of s also a value of t?"
+  "Proven compatibility within the supported subset, with explicit any as a bypass.
+  Unknown is a safe top type: every type fits it, but it does not fit a concrete
+  type. Exhausting the recursion budget returns false, not evidence of a subtype.
+  Callers wanting tolerant checking must handle unknown separately."
   [env s t]
   (if (> *depth* 12)
-    true
+    (inconclusive! :depth)
     (binding [*depth* (inc *depth*)]
       (let [tt (members env t)]
         (every? (fn [s1] (some #(sub1? env s1 %) tt)) (members env s))))))
+
+(defn sub-result
+  "Companion to sub?: {:status :proved|:mismatch|:inconclusive :reasons #{...}}.
+  Unknown sources and exhausted recursion cannot prove a concrete mismatch.
+  Any remains an explicit bypass, not a runtime guarantee. Reasons are gathered
+  conservatively across alternatives; a successful proof takes precedence."
+  [env s t]
+  (binding [*inconclusive* (atom #{})]
+    (let [proved? (sub? env s t)
+          reasons @*inconclusive*]
+      {:status (cond proved? :proved (seq reasons) :inconclusive :else :mismatch)
+       :reasons (if proved? #{} reasons)})))
 
 ;; ---- printing ----
 

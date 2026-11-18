@@ -39,11 +39,11 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F114](F114-preconditions.md) | Предусловия :pre | `designed` | `partial` | sources | Clojure |
 | [F115](F115-explicit-signatures.md) | Явные сигнатуры t/sig | `designed` | `partial` | sources | Clojure |
 | [F120](F120-key-is-type.md) | Ключ задаёт тип значения | `designed` | `partial` | core | Typespec |
-| [F130](F130-namespace-sidecars.md) | Файлы типов рядом с исходником | `designed` | `not-implemented` | declarations | Flow |
+| [F130](F130-namespace-sidecars.md) | Файлы типов рядом с исходником | `designed` | `partial` | declarations | Flow |
 | [F150](F150-schema-providers.md) | Генераторы типов из схем | `designed` | `not-implemented` | sources | Clojure |
 | [F210](F210-unknown-any-never.md) | Unknown, any и never | `designed` | `partial` | core | Typespec |
 | [F220](F220-local-inference.md) | Локальный и контекстный вывод типов | `designed` | `partial` | core | Typespec |
-| [F230](F230-generics-and-hof.md) | Generics и функции высшего порядка | `designed` | `not-implemented` | core | Typespec |
+| [F230](F230-generics-and-hof.md) | Generics и функции высшего порядка | `designed` | `partial` | core | Typespec |
 | [F231](F231-generic-obligations.md) | Ограничения generics и проверка обязательств | `proposed` | `not-implemented` | types | Rust |
 | [F232](F232-associated-types.md) | Связанные типы контрактов | `proposed` | `not-implemented` | types | Rust |
 | [F240](F240-narrowing-and-exhaustiveness.md) | Сужение, tagged unions и полнота веток | `designed` | `partial` | core | Typespec |
@@ -56,7 +56,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F273](F273-template-literal-types.md) | Типы строковых шаблонов | `proposed` | `not-implemented` | types | TypeScript |
 | [F280](F280-literal-preservation.md) | Литералы и проверка без потери типа | `proposed` | `not-implemented` | core | Typespec |
 | [F290](F290-brands.md) | Доменные brands | `designed` | `not-implemented` | types | Clojure |
-| [F295](F295-recursive-types.md) | Рекурсивные типы | `designed` | `not-implemented` | types | Clojure |
+| [F295](F295-recursive-types.md) | Рекурсивные типы | `designed` | `partial` | types | Clojure |
 | [F310](F310-maps-and-destructuring.md) | Мапы, пути и деструктуризация | `designed` | `partial` | core | Typespec |
 | [F311](F311-row-polymorphism.md) | Row polymorphism — сохранение остатка мапы | `proposed` | `not-implemented` | data | TypeScript and research |
 | [F320](F320-nil-and-platform.md) | Nil, коллекции и платформенные типы | `designed` | `partial` | core | Typespec |
@@ -72,12 +72,12 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F520](F520-java-overloads.md) | Java-вызовы и перегрузки | `designed` | `partial` | java | Clojure |
 | [F530](F530-java-generics-nullability.md) | Java generics и nullability | `designed` | `not-implemented` | java | Clojure |
 | [F610](F610-macro-contracts.md) | Макросы и границы проверяемого кода | `designed` | `partial` | core | Typespec |
-| [F710](F710-externs-and-exports.md) | Контракты библиотек и экспорт интерфейсов | `designed` | `not-implemented` | core | Typespec |
-| [F711](F711-external-declarations.md) | Внешние декларации для библиотек и core | `designed` | `not-implemented` | modules | TypeScript |
+| [F710](F710-externs-and-exports.md) | Контракты библиотек и экспорт интерфейсов | `designed` | `partial` | core | Typespec |
+| [F711](F711-external-declarations.md) | Внешние декларации для библиотек и core | `designed` | `partial` | modules | TypeScript |
 | [F720](F720-module-interfaces.md) | Интерфейсы ns и инкрементальная проверка | `designed` | `partial` | core | Typespec |
 | [F730](F730-strict-namespaces.md) | Строгий режим по namespace | `designed` | `not-implemented` | modules | Flow |
 | [F810](F810-type-coverage.md) | Покрытие типами | `designed` | `not-implemented` | diagnostics | Flow |
 | [F820](F820-suspicious-nil-lints.md) | Линты подозрительной обработки nil | `designed` | `not-implemented` | diagnostics | Flow |
-| [F830](F830-targeted-suppressions.md) | Подавление конкретной диагностики | `designed` | `not-implemented` | trust | Flow |
+| [F830](F830-targeted-suppressions.md) | Подавление конкретной диагностики | `designed` | `partial` | trust | Flow |
 | [F840](F840-trust-budget.md) | Бюджет доверия и baseline в CI | `designed` | `partial` | core | Typespec |
 | [F910](F910-agent-and-editor.md) | Диагностика, редактор и цикл агента | `designed` | `partial` | core | Typespec |

@@ -4,7 +4,8 @@
   (:require [clojure.data.json :as json]
             [clojure.java.io :as io]
             [clojure.string :as str]
-            [typespec.main :as main]))
+            [typespec.main :as main]
+            [typespec.regression-test :as regression]))
 
 (def cases
   [{:root "demo"          :expected "demo/expected.txt"}
@@ -151,5 +152,7 @@
               (= 11 (count (filter #(= "TSP7010" (:code %)) (:diagnostics strict))))]]]
         (doseq [[label ok?] checks]
           (if ok? (println "ok     " label) (do (swap! failed inc) (println "FAILED " label))))))
+    (let [{:keys [fail error]} (regression/run-suites)]
+      (swap! failed + fail error))
     (shutdown-agents)
     (System/exit (if (pos? @failed) 1 0))))

@@ -117,7 +117,23 @@
   (let [{:keys [type optional?]} (key-info ctx ty k node)]
     (if optional? (t/union type t/nil-t) type)))
 
+(defn- read-key-default [ctx ty k node default-type]
+  (let [{:keys [type optional?]} (key-info ctx ty k node)]
+    ;; A default replaces absence, never a nil value stored at the key.
+    (if optional?
+      (if (every? #(= :nil (:t %)) (t/members (:env ctx) ty))
+        default-type
+        (t/union type default-type))
+      type)))
+
 ;; ---- assignability ----
+
+(defn- incomplete-problem [ctx actual expected result]
+  ["TSP210-01"
+   (str "compatibility not checked: " (show-ref ctx actual) " to " (show-ref ctx expected)
+        " (" (str/join ", " (sort (map name (:reasons result)))) ")")
+   {:severity (if (:strict (:opts ctx)) :error :warning)
+    :reasons (:reasons result)}])
 
 (defn- fresh-problems [ctx actual expected]
   (let [env (:env ctx)
@@ -129,9 +145,12 @@
          (for [k (keys (:req m)) :when (not (contains? (:req actual) k))]
            ["TSP2741" (str "required key " k " of " (t/show expected) " is missing")])
          (for [[k v] (:req actual)
-               :let [exp (or (get (:req m) k) (get (:opt m) k))]
-               :when (and exp (not (t/sub? env v exp)))]
-           ["TSP2322" (str "value of " k ": " (t/show v) " is not assignable to " (show-ref ctx exp))])
+               :let [exp (or (get (:req m) k) (get (:opt m) k))
+                     result (when exp (t/sub-result env v exp))]
+               :when (and exp (not= :proved (:status result)))]
+           (if (= :inconclusive (:status result))
+             (incomplete-problem ctx v exp result)
+             ["TSP2322" (str "value of " k ": " (t/show v) " is not assignable to " (show-ref ctx exp))]))
          (for [k (keys (:req actual))
                :when (and (not (some #{k} known))
                           (not (and (qualified-keyword? k) (get-in env [:specs k])))
@@ -153,10 +172,12 @@
 (defn- problems
   "Why a value of type `actual` (written as `node`) cannot be used as `expected`. Empty when it can."
   [ctx node actual expected]
-  (let [env (:env ctx) actual (eff ctx actual)]
+  (let [env (:env ctx) actual (eff ctx actual)
+        result (t/sub-result env actual expected)]
     (cond
-      (t/sub? env actual expected) (if (:fresh actual) (filter #(= "TSP2353" (first %)) (fresh-problems ctx actual expected)) [])
+      (= :proved (:status result)) (if (:fresh actual) (filter #(= "TSP2353" (first %)) (fresh-problems ctx actual expected)) [])
       (seq (fresh-problems ctx actual expected)) (fresh-problems ctx actual expected)
+      (= :inconclusive (:status result)) [(incomplete-problem ctx actual expected result)]
       (and (not (#{:nil :map} (:op node))) (t/nilable? env actual) (not (t/nilable? env expected))
            (t/sub? env (t/remove-nil env actual) expected))
       [["TSP2531" (str (or (:display node) (parse/unparse node)) " may be nil"
@@ -170,7 +191,8 @@
         [["TSP2345" (str (show-ref ctx actual) " is not assignable to " (show-ref ctx expected))]]))))
 
 (defn- assignable! [ctx node actual expected]
-  (doseq [[code msg] (problems ctx node actual expected)] (report! ctx node code msg)))
+  (doseq [[code msg extra] (problems ctx node actual expected)]
+    (apply report! ctx node code msg (mapcat identity extra))))
 
 ;; ---- locals and narrowing ----
 
@@ -185,6 +207,21 @@
 (def ^:private pred-narrow
   '{string? :string int? :int number? :number keyword? :keyword map? :map vector? :vector boolean? :boolean})
 
+(defn- truth-part [env ty truthy?]
+  (if (and truthy?
+           (not-any? #(or (= % (t/lit false)) (= % (t/prim :boolean))
+                          (#{:unknown :any} (:t %))) (t/members env ty)))
+    (t/remove-nil env ty)
+    (apply t/union
+         (for [m (t/members env ty)
+               :let [falsy? (or (= :nil (:t m)) (= m (t/lit false)))
+                     boolean? (= m (t/prim :boolean))]
+               :when (or (#{:unknown :any} (:t m)) boolean? (= truthy? (not falsy?)))]
+           (if boolean? (t/lit truthy?) m)))))
+
+(defn- nil-part [env ty]
+  (if (some #(#{:nil :unknown :any} (:t %)) (t/members env ty)) t/nil-t t/never))
+
 (defn- narrow
   "[ctx-when-truthy ctx-when-falsy] for a test expression."
   [ctx test]
@@ -197,9 +234,18 @@
     (cond
       (local test)
       (let [s (local test)]
-        [(non-nil ctx s) (reduce non-nil ctx (get-in ctx [:missing-of s]))])
-      (and (= 'some? h) (local (first args))) [(non-nil ctx (local (first args))) ctx]
-      (and (= 'nil? h) (local (first args))) [ctx (non-nil ctx (local (first args)))]
+        [(update-in ctx [:locals s] #(truth-part env % true))
+         (let [fc (update-in ctx [:locals s] #(truth-part env % false))]
+           ;; Missing-key provenance applies only when falsiness proves nil,
+           ;; not when a present false value could have selected this branch.
+           (if (= t/nil-t (get-in fc [:locals s]))
+             (reduce non-nil fc (get-in ctx [:missing-of s]))
+             fc))])
+      (and (#{'some? 'nil?} h) (local (first args)))
+      (let [s (local (first args))
+            present (non-nil ctx s)
+            absent (update-in ctx [:locals s] #(nil-part env %))]
+        (if (= 'some? h) [present absent] [absent present]))
       (= 'not h) (vec (reverse (narrow ctx (first args))))
       (= 'and h) [(reduce (fn [c a] (first (narrow c a))) ctx args) ctx]
       (= 'or h) [ctx (reduce (fn [c a] (second (narrow c a))) ctx args)]
@@ -374,9 +420,13 @@
                                    (fn [i a] (when (empty? (arg-problems (assoc ctx :quiet true) a arg-nodes non-nil node)) i))
                                    fits))
                   i (or (if vague? (last passing) (first passing)) nil-only (dec (count all)))]
-              (doseq [[pn [code msg]] (nth all i)] (report! ctx pn code msg))
+              (doseq [[pn [code msg extra]] (nth all i)]
+                (apply report! ctx pn code msg (mapcat identity extra)))
               ;; an unknown argument and several overloads that fit: the result is not known either
-              (if (and vague? (next (distinct (map #(:ret (nth fits %)) passing))))
+              (if (or (and vague? (next (distinct (map #(:ret (nth fits %)) passing))))
+                      (and (empty? passing)
+                           (some (fn [ps] (some #(= "TSP210-01" (first (second %))) ps)) all)
+                           (next (distinct (map :ret fits)))))
                 t/unknown
                 (:ret (nth fits i)))))))
 
@@ -407,7 +457,7 @@
         (if (or (get-in env [:vars local]) (contains? (:macros env) local))
           {:sym local :type (var-type ctx local)}
           (let [c (symbol "clojure.core" (name r))]
-            {:sym c :type (get core/table c)}))))))
+            {:sym c :type (or (var-type ctx c) (get core/table c))}))))))
 
 (defn- java-static?
   "Class name when `Foo/bar` refers to a Java class and not to a Clojure namespace."
@@ -543,7 +593,11 @@
       (when-let [[a p] (bad ar)]
         (if (seq nil-ok)
           (report! ctx at "TSP2531" (str label " takes " (show-ref ctx p) ", but may get nil: " (show-ref ctx a)))
-          (report! ctx at "TSP2345" (str label " takes " (show-ref ctx p) ", but gets " (show-ref ctx a)))))
+          (let [result (t/sub-result env (eff ctx a) p)]
+            (if (= :inconclusive (:status result))
+              (let [[code msg extra] (incomplete-problem ctx a p result)]
+                (apply report! ctx at code msg (mapcat identity extra)))
+              (report! ctx at "TSP2345" (str label " takes " (show-ref ctx p) ", but gets " (show-ref ctx a)))))))
       (if (and vague? (next (distinct (map :ret ok)))) t/unknown (:ret ar)))
     (if (seq (:arities ftype))
       (do (report! ctx at "TSP2554" (str label " is called with " (count arg-types) " argument(s)")) t/unknown)
@@ -699,47 +753,76 @@
 (defmethod special 'recur [ctx node _] (run! #(infer ctx %) (args-of node)) t/never)
 (defmethod special 'throw [ctx node _] (run! #(infer ctx %) (args-of node)) t/never)
 
-(defmethod special 'if [ctx node _]
+(doseq [h '[some? nil?]]
+  (defmethod special h [ctx node head]
+    (let [ty (infer ctx (first (args-of node)))
+          present (t/remove-nil (:env ctx) ty)
+          absent (nil-part (:env ctx) ty)]
+      (cond (= :never (:t present)) (t/lit (= head 'nil?))
+            (= :never (:t absent)) (t/lit (= head 'some?))
+            :else (t/prim :boolean)))))
+
+(defn- condition-parts [ctx test]
+  (let [ty (infer ctx test)
+        h (env/head (:file ctx) test)
+        arg (first (args-of test))]
+    (if (#{'some? 'nil?} h)
+      (let [aty (infer ctx arg)
+            present (t/remove-nil (:env ctx) aty)
+            absent (nil-part (:env ctx) aty)]
+        (if (= 'some? h) [present absent] [absent present]))
+      [(truth-part (:env ctx) ty true) (truth-part (:env ctx) ty false)])))
+
+(defn- if-form [ctx node inverted?]
   (let [[test then else] (args-of node)
-        _ (infer ctx test)
-        [tc fc] (narrow ctx test)]
-    (t/union (infer tc then) (if else (infer fc else) t/nil-t))))
+        contexts (narrow ctx test)
+        parts (condition-parts ctx test)
+        [tc fc] (if inverted? (reverse contexts) contexts)
+        [positive negative] (if inverted? (reverse parts) parts)]
+    (t/union (if (= :never (:t positive)) t/never (infer tc then))
+             (if (= :never (:t negative)) t/never (if else (infer fc else) t/nil-t)))))
 
-(defmethod special 'if-not [ctx node _]
-  (let [[test then else] (args-of node)
-        _ (infer ctx test)
-        [tc fc] (narrow ctx test)]
-    (t/union (infer fc then) (if else (infer tc else) t/nil-t))))
+(defmethod special 'if [ctx node _] (if-form ctx node false))
 
-(defmethod special 'when [ctx node _]
-  (let [[test & body] (args-of node)]
-    (infer ctx test)
-    (t/union (infer-body (first (narrow ctx test)) body) t/nil-t)))
+(defmethod special 'if-not [ctx node _] (if-form ctx node true))
 
-(defmethod special 'when-not [ctx node _]
-  (let [[test & body] (args-of node)]
-    (infer ctx test)
-    (t/union (infer-body (second (narrow ctx test)) body) t/nil-t)))
+(defn- when-form [ctx node inverted?]
+  (let [[test & body] (args-of node)
+        contexts (narrow ctx test)
+        parts (condition-parts ctx test)
+        [tc _] (if inverted? (reverse contexts) contexts)
+        [positive negative] (if inverted? (reverse parts) parts)]
+    (t/union (if (= :never (:t positive)) t/never (infer-body tc body))
+             (if (= :never (:t negative)) t/never t/nil-t))))
+
+(defmethod special 'when [ctx node _] (when-form ctx node false))
+(defmethod special 'when-not [ctx node _] (when-form ctx node true))
 
 (defn- if-let-form [ctx node some?]
   (let [[bindings then else] (args-of node)
         [p init] (:children bindings)
         ty (infer ctx init)
-        tc (bind-pattern ctx p (t/remove-nil (:env ctx) (dissoc ty :fresh)))]
-    [(infer tc then) (if else (infer ctx else) t/nil-t)]))
+        positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
+        negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
+        tc (bind-pattern ctx p (dissoc positive :fresh))]
+    [(if (= :never (:t positive)) t/never (infer tc then))
+     (if (= :never (:t negative)) t/never (if else (infer ctx else) t/nil-t))]))
 
 (defmethod special 'if-let [ctx node _] (apply t/union (if-let-form ctx node false)))
 (defmethod special 'if-some [ctx node _] (apply t/union (if-let-form ctx node true)))
 
-(defn- when-let-form [ctx node]
+(defn- when-let-form [ctx node some?]
   (let [[bindings & body] (args-of node)
         [p init] (:children bindings)
         ty (infer ctx init)
-        tc (bind-pattern ctx p (t/remove-nil (:env ctx) (dissoc ty :fresh)))]
-    (t/union (infer-body tc body) t/nil-t)))
+        positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
+        negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
+        tc (bind-pattern ctx p (dissoc positive :fresh))]
+    (t/union (if (= :never (:t positive)) t/never (infer-body tc body))
+             (if (= :never (:t negative)) t/never t/nil-t))))
 
-(defmethod special 'when-let [ctx node _] (when-let-form ctx node))
-(defmethod special 'when-some [ctx node _] (when-let-form ctx node))
+(defmethod special 'when-let [ctx node _] (when-let-form ctx node false))
+(defmethod special 'when-some [ctx node _] (when-let-form ctx node true))
 
 (defmethod special 'cond [ctx node _]
   (loop [ctx ctx pairs (partition 2 (args-of node)) out []]
@@ -752,20 +835,19 @@
                 [tc fc] (narrow ctx test)]
             (recur fc (rest pairs) (conj out (infer tc branch)))))))))
 
-(defmethod special 'and [ctx node _]
-  (loop [ctx ctx args (args-of node) ty (t/prim :boolean) nil? false]
-    (if (empty? args)
-      (if nil? (t/union ty t/nil-t) ty)
-      (let [a (first args) aty (infer ctx a)]
-        (recur (first (narrow ctx a)) (rest args) aty (or nil? (and (next args) (t/nilable? (:env ctx) aty))))))))
+(defn- logical-form [ctx args and?]
+  (if (empty? args)
+    (t/lit and?)
+    (let [a (first args) ty (infer ctx a)
+          stop (truth-part (:env ctx) ty (not and?))
+          proceed (truth-part (:env ctx) ty and?)]
+      (if (or (not (next args)) (= :never (:t proceed)))
+        ty
+        (t/union stop (logical-form ((if and? first second) (narrow ctx a))
+                                   (rest args) and?))))))
 
-(defmethod special 'or [ctx node _]
-  (loop [ctx ctx args (args-of node) out []]
-    (if (empty? args)
-      (if (seq out) (apply t/union out) t/nil-t)
-      (let [a (first args) aty (infer ctx a)]
-        (recur (second (narrow ctx a)) (rest args)
-               (conj out (if (next args) (t/remove-nil (:env ctx) aty) aty)))))))
+(defmethod special 'and [ctx node _] (logical-form ctx (args-of node) true))
+(defmethod special 'or [ctx node _] (logical-form ctx (args-of node) false))
 
 (defmethod special 'case [ctx node _]
   (let [[test & clauses] (args-of node)
@@ -896,8 +978,9 @@
   (let [[m k default] (args-of node)
         mty (infer ctx m)]
     (if (= :kw (:op k))
-      (let [ty (read-key ctx mty (:val k) k)]
-        (if default (t/union (t/remove-nil (:env ctx) ty) (infer ctx default)) ty))
+      (if default
+        (read-key-default ctx mty (:val k) k (infer ctx default))
+        (read-key ctx mty (:val k) k))
       (do (infer ctx k) (some->> default (infer ctx)) t/unknown))))
 
 (defmethod special 'get-in [ctx node _]
@@ -947,8 +1030,15 @@
   (let [tys (map #(infer ctx %) (args-of node))
         ms (map #(single-map ctx %) tys)]
     (if (and (seq ms) (every? some? ms))
-      (reduce (fn [a b] {:t :map :req (merge (:req a) (:req b))
-                         :opt (apply dissoc (merge (:opt a) (:opt b)) (keys (merge (:req a) (:req b))))})
+      (reduce (fn [a b]
+                (let [req (merge (reduce-kv (fn [r k v]
+                                             (if (contains? r k)
+                                               (update r k t/union v)
+                                               r))
+                                           (:req a) (:opt b))
+                                 (:req b))
+                      opt (merge-with t/union (:opt a) (:opt b))]
+                  {:t :map :req req :opt (apply dissoc opt (keys req))}))
               ms)
       t/unknown)))
 
@@ -1054,10 +1144,13 @@
 
 (defn- check-return! [ctx node actual expected]
   (when-not (#{:unknown :any} (:t expected))
-    (let [env (:env ctx) actual (eff ctx actual)]
+    (let [env (:env ctx) actual (eff ctx actual)
+          result (t/sub-result env actual expected)
+          emit (fn [[c m extra]] (apply report! ctx node c m (mapcat identity extra)))]
       (cond
-        (t/sub? env actual expected) (doseq [[c m] (problems ctx node actual expected)] (report! ctx node c m))
-        (seq (fresh-problems ctx actual expected)) (doseq [[c m] (fresh-problems ctx actual expected)] (report! ctx node c m))
+        (= :proved (:status result)) (run! emit (problems ctx node actual expected))
+        (seq (fresh-problems ctx actual expected)) (run! emit (fresh-problems ctx actual expected))
+        (= :inconclusive (:status result)) (emit (incomplete-problem ctx actual expected result))
         (and (t/nilable? env actual) (not (t/nilable? env expected)) (t/sub? env (t/remove-nil env actual) expected))
         (report! ctx node "TSP2322"
                  (str "may return nil, but the signature says " (show-ref ctx expected)
@@ -1126,8 +1219,10 @@
     (cond
       (nil? h) {:t :coll :kind :seq :of t/never}
       (= :kw (:op h)) (let [[m default] args
-                            ty (read-key ctx (infer ctx m) (:val h) h)]
-                        (if default (t/union (t/remove-nil (:env ctx) ty) (infer ctx default)) ty))
+                            ty (infer ctx m)]
+                        (if default
+                          (read-key-default ctx ty (:val h) h (infer ctx default))
+                          (read-key ctx ty (:val h) h)))
       (not= :sym (:op h)) (do (infer ctx h) (run! #(infer ctx %) args) t/unknown)
       (contains? (:locals ctx) (:val h)) (let [ft (get-in ctx [:locals (:val h)])]
                                            (if (seq (:arities ft))
@@ -1137,10 +1232,11 @@
       (let [sym (:val h) n (name sym) head (env/head file node)
             own? (and (nil? (namespace head)) (contains? (get-in (:env ctx) [:ns-defs (:ns file)]) head))
             core-sym (if (namespace head) head (symbol "clojure.core" (name head)))
-            has-rule? (and (not own?) (not= (get-method special head) (get-method special ::none)))
+            extern? (= :extern (get-in ctx [:env :vars core-sym :source]))
+            has-rule? (and (not own?) (not extern?) (not= (get-method special head) (get-method special ::none)))
             r (cond has-rule? (special ctx node head)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
-                    (and (not own?) (core/stdlib-macro? core-sym)) t/unknown
+                    (and (not own?) (not extern?) (core/stdlib-macro? core-sym)) t/unknown
                     :else ::none)]
         (cond
           (not= ::none r) r
@@ -1164,7 +1260,7 @@
     :str (t/lit (:val node))
     :num (t/lit (:val node))
     :kw (t/lit (:val node))
-    :bool (t/prim :boolean)
+    :bool (t/lit (:val node))
     :nil t/nil-t
     :regex (t/class-type "java.util.regex.Pattern")
     :sym (let [s (:val node)]
@@ -1213,25 +1309,79 @@
              (find-d 't/cast) (do (swap! *trust* update :cast inc) (parse-directive-type ctx (find-d 't/cast)))
              (find-d 't/any) (do (swap! *trust* update :any inc) t/any)
              :else ty)]
-    (when-let [d (find-d 't/ignore)]
-      (swap! *trust* update :ignore inc)
-      (swap! *ignores* conj {:file (:file (:file ctx)) :pos (:pos node) :at (:pos d)}))
     (record! ctx node ty)))
 
 ;; ---- entry points ----
 
+(def ^:private known-diagnostic-codes
+  #{"TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
+    "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
+    "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031"
+    "TSP8001" "TSP9001" "TSP9002" "TSP9003" "TSP830-01" "TSP210-01"})
+
+(defn- directive-children
+  "Directive scope follows source code, not quoted data or opaque declarations.
+  Keep directives on the boundary form itself, but do not inspect its contents.
+  Ordinary collection expressions and function binding forms remain traversable."
+  [file node]
+  (when-not (or (= :quote (:op node))
+                (and (= :list (:op node))
+                     (contains? '#{quote ns comment declare require import in-ns defmacro
+                                   defprotocol defrecord deftype defmulti definterface set! var
+                                   clojure.spec.alpha/def clojure.spec.alpha/fdef}
+                                (env/head file node))))
+    (:children node)))
+
+(defn- collect-ignores
+  "Collect once from source AST, excluding data and opaque declaration contents.
+  Invalid directives never enter matching and cannot themselves be ignored."
+  [files]
+  (reduce
+    (fn [acc [file node d]]
+      (let [args (rest (:children d))
+            broad? (and (= 1 (count args)) (= :str (:op (first args))))
+            code-node (when-not broad? (first args))
+            code (when (= :sym (:op code-node)) (str (:val code-node)))
+            reason (if broad? (first args) (second args))
+            problem (cond
+                      (:missing-directive-target node) "t/ignore has no following form"
+                      (not (or broad? (= 2 (count args)))) "t/ignore requires [CODE] and a nonblank string reason"
+                      (or (not= :str (:op reason)) (str/blank? (:val reason))) "t/ignore requires a nonblank string reason"
+                      (and (not broad?) (not (known-diagnostic-codes code))) (str "unknown t/ignore code: " (parse/unparse code-node)))
+            entry {:file file :pos (:pos node) :at (:pos d) :code code}]
+        (-> acc
+            (update :count inc)
+            (update (if problem :invalid :valid) conj
+                    (if problem
+                      {:code "TSP830-01" :severity :error :file file :pos (:pos d) :message problem}
+                      entry)))))
+    {:count 0 :valid [] :invalid []}
+    (for [f files form (:forms f)
+          node (tree-seq #(seq (directive-children f %)) #(directive-children f %) form)
+          d (:directives node)
+          :when (= 't/ignore (:val (first (:children d))))]
+      [(:file f) node d])))
+
 (defn- inside? [pos outer]
-  (and (:row pos) (:row outer)
-       (not (neg? (compare [(:row pos) (:col pos)] [(:row outer) (:col outer)])))
-       (not (pos? (compare [(:row pos) (:col pos)] [(:end-row outer) (:end-col outer)])))))
+  (let [start (juxt :row :col) end (juxt :end-row :end-col)]
+    (and (every? number? (concat (start pos) (end pos) (start outer) (end outer)))
+         (not (neg? (compare (start pos) (start outer))))
+         (neg? (compare (start pos) (end outer)))
+         (not (pos? (compare (end pos) (end outer)))))))
 
 (defn- diag-id [d]
-  (format "%08x" (hash [(:code d) (str/replace (str (:file d)) #".*/" "") (:message d)])))
+  (let [identity [(:code d) (str (:file d))
+                  (mapv #(get (:pos d) %) [:row :col :end-row :end-col])
+                  (:message d)]
+        digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
+                        (.getBytes (pr-str identity) java.nio.charset.StandardCharsets/UTF_8))]
+    ;; 128 bits of SHA-256: stable across runs, with practical collision resistance.
+    (apply str (map #(format "%02x" (bit-and 0xff %)) (take 16 digest)))))
 
 (defn check-files
   "Checks parsed files. Returns {:diagnostics [...] :types [...] :trust {...} :env env}."
   [files opts]
-  (let [[env0 env-diags] (env/build files)
+  (let [[env0 env-diags] (env/build files (:extern-contracts opts))
         env (assoc env0
                    :nss (set (map :ns files))
                    :ns-defs (into {} (for [f files]
@@ -1250,14 +1400,20 @@
         (binding [t/*cur-ns* (:ns f)]
           (let [ctx {:env env :file f :opts opts :locals {}}]
             (doseq [form (:forms f)] (infer ctx form)))))
-      (let [ignores @*ignores*
-            hit (fn [d] (first (filter #(and (= (:file %) (:file d)) (inside? (:pos d) (:pos %))) ignores)))
+      (let [{:keys [valid invalid count]} (collect-ignores files)
+            ;; Inner ranges win; equal ranges retain source directive order.
+            ignores (sort-by (fn [i] [(- (or (:row (:pos i)) 0)) (- (or (:col (:pos i)) 0))
+                                     (:end-row (:pos i)) (:end-col (:pos i))]) valid)
+            _ (swap! *trust* assoc :ignore count)
+            hit (fn [d] (first (filter #(and (= (:file %) (:file d))
+                                             (or (nil? (:code %)) (= (:code %) (:code d)))
+                                             (inside? (:pos d) (:pos %))) ignores)))
             all (distinct @*diags*)
             used (set (keep hit all))
             unused (for [i ignores :when (not (used i))]
                      {:code "TSP2578" :severity :warning :file (:file i) :pos (:at i) :message "unused t/ignore: nothing to ignore here"})
             levels (:levels opts)
-            ds (->> (concat (remove hit all) unused)
+            ds (->> (concat (remove hit all) invalid unused)
                     (map #(if-let [l (get levels (symbol (:code %)))] (assoc % :severity l) %))
                     (remove #(= :off (:severity %)))
                     (map #(assoc % :id (diag-id %)))

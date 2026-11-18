@@ -1,7 +1,8 @@
 (ns typespec.env
   "Collects declarations from source text: s/def, s/fdef, {:t/sig ...}, type hints. No code is loaded."
   (:require [typespec.parse :as parse]
-            [typespec.types :as t]))
+            [typespec.types :as t]
+            [typespec.externs :as externs]))
 
 (defn resolve-sym
   "Fully qualified symbol for a symbol used in `file`. Unqualified symbols stay unqualified."
@@ -161,7 +162,8 @@
 
 (defn build
   "Environment from parsed files: {:specs :vars :macros :key-nss}. Returns [env diagnostics]."
-  [files]
+  ([files] (build files {}))
+  ([files contracts]
   (let [diags (atom [])
         acc (reduce #(collect-file %1 %2 diags) {:specs {} :fdefs {} :defns {} :macros #{}} files)
         env {:specs (:specs acc) :macros (:macros acc)
@@ -188,4 +190,5 @@
                              :file (:file (:file d)) :pos (:pos d)}])))
         only-fdef (for [[sym fd] (:fdefs acc) :when (not (contains? vars sym))]
                     [sym {:type (:type fd) :source :fdef :file (:file fd) :pos (:pos fd)}])]
-    [(assoc env :vars (into vars only-fdef)) @diags]))
+    (let [[env ext-diags] (externs/merge-contracts (assoc env :vars (into vars only-fdef)) contracts)]
+      [env (into @diags ext-diags)]))))

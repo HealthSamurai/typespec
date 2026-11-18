@@ -1,0 +1,8 @@
+{:externs ["externs.edn"]
+ ;; system.clj:159-168 checks body is map or nil; :179-185 binds ctx/state.
+ ;; These are body contracts, NOT the value returned by macro expansion/intern.
+ :macro-contracts
+ {system/defstart {:shape :binding-body :bindings [map? map?]
+                   :ret (t/or map? nil?)}
+  system/defstop {:shape :binding-body :bindings [map? (t/or map? nil?)]
+                  :ret t/unknown}}}

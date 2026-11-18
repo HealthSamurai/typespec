@@ -1,0 +1,19 @@
+{:counts {:warning 16, :error 2}, :source-sha256 "dca4826d414a66c22dc10ebb2a01e1d8dccaf5cf64cdfe9b8bb952987d023db5", :mode "contracts", :source-lines 451, :pin "aa8ea0eb565e7f70f80f3248e6a83198628e1047", :java "25.0.5.1", :last-form-position {:row 437, :col 1, :end-row 451, :end-col 28}, :files 1, :pg-loaded? false, :parsed-top-level-forms 54, :trust {:cast 0, :any 0, :ignore 0}, :codes {[:error "TSP2322"] 1, [:error "TSP2345"] 1, [:warning "TSP210-01"] 15, [:warning "TSP7020"] 1}, :namespace pg}
+upstream/src/pg.clj:30:44  TSP210-01  compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)  [warning]
+upstream/src/pg.clj:49:3  TSP210-01  compatibility not checked: t/unknown to com.zaxxer.hikari.HikariDataSource (unknown)  [warning]
+upstream/src/pg.clj:53:50  TSP210-01  compatibility not checked: t/unknown to map? (unknown)  [warning]
+upstream/src/pg.clj:57:15  TSP2322  hint Connection contradicts the type: com.zaxxer.hikari.HikariDataSource
+upstream/src/pg.clj:57:44  TSP210-01  compatibility not checked: t/unknown to map? (unknown)  [warning]
+upstream/src/pg.clj:101:48  TSP210-01  compatibility not checked: t/unknown to map? (unknown)  [warning]
+upstream/src/pg.clj:115:45  TSP210-01  compatibility not checked: t/unknown to string? (unknown)  [warning]
+upstream/src/pg.clj:115:49  TSP210-01  compatibility not checked: t/unknown to int? (unknown)  [warning]
+upstream/src/pg.clj:115:54  TSP210-01  compatibility not checked: t/unknown to number? (unknown)  [warning]
+upstream/src/pg.clj:117:45  TSP210-01  compatibility not checked: t/unknown to string? (unknown)  [warning]
+upstream/src/pg.clj:140:35  TSP210-01  compatibility not checked: t/unknown to map? (unknown)  [warning]
+upstream/src/pg.clj:145:35  TSP210-01  compatibility not checked: t/unknown to map? (unknown)  [warning]
+upstream/src/pg.clj:185:19  TSP210-01  compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)  [warning]
+upstream/src/pg.clj:195:27  TSP210-01  compatibility not checked: t/unknown to number? (unknown)  [warning]
+upstream/src/pg.clj:206:41  TSP2345  java.io.BufferedReader is not assignable to InputStream
+upstream/src/pg.clj:244:64  TSP210-01  compatibility not checked: t/unknown to string? (unknown)  [warning]
+upstream/src/pg.clj:255:57  TSP210-01  compatibility not checked: t/unknown to String (unknown)  [warning]
+upstream/src/pg.clj:308:35  TSP7020  reflective call: the type of (cheshire.core/generate-string res) is unknown  [warning]

@@ -1,5 +1,13 @@
 # Проверка целого namespace context-clj/pg
 
+## Обновление: точность checker
+
+После улучшения loop/recur, use-site Java hints (с сохранением nullability), literal top-level imports и добавления core/abs: полный pg.clj с контрактами даёт **2 ошибки / 11 предупреждений** на Java 27.0.1.1. Обе ошибки сохранены: TSP2322 на 57:15 и TSP2345 на 206:41. Старые результаты ниже и baseline.txt/contracts.txt — исторический снимок до этого изменения, не текущий вывод.
+
+Сам checker убрал четыре предупреждения: два числовых на строке 115, индекс loop на 195 и Java-результат на 244. Source-backed контракт cheshire.core/generate-string убрал предупреждение на 255; на 308 неизвестный receiver TSP7020 стал известным String с предупреждением о рефлексии TSP7023. Не все предупреждения устраняются добавлением типов.
+
+Общий suite: **109 тестов / 686 assertions**, все golden/CLI проходят без изменения эталонов. Пример context-web-pg: 0 errors/0 warnings, unit 3/22 PASS. Runtime HTTP/PG повторно в этом этапе не запускался. Loop использует ограниченное вычисление устойчивых типов; при нестабильности остаётся unknown. Вложенные fn/loop не смешивают recur-цели. Literal import учитывается file-wide; порядок переопределений import не моделируется. Неверная арность recur пока приводит к conservative unknown, а не отдельной syntax-диагностике.
+
 ## Объём и воспроизведение
 
 Проверен **один полный `src/pg.clj`**, не весь пакет pg/repo/dsql. Pin: `aa8ea0eb565e7f70f80f3248e6a83198628e1047`. [Исходник](https://github.com/context-clj/pg/blob/aa8ea0eb565e7f70f80f3248e6a83198628e1047/src/pg.clj).

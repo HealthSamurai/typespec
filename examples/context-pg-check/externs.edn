@@ -1,4 +1,9 @@
 {;; Normal initialized pg state only: get-pool constructs HikariDataSource
  ;; (pg.clj:167-181), defstart stores it (421-428), datasource reads it (48-50).
  ;; map? is a coarse context precondition, not validation of the state atom.
- pg/datasource [map? :-> com.zaxxer.hikari.HikariDataSource]}
+ pg/datasource [map? :-> com.zaxxer.hikari.HikariDataSource]
+ ;; Cheshire generate-string source on this pinned classpath: both arities have
+ ;; ^String return; input is serialized, not assumed to be a particular shape.
+ ;; Normal return only; arbitrary objects can still cause serialization errors.
+ cheshire.core/generate-string ([t/unknown :-> string?]
+                                [t/unknown (s/nilable map?) :-> string?])}

@@ -104,6 +104,22 @@
                                      (= 'ns (try (n/sexpr (first (n/children %))) (catch Exception _ nil))))
                                (n/children root)))
         info (if ns-node (parse-ns-form (n/sexpr ns-node dummy)) {:ns 'user :aliases {} :refers {} :imports {}})
+        ;; Like ns imports, literal top-level imports are collected file-wide;
+        ;; source-order rebinding is not modeled. Do not evaluate forms
+        ;; (in particular, never require the namespace being checked).
+        import-specs (for [node (n/children root)
+                           :when (= :list (n/tag node))
+                           :let [form (try (n/sexpr node dummy) (catch Exception _ nil))]
+                           :when (#{'import 'clojure.core/import} (first form))
+                           spec (rest form)]
+                       (cond
+                         (and (seq? spec) (= 'quote (first spec))) (second spec)
+                         (or (symbol? spec) (vector? spec)) spec
+                         :else nil))
+        literal-imports (filter #(or (symbol? %)
+                                     (and (sequential? %) (seq %) (every? symbol? %))) import-specs)
+        info (update info :imports merge
+                     (:imports (parse-ns-form (list 'ns (:ns info) (cons :import literal-imports)))))
         opts {:auto-resolve (fn [a] (if (= :current a) (:ns info) (get (:aliases info) a a)))}]
     (assoc info :file file :forms (convert-seq (n/children root) opts))))
 

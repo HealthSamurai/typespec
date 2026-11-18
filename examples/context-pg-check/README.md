@@ -24,7 +24,9 @@ from this directory: `JAVA_CMD="$JAVA_HOME/bin/java" clojure -M:check baseline`.
   and two explicit lifecycle macro body contracts, with source provenance.
 - `baseline.txt`, `contracts.txt`: captured Java 25.0.5.1 results, summary first.
 
-Baseline: **1 error / 10 warnings**. Contracts: **2 errors / 16 warnings**.
+Current precision pass (Java 27.0.1.1, direct checker API): contracts **2 errors / 11 warnings**, preserving both errors at lines 57 and 206. Improvements: bounded loop/recur inference, use-site Java hints with nullability preserved, literal standalone imports, core/abs, and a source-backed Cheshire JSON return contract. The Java-25-only launcher still pins the original reproducibility environment.
+
+Historical captured outputs in baseline.txt/contracts.txt: baseline **1 error / 10 warnings**, contracts **2 errors / 16 warnings**. These snapshots precede the precision pass and are not current expected-output tests.
 Both: 451 source lines, 54 top-level parsed forms, `pg-loaded? false`, zero
 casts/any/ignores. Whole-file input does not mean every Clojure feature is
 supported: `comment`/`defmacro` bodies and discarded forms are not checked.

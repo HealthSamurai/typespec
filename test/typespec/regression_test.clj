@@ -18,7 +18,9 @@
     typespec.review-fixes-test
     typespec.string-contracts-test
     typespec.declaration-resources-test
-    typespec.pg-connection-regression-test])
+    typespec.pg-connection-regression-test
+    typespec.pg-json-contract-test
+    typespec.pg-precision-test])
 
 (defn run-suites []
   ;; Missing namespaces are an error, never a silently skipped test group.

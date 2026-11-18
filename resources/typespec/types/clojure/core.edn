@@ -6,6 +6,8 @@
 {clojure.core/str        [& any? :-> string?]
  clojure.core/inc        ([int? :-> int?] [number? :-> number?])
  clojure.core/dec        ([int? :-> int?] [number? :-> number?])
+ ;; Clojure 1.11+: Numbers/abs preserves integer inputs; ratios stay numeric.
+ clojure.core/abs        ([int? :-> int?] [number? :-> number?])
  clojure.core/+          ([& int? :-> int?] [& number? :-> number?])
  clojure.core/-          ([int? & int? :-> int?] [number? & number? :-> number?])
  clojure.core/*          ([& int? :-> int?] [& number? :-> number?])

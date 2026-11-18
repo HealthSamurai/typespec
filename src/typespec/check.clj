@@ -486,7 +486,7 @@
         ptypes (mapv #(nth arg-types % t/unknown) (range n))
         ctx' (reduce (fn [c [i ty]] (cond-> (bind c (symbol (str "%" (inc i))) ty)
                                       (zero? i) (bind '% ty)))
-                     ctx (map-indexed vector ptypes))]
+                     (dissoc ctx :recur-types) (map-indexed vector ptypes))]
     {:t :fn :arities [{:params ptypes :rest nil
                        :ret (infer ctx' {:op :list :children (:children node) :pos (:pos node)})}]}))
 
@@ -700,7 +700,8 @@
 (defn- infer-fn
   "Type of a (fn ...) form. `arg-types` gives the parameter types when the context knows them."
   [ctx node arg-types]
-  (let [more (rest (:children node))
+  (let [ctx (dissoc ctx :recur-types)
+        more (rest (:children node))
         more (if (= :sym (:op (first more))) (rest more) more)
         arities (if (= :vector (:op (first more)))
                   [more]
@@ -746,7 +747,7 @@
 (defn apply-fn-node [ctx fnode arg-types]
   (case (:op fnode)
     :kw (read-key ctx (first arg-types) (:val fnode) fnode)
-    :fn-lit (let [ctx' (reduce (fn [c [s ty]] (bind c s ty)) ctx
+    :fn-lit (let [ctx' (reduce (fn [c [s ty]] (bind c s ty)) (dissoc ctx :recur-types)
                                (map vector '[% %1 %2 %3] (cons (first arg-types) arg-types)))]
               (infer ctx' {:op :list :children (:children fnode) :pos (:pos fnode)}))
     :set (t/union (first arg-types) t/nil-t)
@@ -832,7 +833,13 @@
 
 (defn- method-call [ctx node mname]
   (let [[_ target & arg-nodes] (:children node)
-        tty (eff ctx (infer ctx target))
+        actual (infer ctx target)
+        hinted (check-hint! ctx target actual "type of the receiver")
+        ;; Compatible hints must not erase known nullability or its provenance.
+        tty (eff ctx (if (and hinted
+                             (or (#{:unknown :any} (:t actual))
+                                 (not (t/sub? (:env ctx) (t/remove-nil (:env ctx) actual) hinted))))
+                      hinted actual))
         env (:env ctx)
         cname (class-of ctx tty)]
     (cond
@@ -886,11 +893,37 @@
 
 (defmethod special 'loop [ctx node _]
   (let [[bindings & body] (args-of node)
-        ctx' (reduce (fn [c [p init]] (infer c init) (bind-pattern c p (or (env/hint-type (:file ctx) p) t/unknown)))
-                     ctx (partition 2 (:children bindings)))]
-    (infer-body ctx' body)))
+        pairs (vec (partition 2 (:children bindings)))
+        ;; Initializers have let-like scope and are checked exactly once.
+        [_ seeds] (reduce (fn [[c ts] [p init]]
+                            (let [ty (widen (infer c init))]
+                              [(bind-pattern c p ty) (conj ts ty)]))
+                          [ctx []] pairs)
+        bind-loop (fn [ts calls]
+                    (reduce (fn [c [[p _] ty]] (bind-pattern c p ty))
+                            (assoc ctx :recur-types calls) (map vector pairs ts)))
+        ;; Join back edges, not just initializers: recur can change a local's
+        ;; type. Bound structural growth and keep trial diagnostics/caches local.
+        stable (binding [*types* nil *diags* (atom [])
+                         *trust* (atom {:cast 0 :any 0 :ignore 0})
+                         *ignores* (atom []) *rets* (atom @*rets*)]
+                 (loop [ts seeds n 0]
+                   (let [calls (atom [])
+                         _ (infer-body (assoc (bind-loop ts calls) :quiet true) body)
+                         next-ts (if (every? #(= (count ts) (count %)) @calls)
+                                   (mapv (fn [i ty]
+                                           (widen (apply t/union ty (map #(nth % i) @calls))))
+                                         (range (count ts)) ts)
+                                   (vec (repeat (count ts) t/unknown)))]
+                     (cond (= ts next-ts) ts
+                           (>= n 7) (vec (repeat (count ts) t/unknown))
+                           :else (recur next-ts (inc n))))))]
+    (infer-body (bind-loop stable nil) body)))
 
-(defmethod special 'recur [ctx node _] (run! #(infer ctx %) (args-of node)) t/never)
+(defmethod special 'recur [ctx node _]
+  (let [ts (mapv #(infer ctx %) (args-of node))]
+    (when-let [calls (:recur-types ctx)] (swap! calls conj ts)))
+  t/never)
 (defmethod special 'throw [ctx node _] (run! #(infer ctx %) (args-of node)) t/never)
 
 (doseq [h '[some? nil?]]
@@ -1330,7 +1363,7 @@
                              (let [c' (bind-pattern c p ty)]
                                (record! ctx p ty)
                                (if (= :sym (:op p)) (update c' :params (fnil conj #{}) (:val p)) c')))
-                           ctx (map vector fixed (:params declared)))
+                           (dissoc ctx :recur-types) (map vector fixed (:params declared)))
               ctx' (cond (nil? rest) ctx'
                          (:kwargs declared) (bind-pattern ctx' rest (:kwargs declared))
                          (:rest declared) (bind-pattern ctx' rest (t/union {:t :coll :kind :seq :of (:rest declared)} t/nil-t))
@@ -1452,7 +1485,7 @@
                                    (dissoc vty :fresh))])))}
              (do (run! #(infer ctx %) (:children node)) (t/prim :map))))
     :quote (if (= :sym (:op (first (:children node)))) (t/prim :symbol) t/unknown)
-    :fn-lit (do (infer (reduce #(bind %1 %2 t/unknown) ctx '[% %1 %2 %3 %&])
+    :fn-lit (do (infer (reduce #(bind %1 %2 t/unknown) (dissoc ctx :recur-types) '[% %1 %2 %3 %&])
                        {:op :list :children (:children node) :pos (:pos node)})
                 {:t :fn})
     :list (infer-list ctx node)

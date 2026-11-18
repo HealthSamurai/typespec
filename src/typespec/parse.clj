@@ -59,6 +59,7 @@
               (string? v)  {:op :str :val v :pos pos}
               (number? v)  {:op :num :val v :pos pos}
               (nil? v)     {:op :nil :pos pos}
+              (char? v)    {:op :char :val v :pos pos}
               (boolean? v) {:op :bool :val v :pos pos}
               :else        {:op :opaque :pos pos}))
       (:list :vector :map :set) {:op tag :children (convert-seq (n/children x) opts) :pos pos}
@@ -114,7 +115,7 @@
   (let [kids #(str/join " " (map unparse (:children node)))]
     (case (:op node)
       (:sym :kw :num :bool) (str (:val node))
-      :str (pr-str (:val node))
+      (:str :char) (pr-str (:val node))
       :nil "nil"
       :list (str "(" (kids) ")")
       :vector (str "[" (kids) "]")
@@ -128,7 +129,7 @@
   "Plain Clojure data for a node; used to read type forms."
   [n]
   (case (:op n)
-    (:sym :kw :str :num :bool) (:val n)
+    (:sym :kw :str :num :bool :char) (:val n)
     :nil nil
     :list (apply list (map node->data (:children n)))
     :vector (mapv node->data (:children n))

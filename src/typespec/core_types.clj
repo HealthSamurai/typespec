@@ -1,77 +1,82 @@
 (ns typespec.core-types
   "Signatures of clojure.core and clojure.string functions, written in the type language.
-  The same format is used for externs of third-party libraries."
-  (:require [typespec.types :as t]))
+  The declarations are inert EDN resources in the same format as externs of third-party
+  libraries; this namespace only reads them from the classpath. Nothing is evaluated."
+  (:require [clojure.edn :as edn]
+            [clojure.string :as str]
+            [typespec.types :as t]))
+
+(def declared-namespaces
+  "Namespaces that have built-in declarations. A fixed list: resources are never discovered."
+  '[clojure.core clojure.string])
+
+(defn resource-name
+  "Classpath name of the declarations of a namespace. The typespec/ prefix keeps it out of
+  the way of resources of the project being checked."
+  [ns-sym]
+  (str "typespec/types/" (str/replace (str ns-sym) "." "/") ".edn"))
+
+(defn- fail [resource reason message data]
+  (throw (ex-info (str "typespec built-in declarations " resource ": " message)
+                  (merge {:resource resource :reason reason} data))))
+
+(defn- only-url
+  "The single classpath entry with this name. A second copy would silently replace the
+  built-in types and bypass :externs-core, so it is an error, not a shadowing rule."
+  [^ClassLoader loader resource]
+  (let [urls (vals (into (sorted-map) (map (juxt str identity)) (enumeration-seq (.getResources loader resource))))]
+    (case (count urls)
+      0 (fail resource :missing "not found on the classpath" {})
+      1 (first urls)
+      (fail resource :duplicate (str "found " (count urls) " copies on the classpath: " (str/join ", " urls))
+            {:urls (mapv str urls)}))))
+
+(defn- read-map [resource ^java.net.URL url]
+  (with-open [r (java.io.PushbackReader. (java.io.InputStreamReader. (.openStream url) "UTF-8"))]
+    (let [eof (Object.)
+          opts {:eof eof :readers {} :default (fn [tag _] (throw (ex-info (str "unsupported EDN tag #" tag) {})))}
+          read-form #(try (edn/read opts r)
+                          (catch Exception e
+                            (fail resource :malformed (str "not readable as EDN: " (ex-message e)) {})))
+          data (read-form)]
+      (when-not (map? data) (fail resource :malformed "expected one EDN map" {}))
+      (when-not (identical? eof (read-form)) (fail resource :malformed "expected exactly one EDN map" {}))
+      data)))
+
+(defn load-declarations
+  "Reads and validates the declarations of every namespace in `declared-namespaces` from
+  `loader`. Returns {:externs {var-symbol form} :table {var-symbol type}}. A missing,
+  duplicated or malformed resource, a key outside the namespace of its file or a bad
+  signature throws: there is no partial table."
+  [^ClassLoader loader]
+  (let [ctx (fn [resource k]
+              {:aliases {} :imports {}
+               :fail (fn [bad] (fail resource :bad-signature (str k " has a bad type: " (pr-str bad)) {:var k :form bad}))})]
+    (reduce
+     (fn [acc ns-sym]
+       (let [resource (resource-name ns-sym)]
+         (reduce-kv
+          (fn [acc k form]
+            (when-not (and (qualified-symbol? k) (= (str ns-sym) (namespace k)))
+              (fail resource :bad-key (str "key " (pr-str k) " is not a var of " ns-sym) {:key k}))
+            (let [ty (try (t/parse-sig (ctx resource k) form)
+                          (catch clojure.lang.ExceptionInfo e (throw e))
+                          (catch Exception e
+                            (fail resource :bad-signature (str k " has a bad signature: " (ex-message e)) {:var k :form form})))]
+              (-> acc (assoc-in [:externs k] form) (assoc-in [:table k] ty))))
+          acc (read-map resource (only-url loader resource)))))
+     {:externs {} :table {}} declared-namespaces)))
+
+;; Read once, from the loader that loaded this namespace: the declarations ship with the code.
+(def ^:private declarations (load-declarations (clojure.lang.RT/baseLoader)))
 
 (def externs
-  '{clojure.core/str        [& any? :-> string?]
-    clojure.core/inc        ([int? :-> int?] [number? :-> number?])
-    clojure.core/dec        ([int? :-> int?] [number? :-> number?])
-    clojure.core/+          ([& int? :-> int?] [& number? :-> number?])
-    clojure.core/-          ([int? & int? :-> int?] [number? & number? :-> number?])
-    clojure.core/*          ([& int? :-> int?] [& number? :-> number?])
-    clojure.core//          [number? & number? :-> number?]
-    clojure.core/<          [number? & number? :-> boolean?]
-    clojure.core/>          [number? & number? :-> boolean?]
-    clojure.core/<=         [number? & number? :-> boolean?]
-    clojure.core/>=         [number? & number? :-> boolean?]
-    clojure.core/min        ([int? & int? :-> int?] [number? & number? :-> number?])
-    clojure.core/max        ([int? & int? :-> int?] [number? & number? :-> number?])
-    clojure.core/quot       ([int? int? :-> int?] [number? number? :-> number?])
-    clojure.core/rem        ([int? int? :-> int?] [number? number? :-> number?])
-    clojure.core/mod        ([int? int? :-> int?] [number? number? :-> number?])
-    clojure.core/zero?      [number? :-> boolean?]
-    clojure.core/pos?       [number? :-> boolean?]
-    clojure.core/neg?       [number? :-> boolean?]
-    clojure.core/even?      [number? :-> boolean?]
-    clojure.core/odd?       [number? :-> boolean?]
-    clojure.core/count      [any? :-> int?]
-    clojure.core/subs       ([string? int? :-> string?] [string? int? int? :-> string?])
-    clojure.core/name       [(t/or string? keyword? symbol?) :-> string?]
-    clojure.core/namespace  [(t/or keyword? symbol?) :-> (s/nilable string?)]
-    clojure.core/keyword    ([(t/or string? keyword? symbol?) :-> keyword?] [(s/nilable string?) string? :-> keyword?])
-    clojure.core/symbol     ([(t/or string? keyword? symbol?) :-> symbol?] [(s/nilable string?) string? :-> symbol?])
-    clojure.core/parse-long [string? :-> (s/nilable int?)]
-    clojure.core/parse-double [string? :-> (s/nilable double?)]
-    clojure.core/parse-uuid [string? :-> (s/nilable uuid?)]
-    clojure.core/random-uuid [:-> uuid?]
-    clojure.core/not        [any? :-> boolean?]
-    clojure.core/nil?       [any? :-> boolean?]
-    clojure.core/some?      [any? :-> boolean?]
-    clojure.core/string?    [any? :-> boolean?]
-    clojure.core/number?    [any? :-> boolean?]
-    clojure.core/int?       [any? :-> boolean?]
-    clojure.core/keyword?   [any? :-> boolean?]
-    clojure.core/map?       [any? :-> boolean?]
-    clojure.core/vector?    [any? :-> boolean?]
-    clojure.core/empty?     [any? :-> boolean?]
-    clojure.core/contains?  [any? any? :-> boolean?]
-    clojure.core/=          [any? & any? :-> boolean?]
-    clojure.core/not=       [any? & any? :-> boolean?]
-    clojure.core/println    [& any? :-> nil?]
-    clojure.core/prn        [& any? :-> nil?]
-    clojure.core/pr-str     [& any? :-> string?]
-    clojure.core/ex-info    ([string? map? :-> java.lang.Exception] [string? map? any? :-> java.lang.Exception])
-    clojure.core/range      ([:-> (s/coll-of int?)] [number? :-> (s/coll-of int?)] [number? number? :-> (s/coll-of int?)])
-    clojure.core/keys       [any? :-> (s/nilable (s/coll-of any?))]
-    clojure.core/vals       [any? :-> (s/nilable (s/coll-of any?))]
-    clojure.string/upper-case  [string? :-> string?]
-    clojure.string/lower-case  [string? :-> string?]
-    clojure.string/capitalize  [string? :-> string?]
-    clojure.string/trim        [string? :-> string?]
-    clojure.string/reverse     [string? :-> string?]
-    clojure.string/blank?      [(s/nilable string?) :-> boolean?]
-    clojure.string/join        ([any? :-> string?] [any? any? :-> string?])
-    clojure.string/split       ([string? any? :-> (s/coll-of string? :kind vector?)] [string? any? int? :-> (s/coll-of string? :kind vector?)])
-    clojure.string/split-lines [string? :-> (s/coll-of string? :kind vector?)]
-    clojure.string/starts-with? [string? string? :-> boolean?]
-    clojure.string/ends-with?  [string? string? :-> boolean?]
-    clojure.string/includes?   [string? string? :-> boolean?]
-    clojure.string/replace     [string? any? any? :-> string?]})
+  "Built-in declarations as written: var symbol -> signature form."
+  (:externs declarations))
 
 (def table
-  (let [ctx {:aliases {} :imports {} :fail (fn [f] (throw (ex-info "bad core type" {:form f})))}]
-    (into {} (map (fn [[k v]] [k (t/parse-sig ctx v)])) externs)))
+  "Built-in declarations as types: var symbol -> parsed signature."
+  (:table declarations))
 
 (defn stdlib-tagged?
   "Does this var of Clojure itself carry a return type hint? (The compiler uses it to avoid reflection.)"

@@ -11,7 +11,7 @@ src/clinic/export.clj:20:25  TSP2345  "30" is not assignable to long, the parame
 src/clinic/export.clj:24:20  TSP2531  (.get headers "x-request-id") may be nil: java.util.Map.get may return null
 src/clinic/export.clj:31:9  TSP2322  hint String contradicts the type: int?
 src/clinic/export.clj:39:3  TSP7023  reflective call, but file is known to be java.io.File  [warning]
-src/clinic/export.clj:43:20  TSP210-01  compatibility not checked: t/unknown to string? (unknown)  [warning]
+src/clinic/export.clj:43:20  TSP210-01  compatibility not checked: t/unknown to java.lang.CharSequence (unknown)  [warning]
 src/clinic/export.clj:43:20  TSP7020  reflective call: the type of f is unknown  [warning]
 src/clinic/export.clj:46:7  TSP7021  a hint on the name is not a return type: write (defn total-days ^long [...] ...)
 src/clinic/export.clj:47:11  TSP210-01  compatibility not checked: t/unknown to number? (unknown)  [warning]

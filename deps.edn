@@ -1,4 +1,4 @@
-{:paths ["src"]
+{:paths ["src" "resources"]
  :deps {org.clojure/clojure {:mvn/version "1.12.4"}
         rewrite-clj/rewrite-clj {:mvn/version "1.2.50"}
         org.clojure/data.json {:mvn/version "2.5.1"}}

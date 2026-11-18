@@ -1277,7 +1277,8 @@
   (let [[cls & args] (args-of node)]
     (run! #(infer ctx %) args)
     (if-let [c (and (= :sym (:op cls)) (t/resolve-class (:imports (:file ctx)) (:val cls)))]
-      (t/class-type c)
+      ;; A concrete Object constructor is not the declared Object/top escape.
+      (if (= c "java.lang.Object") {:t :class :name c} (t/class-type c))
       t/unknown)))
 
 ;; ---- defn ----
@@ -1405,7 +1406,8 @@
           (and (nil? (namespace sym)) (str/starts-with? n ".") (> (count n) 1) (not= ".." n)) (method-call ctx node (subs n 1))
           (and (nil? (namespace sym)) (str/ends-with? n ".") (> (count n) 1))
           (do (run! #(infer ctx %) args)
-              (if-let [c (t/resolve-class (:imports file) (symbol (subs n 0 (dec (count n)))))] (t/class-type c) t/unknown))
+              (if-let [c (t/resolve-class (:imports file) (symbol (subs n 0 (dec (count n)))))]
+                (if (= c "java.lang.Object") {:t :class :name c} (t/class-type c)) t/unknown))
           (java-static? ctx sym) (java-call ctx node (java-static? ctx sym) n true args)
           (contains? (:macros (:env ctx)) (:sym (resolve-var (assoc ctx :quiet true) sym h)))
           (do (report! ctx h "TSP7031" (str "macro " sym " is not described: its body is not checked") :severity :warning)
@@ -1419,6 +1421,7 @@
 (defn- infer* [ctx node]
   (case (:op node)
     :str (t/lit (:val node))
+    :char (t/class-type "java.lang.Character")
     :num (t/lit (:val node))
     :kw (t/lit (:val node))
     :bool (t/lit (:val node))

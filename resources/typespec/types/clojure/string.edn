@@ -1,0 +1,29 @@
+;; Built-in typespec declarations for clojure.string.
+;; Inert EDN, read as data from the classpath by typespec.core-types: nothing here is
+;; evaluated or required. One map: qualified var symbol -> signature, in the same
+;; format as project extern files. Every key must belong to clojure.string.
+
+{clojure.string/upper-case  [java.lang.CharSequence :-> string?]
+ clojure.string/lower-case  [java.lang.CharSequence :-> string?]
+ clojure.string/capitalize  [java.lang.CharSequence :-> string?]
+ clojure.string/trim        [java.lang.CharSequence :-> string?]
+ clojure.string/reverse     [java.lang.CharSequence :-> string?]
+ clojure.string/blank?      [(s/nilable java.lang.CharSequence) :-> boolean?]
+ ;; Bounded seqable domain: arrays are not yet represented. Elements and the
+ ;; separator are stringified; no element contract or any escape is needed.
+ clojure.string/join        ([(t/or nil? java.lang.CharSequence clojure.lang.Seqable java.lang.Iterable java.util.Map) :-> string?]
+                            [t/unknown (t/or nil? java.lang.CharSequence clojure.lang.Seqable java.lang.Iterable java.util.Map) :-> string?])
+ clojure.string/split       ([java.lang.CharSequence java.util.regex.Pattern :-> (s/coll-of string? :kind vector?)]
+                            [java.lang.CharSequence java.util.regex.Pattern int? :-> (s/coll-of string? :kind vector?)])
+ clojure.string/split-lines [java.lang.CharSequence :-> (s/coll-of string? :kind vector?)]
+ clojure.string/starts-with? [java.lang.CharSequence string? :-> boolean?]
+ clojure.string/ends-with?  [java.lang.CharSequence string? :-> boolean?]
+ clojure.string/includes?   [java.lang.CharSequence java.lang.CharSequence :-> boolean?]
+ ;; Correlated pairs, not independent unions. A Pattern callback must handle
+ ;; both ungrouped matches and vectors with nullable unmatched groups.
+ clojure.string/replace     ([java.lang.CharSequence java.lang.Character java.lang.Character :-> string?]
+                            [java.lang.CharSequence java.lang.CharSequence java.lang.CharSequence :-> string?]
+                            [java.lang.CharSequence java.util.regex.Pattern java.lang.CharSequence :-> string?]
+                            [java.lang.CharSequence java.util.regex.Pattern
+                             [(t/or string? (s/coll-of (s/nilable string?) :kind vector?)) :-> string?]
+                             :-> string?])}

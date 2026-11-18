@@ -98,7 +98,13 @@ The [demo](demo/README.md) lists every mistake, what it does at run time today, 
 
 **What works in the prototype** (each item is covered by `clojure -M:test`): structural maps and key lookup with suggestions, literal unions and exhaustive `case`, nil tracking and narrowing (`if`, `when`, `if-let`, `cond`, `and`/`or`, `some?`), `->` and `some->`, `map`/`filter`/`reduce` over typed collections, `assoc`/`update`/`get-in`/`select-keys`/`merge`, Clojure 1.13 `:keys!` and `:missing`, hints as signatures, hint checks, Java method calls with overloads, reflection warnings with a fix, unresolved names, `#_(t/cast)`/`#_(t/ignore)`/`#_(t/any)` with trust counters, JSON output, `sig`, `type-at`, `--strict`, `--strict-nil`.
 
-**What does not work yet:** generics, `reify`/`proxy`/protocols/multimethods, project macros (reported as `TSP7031`, the body is skipped), `typespec/types.edn` and externs for libraries, per-namespace caching and the daemon, `fix` and `annotate`, the trust budget in CI. Java classes are read by reflection, not from bytecode. The standard library has 64 signatures; core macros without a rule are skipped.
+**Also implemented:** bounded rank-1 generics (`t/all`), contextual callbacks, named refs and structural map constraints; local EDN extern declarations; opt-in binding-body macro contracts without macro expansion. See [solver usage](docs/solver-usage.md) and the verified [context-clj HTTP + PostgreSQL example](examples/context-web-pg/README.md).
+
+**Type declarations:** the 64 built-in signatures now live in `resources/typespec/types/clojure/core.edn` (51) and `string.edn` (13). `core_types.clj` loads them strictly through the classpath; there is no second signature table. Users can supply the same EDN format through `:externs ["types/vendor.edn"]`. Explicit user declarations from JAR resources are planned, not implemented. See [declaration files and distribution](docs/type-declarations.md) and the [clojure.string audit](docs/clojure-string-audit.md).
+
+**Verified baseline:** `clojure -M:test` runs 102 tests / 660 assertions plus golden and CLI checks. Resource tests cover JAR loading outside the repository and malformed/missing/duplicate resources. String tests include actual Clojure 1.12.4 runtime probes.
+
+**What does not work yet:** higher-rank generics and general generic overload inference, `reify`/`proxy`/protocols/multimethods, arbitrary project macro expansion, automatic declaration discovery and library-version matching, per-namespace caching and the daemon, `fix` and `annotate`, the trust budget in CI. Undescribed project macros remain incomplete; configured macro contracts are trusted assumptions, not verification of the macro implementation. Java classes are read by reflection, not from bytecode. JVM arrays in `join` and regex-group-specific callback inference remain outside the string contracts' supported scope.
 
 **First run on real code.** Three modules of an internal library (5,800 lines, almost no specs) check in 1–4 seconds each, JVM start included. The result is 1 error and 39 warnings. The error is real: a `BufferedReader` is passed to a parameter hinted `^InputStream`, a `ClassCastException` at run time. The warnings are reflective calls and undescribed project macros. Code without specs gives the checker little to work with, so little is reported; getting to zero false errors took about ten fixes to the checker.
 
@@ -290,7 +296,7 @@ with-tax       [:clinic/invoice number? :-> number?]   ; from the body
 | Support for agents | text diagnostics, language server | JSON with stable ids and root causes, risk-rated fixes, `sig`/`type-at`/`order`, trust budget | + |
 | Maturity | 12+ years, huge ecosystem | a design and a prototype | − |
 
-The `−` rows are the honest limits. Some are permanent: the checker sees files and not the running REPL image, macros must be described, and data DSLs get their meaning only when interpreted. Others are a matter of work: externs for libraries, the editor, inference for `comp` and transducers.
+The `−` rows are the honest limits. Some are permanent: the checker sees files and not the running REPL image, macros must be described, and data DSLs get their meaning only when interpreted. Others are a matter of work: distribution of externs with libraries, the editor, inference for `comp` and transducers.
 
 ## Design decisions
 
@@ -324,7 +330,7 @@ A hinted value or a Java result is a *platform type*, as in Kotlin: nil is not c
 
 **11. A namespace is a module.** A namespace is checked against the *signatures* of its dependencies, not their bodies. This gives caching, parallel checking and a fast editor loop.
 
-**12. Libraries get externs.** Types for third-party Clojure libraries are versioned EDN files, never loaded as code. Libraries can ship their own inside the jar, like `.d.ts`.
+**12. Libraries get externs.** Types are inert EDN declaration files. Local files already work; built-in declarations are classpath resources. User-library JAR declarations and separately packaged declarations (similar to `.d.ts` / `@types`) are the next distribution step, not automatic discovery already available. See [the decision and current status](docs/type-declarations.md).
 
 **13. Honest gaps.** Everything unproven is visible and counted: `t/unknown`, `any?` with a reason, casts, externs, platform types. The trust budget keeps that number from growing.
 

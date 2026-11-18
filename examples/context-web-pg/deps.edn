@@ -1,0 +1,10 @@
+{:paths ["src" "resources"]
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}
+        context/system {:git/url "https://github.com/context-clj/system" :git/sha "818ff24fed230cc75119f5ca66088b32d99af581"}
+        context/http {:git/url "https://github.com/context-clj/http" :git/sha "e158b6b244c2b8e053de2a097d1071d9419adef9"}
+        context/pg {:git/url "https://github.com/context-clj/pg" :git/sha "aa8ea0eb565e7f70f80f3248e6a83198628e1047"}}
+ :aliases {:run {:main-opts ["-m" "todo.main"]}
+           :test {:extra-paths ["test"] :main-opts ["-m" "todo.test-runner"]}
+           :integration {:extra-paths ["test"] :main-opts ["-m" "todo.integration-test"]}
+           :check {:extra-deps {local/typespec {:local/root "../.."}}
+                   :main-opts ["-m" "typespec.main" "check"]}}}

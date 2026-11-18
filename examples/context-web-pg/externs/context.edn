@@ -1,0 +1,9 @@
+{:context/system clojure.lang.Atom
+ :context/context (clojure.spec.alpha/keys :req-un [:context/system])
+ ;; Trusted library boundaries, not verified upstream implementations.
+ ;; SQL text cannot establish the output columns; repo checks every row at runtime.
+ :pg/sql (clojure.spec.alpha/coll-of any? :kind vector?)
+ :pg/query (clojure.spec.alpha/keys :req-un [:pg/sql])
+ pg/execute! [:context/context :pg/query :-> (clojure.spec.alpha/coll-of map?)]
+ system/start-system [map? :-> :context/context]
+ system/stop-system [:context/context :-> any?]}

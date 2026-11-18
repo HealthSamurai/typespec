@@ -3,11 +3,15 @@
             [clojure.spec.alpha :as s]))
 
 (s/def ::status int?)
-(s/def ::body any?)
+(s/def ::error string?)
+(s/def ::error-body (s/keys :req-un [::error]))
+(s/def ::body (s/or :todo :todo.repo/todo
+                   :todos (s/coll-of :todo.repo/todo :kind vector?)
+                   :error ::error-body))
 (s/def ::response (s/keys :req-un [::status ::body]))
 
 (defn response
-  {:t/sig '[int? any? :-> ::response]}
+  {:t/sig '[int? ::body :-> ::response]}
   [status body]
   {:status status :body body})
 

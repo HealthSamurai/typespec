@@ -13,7 +13,7 @@
         :password (env "TODO_PG_PASSWORD" "local-demo-only")
         :min-idle 1 :max-pool-size 2}})
 
-(defn stop! [ctx]
+(defn stop! {:t/sig '[:context/context :-> t/unknown]} [ctx]
   ;; Upstream http/stop does not shutdown its worker executor.
   (let [pool (get-in @(:system ctx) [:http :worker-pool])]
     (system/stop-system ctx)

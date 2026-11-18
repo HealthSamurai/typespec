@@ -1,1 +1,10 @@
-{:paths ["src"] :externs ["externs/context.edn"]}
+{:paths ["src"]
+ :externs ["externs/context.edn"]
+ ;; Trusted descriptions of pinned upstream binding-body macros, not macro expansion.
+ :macro-contracts
+ {system/defstart {:shape :binding-body
+                   :bindings [:context/context map?]
+                   :ret (t/or map? nil?)}
+  system/defstop {:shape :binding-body
+                  :bindings [:context/context (t/or map? nil?)]
+                  :ret t/unknown}}}

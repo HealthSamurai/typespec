@@ -15,7 +15,7 @@
     (throw (ex-info "Invalid database row" {:row row}))))
 
 (defn list-todos
-  {:t/sig '[:context/context :-> (s/coll-of ::todo)]}
+  {:t/sig '[:context/context :-> (s/coll-of ::todo :kind vector?)]}
   [ctx]
   (mapv checked-todo
         (pg/execute! ctx {:sql ["SELECT id, title, done FROM context_example_todos ORDER BY id"]})))

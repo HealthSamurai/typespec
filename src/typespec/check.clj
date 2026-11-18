@@ -6,7 +6,8 @@
             [typespec.solver :as solver]
             [typespec.env :as env]
             [typespec.java :as java]
-            [typespec.core-types :as core]))
+            [typespec.core-types :as core]
+            [typespec.macro-contracts :as macros]))
 
 (def ^:dynamic *diags* nil)
 (def ^:dynamic *types* nil)
@@ -1284,6 +1285,20 @@
   (let [form (parse/node->data (second (:children d)))]
     (t/parse-type (env/type-ctx (:file ctx) (fn [f] (report! ctx d "TSP9001" (str "not a type: " (pr-str f))))) form)))
 
+(defn- check-macro-body [ctx node contract]
+  (if-not (macros/valid-bindings? node contract)
+    (report! ctx node "TSP7032"
+             "macro contract requires a first-argument vector of distinct simple symbols matching :bindings; body not checked")
+    (let [[_ bindings & body] (:children node)
+          body-ctx (reduce (fn [c [p ty]]
+                             (record! ctx p ty)
+                             (bind-pattern c p ty))
+                           ctx (map vector (:children bindings) (:bindings contract)))
+          actual (infer-body body-ctx body)]
+      (check-return! body-ctx (or (last body) node) actual (:ret contract))))
+  ;; A trusted body contract says nothing about the expansion's expression type.
+  t/unknown)
+
 (defn- infer-list [ctx node]
   (let [h (first (:children node))
         args (args-of node)
@@ -1306,7 +1321,10 @@
             core-sym (if (namespace head) head (symbol "clojure.core" (name head)))
             extern? (= :extern (get-in ctx [:env :vars core-sym :source]))
             has-rule? (and (not own?) (not extern?) (not= (get-method special head) (get-method special ::none)))
-            r (cond has-rule? (special ctx node head)
+            contract-sym (if (namespace head) head (symbol (str (:ns file)) (name head)))
+            contract (get-in ctx [:env :macro-contracts contract-sym])
+            r (cond contract (check-macro-body ctx node contract)
+                    has-rule? (special ctx node head)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
                     (and (not own?) (not extern?) (core/stdlib-macro? core-sym)) t/unknown
                     :else ::none)]
@@ -1388,8 +1406,8 @@
 (def ^:private known-diagnostic-codes
   #{"TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
-    "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031"
-    "TSP8001" "TSP9001" "TSP9002" "TSP9003" "TSP830-01" "TSP210-01"})
+    "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032"
+    "TSP8001" "TSP9001" "TSP9002" "TSP9003" "TSP9004" "TSP830-01" "TSP210-01"})
 
 (defn- directive-children
   "Directive scope follows source code, not quoted data or opaque declarations.
@@ -1454,7 +1472,9 @@
   "Checks parsed files. Returns {:diagnostics [...] :types [...] :trust {...} :env env}."
   [files opts]
   (let [[env0 env-diags] (env/build files (:extern-contracts opts))
-        env (assoc env0
+        compiled (macros/compile-contracts (get opts :macro-contracts {}) env0)
+        env-diags (concat env-diags (:diagnostics compiled))
+        env (assoc env0 :macro-contracts (:contracts compiled)
                    :nss (set (map :ns files))
                    :ns-defs (into {} (for [f files]
                                        [(:ns f) (set (for [form (:forms f)

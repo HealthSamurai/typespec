@@ -1,5 +1,11 @@
 # Проверки
 
+## Обновление после refs/maps и lifecycle-контрактов
+
+Статический повтор: `clojure -M:check` — 0 errors / 0 warnings; `clojure -M:check src negative` — ожидаемый exit 1, два TSP2345 (числовой title в обычном вызове и внутри defstart). Response body теперь явный union Todo/vector Todo/error вместо any?. Контракты defstart/defstop заданы в typespec.edn, тело проверяется без macroexpand. `defstop` допускает nil state согласно upstream.
+
+Общий suite Typespec: 75 тестов / 386 assertions, golden/CLI PASS. Финальный независимый runtime-повтор после этих изменений прошёл: PostgreSQL 18.6 на 55449, HTTP на 18091 — integration 1/7 и unit 3/22, без ошибок. HTTP, datasource и временный кластер остановлены; весь shell job завершился exit 0. Следующие разделы сохраняют историю первого запуска: их три предупреждения уже устранены расширением проверок и уточнением контрактов, не suppressions.
+
 Среда: macOS arm64, OpenJDK 25.0.2 (`/opt/homebrew/opt/openjdk@25`), Clojure 1.12.4. Команды из папки примера. Исходники checker не менялись.
 
 ## Unit

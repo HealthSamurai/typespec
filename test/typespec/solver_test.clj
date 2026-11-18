@@ -76,3 +76,72 @@
   (is (t/alpha-equivalent? identity-t (parse '(t/all [z] [z :-> z]))))
   (is (not (t/alpha-equivalent? identity-t (parse '(t/all [(z :< number?)] [z :-> z])))))
   (is (thrown? clojure.lang.ExceptionInfo (parse '(t/all [a] [(t/fn string?) :-> a])))))
+
+(defn keys-t [req opt] {:t :map :req req :opt opt})
+(defn compare-t
+  ([env l r] (compare-t env l r 12))
+  ([env l r budget]
+   (s/solve env (s/constrain {:vars [] :budget budget :constraints []} l r :map-test))))
+
+(deftest structural-keys-presence-and-values
+  (let [i (t/prim :int) n (t/prim :number) st (t/prim :string)
+        target (keys-t {:id n} {:label st})]
+    (is (= :proved (:status (compare-t {} (keys-t {:id i :extra st} {}) target))))
+    (is (= :proved (:status (compare-t {} (keys-t {:id i :unused t/unknown} {}) target))))
+    (is (= :proved (:status (compare-t {} (keys-t {:id i} {:label st}) target))))
+    (doseq [source [(keys-t {} {}) (keys-t {} {:id i})
+                    (keys-t {:id st} {}) (keys-t {:id i :label i} {})
+                    (keys-t {:id i} {:label i})]]
+      (is (= :mismatch (:status (compare-t {} source target)))))
+    (let [result (compare-t {} (keys-t {} {:id i}) target)]
+      (is (= :map-test (get-in result [:issues 0 :origin])))
+      (is (= [[:key :id]] (get-in result [:issues 0 :path]))))
+    (doseq [u [t/unknown t/any]]
+      (is (= :inconclusive (:status (compare-t {} (keys-t {:id u} {}) target)))))))
+
+(deftest bounded-named-reference-evidence
+  (let [i (t/prim :int)
+        env {:specs {:id {:type i}
+                     :response {:type (keys-t {:id (t/ref-t :id)} {})}
+                     :alias {:type (t/ref-t :response)}
+                     :loop {:type (t/ref-t :loop)}
+                     :a {:type (t/ref-t :b)} :b {:type (t/ref-t :a)}
+                     :tree {:type (keys-t {:next (t/ref-t :tree)} {})}}}
+        response (t/ref-t :response)]
+    (is (= :proved (:status (compare-t env (t/ref-t :alias) response))))
+    (is (= :mismatch (:status (compare-t env (keys-t {:id (t/prim :string)} {}) response))))
+    (doseq [ref [:missing :loop :a :tree]]
+      (is (= :inconclusive (:status (compare-t env (t/ref-t ref) (t/ref-t ref))))))
+    (is (= :inconclusive (:status (compare-t env response response 1))))
+    (is (= :proved (:status (compare-t env response response 4))))
+    (let [callback (fn [ret] {:t :fn :arities [{:params [i] :ret ret}]})]
+      (is (= :proved (:status (compare-t env (callback response) (callback (t/ref-t :alias))))))
+      (is (= :mismatch (:status (compare-t env (callback (keys-t {} {})) (callback response))))))
+    (let [state (s/instantiate identity-t) v (first (:vars state))]
+      (is (= :proved (:status (s/solve env (s/constrain state response v :argument)))))
+      (is (= :inconclusive (:status (s/solve env (s/constrain state (t/ref-t :missing) v :argument))))))))
+
+(deftest generic-map-field-constraints
+  (let [state (s/instantiate identity-t) v (first (:vars state))
+        target (keys-t {:value v} {})
+        result (s/solve {} (s/constrain state (keys-t {:value (t/prim :int)} {}) target :field))]
+    (is (= :proved (:status result)))
+    (is (= (t/prim :int) (get (:substitution result) (:id v))))
+    (is (= :mismatch (:status (s/solve {} (s/constrain state (keys-t {} {:value (t/prim :int)}) target :field)))))
+    (is (= :inconclusive (:status (s/solve {} (s/constrain state (keys-t {} {}) (keys-t {} {:value v}) :field)))))
+    (is (= :proved (:status (s/solve {} (s/constrain state (keys-t {} {:value (t/prim :int)}) (keys-t {} {:value v}) :field)))))))
+
+(deftest named-bounds-and-post-substitution-refs
+  (let [env {:specs {:test/numeric {:type (t/prim :number)}}}
+        ty (assoc-in identity-t [:binders 0 :bound] (t/ref-t :test/numeric))
+        state (s/instantiate ty) v (first (:vars state))]
+    (is (= :proved (:status (s/solve env (s/constrain state (t/prim :int) v :bound)))))
+    (is (= :mismatch (:status (s/solve env (s/constrain state (t/prim :string) v :bound)))))
+    (is (= :inconclusive (:status (s/solve {} (s/constrain state (t/prim :int) v :bound))))))
+  ;; A generic bound can itself be a named type; normalization must occur after
+  ;; substitution as well as on the original constraints.
+  (let [env {:specs {:value {:type (t/prim :int)}}}
+        state (s/instantiate identity-t) v (first (:vars state))]
+    (is (= :proved (:status (s/solve env (-> state
+                                           (s/constrain (t/ref-t :value) v :lower)
+                                           (s/constrain v (t/prim :number) :upper))))))))

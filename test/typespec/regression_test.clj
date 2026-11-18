@@ -12,7 +12,9 @@
     typespec.externs-regression-test
     typespec.solver-test
     typespec.generic-integration-test
-    typespec.generic-extern-test])
+    typespec.generic-extern-test
+    typespec.generic-maps-test
+    typespec.macro-contracts-test])
 
 (defn run-suites []
   ;; Missing namespaces are an error, never a silently skipped test group.

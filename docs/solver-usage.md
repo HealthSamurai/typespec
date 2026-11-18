@@ -48,3 +48,11 @@
 Одна фиксированная generic-арность; без rest/kwargs, higher-rank и автоматического let-generalization. Существующая схема сохраняется через локальный alias. Полиморфный callback пока не специализируется автоматически. Вывод основан на нижних ограничениях; только верхняя граница может оставить параметр нерешённым. Неподдержанные структуры и недостаточные сведения дают `TSP210-01`, warning по умолчанию и error в strict. Неудача проверки не считается доказанным контрактом.
 
 Проверки находятся в `solver_test.clj`, `generic_integration_test.clj` и `generic_extern_test.clj`; все подключены к `clojure -M:test`. Эталоны прежних демо для solver не менялись.
+
+## Расширение: refs, карты и macro body contracts
+
+Solver теперь ограниченно раскрывает env specs и проверяет s/keys: обязательные ключи должны присутствовать в source req, поля ковариантны; optional не становится required. Неизвестные ссылки, циклы и предел глубины дают inconclusive. Literal map syntax и generic row polymorphism этим не добавлены.
+
+`:macro-contracts` в typespec.edn позволяет явно доверить схему `{:shape :binding-body :bindings [type ...] :ret type}` qualified non-core макросу. Проверяется первое vector-binding из различных простых символов и оставшееся тело. Без macroexpand/eval; деструктуризация/rest не поддержаны. Некорректная конфигурация — TSP9004, форма вызова — TSP7032. Контракт не устанавливает тип результата macro expression или generated Vars. Пример: examples/context-web-pg/typespec.edn.
+
+Общий набор после расширения: 75 тестов / 386 assertions плюс golden/CLI PASS. Web+PG статически: 0 errors/0 warnings, negative fixtures: два TSP2345.

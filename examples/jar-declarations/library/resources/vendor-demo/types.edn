@@ -1,0 +1,3 @@
+;; Trusted declarations, not proof that implementation satisfies these types.
+{vendor-demo.core/identity-value (t/all [a] [a :-> a])
+ vendor-demo.core/greet [string? :-> string?]}

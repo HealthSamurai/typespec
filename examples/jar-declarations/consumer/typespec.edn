@@ -1,0 +1,2 @@
+{:paths ["src"]
+ :extern-resources ["vendor-demo/types.edn"]}

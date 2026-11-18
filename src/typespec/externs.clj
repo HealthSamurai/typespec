@@ -1,5 +1,6 @@
 (ns typespec.externs
   "Inert EDN contracts. :externs is a vector of paths relative to the project root.
+  :extern-resources names explicit classpath EDN resources (local files or JARs only).
   Each file is a map: qualified var symbols -> signatures, keywords -> types.
   Built-in replacements require :externs-core :override; default is :error."
   (:require [clojure.edn :as edn]
@@ -22,20 +23,69 @@
         (throw (ex-info "expected exactly one EDN map" {})))
       data)))
 
+(defn- valid-resource? [resource]
+  (and (string? resource)
+       (boolean (re-matches #"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*" resource))
+       (not-any? #{"." ".."} (.split ^String resource "/"))))
+
+(defn- local-file [uri]
+  (let [uri (java.net.URI. uri)]
+    (when-not (and (= "file" (.getScheme uri))
+                   (nil? (.getAuthority uri)) (nil? (.getQuery uri))
+                   (nil? (.getFragment uri)))
+      (throw (ex-info "extern resource must be a local file or local JAR" {})))
+    (io/file uri)))
+
+(defn- read-resource [resource]
+  ;; Enumerate, never take the classloader's first match. Do not invoke URL handlers:
+  ;; even a jar: URL can wrap an HTTP URL or a custom protocol.
+  (let [urls (vec (enumeration-seq (.getResources (clojure.lang.RT/baseLoader) resource)))]
+    (when-not (= 1 (count urls))
+      (throw (ex-info (if (empty? urls) "extern resource not found on classpath"
+                         (str "duplicate extern resource: " (count urls) " classpath entries")) {})))
+    (let [^java.net.URL url (first urls)
+          address (.toExternalForm url)]
+      (case (.getProtocol url)
+        "file" (read-map (local-file address))
+        "jar" (let [separator (.indexOf address "!/")]
+                (when (neg? separator) (throw (ex-info "invalid local JAR resource URL" {})))
+                (let [jar (local-file (subs address 4 separator))
+                      entry (.getPath (java.net.URI. (str "file:/" (subs address (+ separator 2)))))]
+                  (when-not (= (str "/" resource) entry)
+                    (throw (ex-info "JAR resource entry does not match requested name" {})))
+                  (with-open [jf (java.util.jar.JarFile. jar)]
+                    (let [entries (filter #(= resource (.getName ^java.util.jar.JarEntry %))
+                                          (enumeration-seq (.entries jf)))]
+                      (when-not (= 1 (count entries))
+                        (throw (ex-info "missing or duplicate entry in extern JAR" {})))
+                      (with-open [stream (.getInputStream jf (first entries))]
+                        (read-map stream))))))
+        (throw (ex-info "extern resource must be a local file or local JAR" {}))))))
+
 (defn load-contracts
-  "Reads extern files without requiring namespaces or evaluating forms.
-  Returns {:vars :specs :diagnostics}; malformed entries are not installed."
+  "Reads files followed by explicit :extern-resources without requiring namespaces or
+  evaluating forms. Resource names must be relative slash-separated names, without dot
+  segments, URL syntax or escapes; exactly one local classloader resource must exist.
+  Returns {:vars :specs :diagnostics}; malformed entries are not installed.
+  Resources retain :extern/path as classpath:<name> for existing presentation callers,
+  and :extern/resource as the original name. File provenance is unchanged."
   [root cfg]
   (let [diags (atom [])
         error! #(swap! diags conj (diagnostic %1 "TSP9003" %2))
         paths (:externs cfg [])
+        resources (:extern-resources cfg [])
         policy (:externs-core cfg :error)
-        valid? (and (vector? paths) (every? string? paths))
+        files-valid? (and (vector? paths) (every? string? paths))
+        resources-valid? (and (vector? resources) (every? valid-resource? resources))
+        valid? (and files-valid? resources-valid?)
         result
         (if (and valid? (#{:error :override} policy))
           (reduce
-           (fn [acc path]
-             (let [f (if (.isAbsolute (io/file path)) (io/file path) (io/file root path))]
+           (fn [acc [kind name]]
+             (let [resource? (= :resource kind)
+                   path (if resource? (str "classpath:" name) name)
+                   f (if resource? path
+                         (if (.isAbsolute (io/file path)) (io/file path) (io/file root path)))]
                (try
                  (reduce
                   (fn [acc [k form]]
@@ -58,16 +108,20 @@
                           (and old (not (t/alpha-equivalent? ty (:type old))))
                           (do (error! f (str "conflicting extern " k "; first declared in " (:extern/path old))) acc)
                           :else (assoc-in acc [bucket k]
-                                          {:type ty :source :extern :extern/path path
-                                           :file (str f) :pos position :complete? true})))
+                                          (cond-> {:type ty :source :extern :extern/path path
+                                                   :file (str f) :pos position :complete? true}
+                                            resource? (assoc :extern/resource name)))))
                       (catch Exception e
                         (error! f (str "invalid extern " (pr-str k) ": " (.getMessage e))) acc)))
-                  acc (sort-by (comp pr-str key) (read-map f)))
+                  acc (sort-by (comp pr-str key) (if resource? (read-resource name) (read-map f))))
                  (catch Exception e (error! f (str "cannot read extern: " (.getMessage e))) acc))))
-           {:vars {} :specs {}} paths)
+           {:vars {} :specs {}} (concat (map #(vector :file %) paths)
+                                        (map #(vector :resource %) resources)))
           (do (error! (io/file root "typespec.edn")
-                      (if valid? "invalid :externs-core policy; use :error or :override"
-                          ":externs must be a vector of path strings"))
+                      (cond
+                        (not files-valid?) ":externs must be a vector of path strings"
+                        (not resources-valid?) ":extern-resources must be a vector of relative resource names without dot segments or URL syntax"
+                        :else "invalid :externs-core policy; use :error or :override"))
               {:vars {} :specs {}}))]
     (assoc result :diagnostics @diags)))
 
@@ -88,7 +142,7 @@
                                                             (str "extern " k " conflicts with source contract in " (:file old)))))
                              env)
                          (assoc-in env [bucket k]
-                                   (if old (merge old (select-keys ext [:type :source :extern/path :complete?])) ext)))))
+                                   (if old (merge old (select-keys ext [:type :source :extern/path :extern/resource :complete?])) ext)))))
                    env (get externs bucket {})))
                 env [:specs :vars])]
     (letfn [(missing [ty seen]

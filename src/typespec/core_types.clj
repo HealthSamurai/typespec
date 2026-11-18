@@ -79,26 +79,28 @@
   (:table declarations))
 
 (defn stdlib-tagged?
-  "Does this var of Clojure itself carry a return type hint? (The compiler uses it to avoid reflection.)"
+  "Does an already-loaded Clojure var carry a return type hint? Never loads namespaces
+  from the analyzed project's classpath to obtain metadata."
   [sym]
   (boolean
    (when (and (symbol? sym) (namespace sym) (re-matches #"clojure\.(core|string|set)" (namespace sym)))
-     (when-let [v (try (requiring-resolve sym) (catch Throwable _ nil))]
-       (or (:tag (meta v)) (some #(:tag (meta %)) (:arglists (meta v))))))))
+     (when-let [loaded (find-ns (symbol (namespace sym)))]
+       (when-let [v (ns-resolve loaded (symbol (name sym)))]
+         (or (:tag (meta v)) (some #(:tag (meta %)) (:arglists (meta v)))))))))
 
-(defn stdlib-macro? [sym]
+(defn stdlib-macro?
+  "Checks macro metadata only in already-loaded namespaces; never loads dependencies."
+  [sym]
   (boolean
    (when (and (symbol? sym) (namespace sym) (re-matches #"clojure\.(core|string|set|test|spec\.alpha|core\.async)" (namespace sym)))
-     (when-let [v (try (requiring-resolve sym) (catch Throwable _ nil))]
-       (:macro (meta v))))))
-
-(def ^:private publics (atom {}))
+     (when-let [loaded (find-ns (symbol (namespace sym)))]
+       (when-let [v (ns-resolve loaded (symbol (name sym)))]
+         (:macro (meta v)))))))
 
 (defn stdlib-publics
-  "Names of public vars of a namespace that ships with Clojure itself, or nil for any other namespace."
+  "Public names of an already-loaded standard namespace, or nil if unavailable.
+  Never requires analyzed dependencies. Do not cache: a namespace may load later."
   [ns-sym]
   (when (re-matches #"clojure\.(core|string|set|walk|edn|pprint|spec\.alpha)" (str ns-sym))
-    (or (get @publics ns-sym)
-        (let [names (try (require ns-sym) (set (keys (ns-publics ns-sym))) (catch Throwable _ nil))]
-          (swap! publics assoc ns-sym names)
-          names))))
+    (when-let [loaded (find-ns ns-sym)]
+      (set (keys (ns-publics loaded))))))

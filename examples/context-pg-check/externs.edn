@@ -2,6 +2,17 @@
  ;; (pg.clj:167-181), defstart stores it (421-428), datasource reads it (48-50).
  ;; map? is a coarse context precondition, not validation of the state atom.
  pg/datasource [map? :-> com.zaxxer.hikari.HikariDataSource]
+ ;; Pinned pg.clj:139-146: datasource requires initialized map context;
+ ;; both bodies return mapv coerce. coerce (25-38) builds a map from each row.
+ ;; Preserve vector-of-map results; table/query remain unspecified here.
+ pg/truncate! [map? t/unknown :-> (s/coll-of map? :kind vector?)]
+ pg/safe-execute! [map? t/unknown :-> (s/coll-of map? :kind vector?)]
+ ;; Pinned pg.clj:184-196: name accepts String/Keyword/Symbol; loop starts
+ ;; at 0, increments per row, and returns its counter. JDBC getString can
+ ;; return null; the callback must accept nullable strings and the row index.
+ pg/fetch [map? (s/coll-of t/unknown :kind vector?) int?
+           (t/or string? keyword? symbol?)
+           [(s/nilable string?) int? :-> t/unknown] :-> int?]
  ;; Cheshire generate-string source on this pinned classpath: both arities have
  ;; ^String return; input is serialized, not assumed to be a particular shape.
  ;; Normal return only; arbitrary objects can still cause serialization errors.

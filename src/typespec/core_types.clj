@@ -78,29 +78,58 @@
   "Built-in declarations as types: var symbol -> parsed signature."
   (:table declarations))
 
+(def ^:private metadata-namespaces
+  '#{clojure.core clojure.string clojure.set clojure.walk clojure.edn
+     clojure.pprint clojure.test clojure.spec.alpha})
+
+(defn- load-stdlib-metadata [loader]
+  (let [resource "typespec/stdlib-metadata.edn"
+        data (read-map resource (only-url loader resource))
+        entries (:namespaces data)]
+    (when-not
+     (and (= #{:format :provenance :namespaces} (set (keys data)))
+          (= 1 (:format data))
+          (= '{org.clojure/clojure "1.12.4"
+               org.clojure/spec.alpha "0.5.238"
+               org.clojure/core.specs.alpha "0.4.74"} (:provenance data))
+          (map? entries)
+          (= metadata-namespaces (set (keys entries)))
+          (every? (fn [[_ vars]]
+                    (and (map? vars) (seq vars)
+                         (every? (fn [[s flags]]
+                                   (and (simple-symbol? s) (map? flags)
+                                        (= #{:macro :tagged} (set (keys flags)))
+                                        (boolean? (:macro flags))
+                                        (boolean? (:tagged flags)))) vars))) entries))
+      (fail resource :malformed "expected versioned public-var metadata catalogue" {}))
+    entries))
+
+;; Pinned, inert metadata: independent of namespace loading and metadata mutation.
+;; Provenance and the isolated regeneration procedure live in the resource.
+(def ^:private stdlib-metadata
+  (load-stdlib-metadata (clojure.lang.RT/baseLoader)))
+
 (defn stdlib-tagged?
-  "Does an already-loaded Clojure var carry a return type hint? Never loads namespaces
-  from the analyzed project's classpath to obtain metadata."
+  "Does a supported standard public var have a return type hint in the pinned
+  catalogue? Never resolves vars or loads analyzed dependencies. Unknown => false."
   [sym]
   (boolean
-   (when (and (symbol? sym) (namespace sym) (re-matches #"clojure\.(core|string|set)" (namespace sym)))
-     (when-let [loaded (find-ns (symbol (namespace sym)))]
-       (when-let [v (ns-resolve loaded (symbol (name sym)))]
-         (or (:tag (meta v)) (some #(:tag (meta %)) (:arglists (meta v)))))))))
+   (when (and (qualified-symbol? sym)
+              (contains? '#{clojure.core clojure.string clojure.set}
+                         (symbol (namespace sym))))
+     (get-in stdlib-metadata [(symbol (namespace sym)) (symbol (name sym)) :tagged]))))
 
 (defn stdlib-macro?
-  "Checks macro metadata only in already-loaded namespaces; never loads dependencies."
+  "Checks pinned standard public-var macro metadata, never the running JVM.
+  core.async and other non-catalogued dependencies are unknown (false)."
   [sym]
   (boolean
-   (when (and (symbol? sym) (namespace sym) (re-matches #"clojure\.(core|string|set|test|spec\.alpha|core\.async)" (namespace sym)))
-     (when-let [loaded (find-ns (symbol (namespace sym)))]
-       (when-let [v (ns-resolve loaded (symbol (name sym)))]
-         (:macro (meta v)))))))
+   (when (qualified-symbol? sym)
+     (get-in stdlib-metadata [(symbol (namespace sym)) (symbol (name sym)) :macro]))))
 
 (defn stdlib-publics
-  "Public names of an already-loaded standard namespace, or nil if unavailable.
-  Never requires analyzed dependencies. Do not cache: a namespace may load later."
+  "Public names in the pinned standard namespace catalogue, or nil if unsupported.
+  No dependency loading or live namespace introspection occurs."
   [ns-sym]
-  (when (re-matches #"clojure\.(core|string|set|walk|edn|pprint|spec\.alpha)" (str ns-sym))
-    (when-let [loaded (find-ns ns-sym)]
-      (set (keys (ns-publics loaded))))))
+  (when-let [vars (get stdlib-metadata ns-sym)]
+    (set (keys vars))))

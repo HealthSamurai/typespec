@@ -23,7 +23,8 @@
     typespec.pg-precision-test
     typespec.extern-resources-test
     typespec.pg-boundary-contract-test
-    typespec.metadata-autoload-test])
+    typespec.metadata-autoload-test
+    typespec.metadata-determinism-test])
 
 (defn run-suites []
   ;; Missing namespaces are an error, never a silently skipped test group.

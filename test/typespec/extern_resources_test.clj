@@ -67,7 +67,11 @@
                      ["../types.edn"] ["a/../types.edn"] ["./types.edn"]
                      ["a//types.edn"] ["a\\types.edn"] ["http://host/a"]
                      ["a/%2e%2e/types.edn"] ["a?x"] ["a#x"]]]
-        (is (errors? (load-resource root {:extern-resources names})) (pr-str names))))))
+        (let [result (load-resource root {:extern-resources names})]
+          (is (errors? result) (pr-str names))
+          (is (= [":extern-resources must be a vector of relative resource names without dot segments or URL syntax"]
+                 (mapv :message (:diagnostics result)))
+              (str "validation must reject before resource lookup: " (pr-str names))))))))
 
 (deftest mixed-conflicts-equivalence-and-core-guard
   (with-project ["{vendor/f [int? :-> int?]}"]

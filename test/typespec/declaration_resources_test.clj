@@ -64,7 +64,7 @@
 ;; loading
 
 (deftest resources-are-on-the-classpath-exactly-once
-  (is (= '[clojure.core clojure.string] core/declared-namespaces))
+  (is (= '[clojure.core clojure.string clojure.spec.alpha] core/declared-namespaces))
   (is (= "typespec/types/clojure/core.edn" (core/resource-name 'clojure.core)))
   (is (= "typespec/types/clojure/string.edn" (core/resource-name 'clojure.string)))
   (doseq [ns-sym core/declared-namespaces

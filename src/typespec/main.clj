@@ -93,9 +93,10 @@
                   (println (json/write-str {:version 1 :diagnostics (mapv diag->json ds) :trust (:trust res)}))
                   (do (run! #(println (format-diag %)) ds)
                       (println)
-                      (println (format "%d error(s), %d warning(s) in %d file(s). Trust: %d cast, %d any, %d ignore."
-                                       errors (- (count ds) errors) (:files res)
-                                       (:cast (:trust res)) (:any (:trust res)) (:ignore (:trust res))))))
+                      (let [{:keys [cast any ignore guard]} (:trust res)]
+                        (println (str (format "%d error(s), %d warning(s) in %d file(s). Trust: %d cast, %d any, %d ignore."
+                                              errors (- (count ds) errors) (:files res) cast any ignore)
+                                      (when guard (format " %d trusted guard(s)." guard)))))))
                 (shutdown-agents)
                 (System/exit (if (pos? errors) 1 0)))
       "sig" (let [res (run-check root nil copts)]

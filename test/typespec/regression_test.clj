@@ -8,6 +8,7 @@
     typespec.incomplete-overload-test
     typespec.maps-regression-test
     typespec.case-narrowing-test
+    typespec.checked-guards-test
     typespec.type-operators-test
     typespec.diagnostic-json-test
     typespec.diagnostics-regression-test

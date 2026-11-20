@@ -4,10 +4,12 @@
             [clojure.walk :as walk]
             [typespec.parse :as parse]
             [typespec.types :as t]
+            [typespec.type-operators :as operators]
             [typespec.solver :as solver]
             [typespec.env :as env]
             [typespec.java :as java]
             [typespec.core-types :as core]
+            [typespec.guards :as guards]
             [typespec.macro-contracts :as macros]))
 
 (def ^:dynamic *diags* nil)
@@ -227,6 +229,35 @@
                (not (and core-sym (contains? (get-in ctx [:env :ns-defs ns-sym]) head)))
                (not= :extern (get-in ctx [:env :vars core-sym :source])))
       head)))
+
+(defn- guard-symbol [ctx node]
+  (when (and (= :sym (:op node)) (not (contains? (:locals ctx) (:val node))))
+    (let [file (:file ctx)
+          resolved (env/resolve-sym file (:val node))
+          local (symbol (str (:ns file)) (name resolved))
+          sym (cond (namespace resolved) resolved
+                    (or (get-in ctx [:env :vars local])
+                        (contains? (get-in ctx [:env :ns-defs (:ns file)]) resolved)) local
+                    :else (symbol "clojure.core" (name resolved)))]
+      (when-not (and (or (= "clojure.core" (namespace sym)) (= 'clojure.spec.alpha/valid? sym))
+                     (= :extern (get-in ctx [:env :vars sym :source])))
+        sym))))
+
+(defn- guard-call [ctx node]
+  (when (and (not (:guards-disabled? ctx))
+             (= :list (:op node)) (= 2 (count (:children node)))
+             (empty? (:directives node)) (not (env/tag-node node)))
+    (get-in ctx [:env :guards (guard-symbol ctx (first (:children node)))])))
+
+(defn- guard-compiler [ctx]
+  {:resolve-head #(when (= :list (:op %)) (guard-symbol ctx (first (:children %))))
+   :class-name #(when-let [name (t/resolve-class (:imports (:file ctx)) %)]
+                  (when-let [class (t/load-class name)]
+                    (when-not (.isPrimitive ^Class class) name)))
+   :macro? #(and % (or (contains? (get-in ctx [:env :macros]) %)
+                       (contains? (get-in ctx [:env :macro-contracts]) %)
+                       (core/stdlib-macro? %)))
+   :callable? #(contains? (get-in ctx [:env :vars]) %)})
 
 (defn- remember-projection [ctx sym origin path]
   (assoc-in ctx [:projections sym]
@@ -454,6 +485,7 @@
 (defn- condition-capture [ctx node]
   (let [head (builtin-head ctx node)]
     (when (or (primitive-predicates head)
+              (guard-call ctx node)
               (#{'some? 'nil? 'not 'and 'or '= 'not= 'contains? 'instance? 'clojure.spec.alpha/valid?} head))
       {:test node
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
@@ -529,7 +561,10 @@
       (let [target (t/prim (first (primitive-predicates h)))]
         (or (refine-path ctx a #(predicate-parts ctx h target %)) [ctx ctx]))
 
-      :else (or (truth-contexts ctx test) [ctx ctx]))))
+      :else (or (when-let [summary (guard-call ctx test)]
+                  (refine-path ctx a #(mapv (fn [ty] (when-not (= t/never ty) ty))
+                                            (guards/apply-summary env summary %))))
+                (truth-contexts ctx test) [ctx ctx]))))
 
 (defn- condition-contexts [ctx test]
   (let [ty (eff ctx (infer ctx test))
@@ -1622,9 +1657,10 @@
 (doseq [h '[with-open binding with-redefs with-local-vars]]
   (defmethod special h [ctx node _]
     (let [[bindings & body] (args-of node)]
-      (infer-body (if (= 'with-open h)
-                    (bind-pairs ctx bindings)
-                    (do (run! #(infer ctx (second %)) (partition 2 (:children bindings))) ctx))
+      (infer-body (case h
+                    with-open (bind-pairs ctx bindings)
+                    (do (run! #(infer ctx (second %)) (partition 2 (:children bindings)))
+                        (cond-> ctx (= 'with-redefs h) (assoc :guards-disabled? true))))
                   body))))
 
 (defmethod special 'doto [ctx node _]
@@ -1766,6 +1802,30 @@
               ret (case h keep (t/remove-nil (:env ctx) ret) mapcat (elem-type ctx ret) ret)]
           (coll-of (if (= 'mapv h) :vector :seq) ret))))))
 
+(defn- filter-types [ctx f el]
+  (let [env (:env ctx)]
+    (if-let [summary (get-in env [:guards (guard-symbol ctx f)])]
+      (if (empty? (:directives f)) (guards/apply-summary env summary el) [el el])
+      (let [descriptor (deferred-callback ctx f)
+            node (or (:node descriptor) f)
+            captured (or (:ctx descriptor) ctx)
+            plan (cond
+                   (seq (:directives node)) nil
+                   (= :sym (:op node))
+                   (let [parameter (gensym "guard-value")]
+                     (guards/compile-body (guard-compiler ctx) [parameter]
+                                          [{:op :list :children [node {:op :sym :val parameter}]}]))
+                   (and (inline-callback? captured node)
+                        (or (= :fn-lit (:op node)) (not= :sym (:op (second (:children node))))))
+                   (let [[branch :as bodies] (fn-bodies node)]
+                     (when (and (= 1 (count bodies) (count (:fixed branch))) (not (:rest branch))
+                                (= :sym (:op (first (:fixed branch)))))
+                       (let [parameter (:val (first (:fixed branch)))]
+                         (guards/compile-body (guard-compiler captured)
+                                              (cond-> [parameter] (:reader? branch) (conj '%))
+                                              (:body branch))))))]
+        (if (guards/useful? plan) (guards/split env plan el) [el el])))))
+
 (doseq [h '[filter remove filterv take-while drop-while sort-by group-by some every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
@@ -1773,10 +1833,18 @@
       (if (nil? c)
         (do (infer ctx f) t/unknown)
         (let [el (elem-type ctx (infer ctx c))
-              ret (apply-fn-node ctx f [el])]
+              before (when *diags* (count @*diags*))
+              ret (apply-fn-node ctx f [el])
+              [yes no] (if (and (not (:guards-disabled? ctx))
+                                (#{'filter 'filterv 'remove 'take-while} h)
+                                (or (nil? before) (= before (count @*diags*))))
+                         (filter-types ctx f el) [el el])
+              result (fn [kind selected] {:t :coll :kind kind :of (dissoc selected :fresh)})]
           (case h
-            (filter remove take-while drop-while sort-by) (coll-of :seq el)
-            filterv (coll-of :vector el)
+            (filter take-while) (result :seq yes)
+            remove (result :seq no)
+            (drop-while sort-by) (coll-of :seq el)
+            filterv (result :vector yes)
             (every? not-any?) (t/prim :boolean)
             some (t/union (t/remove-nil (:env ctx) ret) t/nil-t)
             run! t/nil-t
@@ -1947,6 +2015,122 @@
 (defmethod special 'defn [ctx node _] (check-defn ctx node))
 (defmethod special 'defn- [ctx node _] (check-defn ctx node))
 
+(defn- guard-claim [env entry]
+  (when-let [node (env/attr-get (get-in entry [:parts :attr]) :t/guard)]
+    (let [raw (parse/node->data node)
+          data (if (and (seq? raw) (= 'quote (first raw))) (second raw) raw)
+          {:keys [type mode two-sided] :as contract}
+          (if (map? data) data {:type data :mode :trusted})
+          invalid (volatile! false)
+          fail! (fn [& _] (vreset! invalid true))
+          type-ctx (assoc (env/type-ctx (:pfile entry) fail!) :operator-error fail!)
+          target (operators/normalize env (t/parse-type type-ctx type) fail!)
+          valid? (and (#{:checked :trusted} mode) (contains? contract :type) (not @invalid)
+                      (every? #{:type :mode :two-sided} (keys contract))
+                      (or (nil? two-sided) (boolean? two-sided))
+                      (not (and two-sided (= :trusted mode))))]
+      {:node node :target target :mode mode :two-sided two-sided :valid? valid?})))
+
+(defn- dynamic-definition? [entry]
+  (or (some-> (env/attr-get (get-in entry [:parts :attr]) :dynamic) parse/node->data)
+      (some (fn [node]
+              (let [form (parse/node->data node)]
+                (or (= :dynamic form) (and (map? form) (:dynamic form)))))
+            (get-in entry [:parts :name :meta]))))
+
+(defn- guard-candidate [env [sym entry]]
+  (when-let [definition (:definition entry)]
+    (let [claim (guard-claim env entry)
+          parts (get-in entry [:parts :arities])
+          body (:body (first parts))
+          {:keys [fixed rest]} (env/split-params (:params (first parts)))
+          arities (get-in entry [:type :arities])
+          param (first fixed)
+          unary? (and (= 1 (count parts) (count fixed) (count arities))
+                      (= 1 (count (:params (first arities))))
+                      (nil? rest) (= :sym (:op param))
+                      (not (:rest (first arities))) (not (:kwargs (first arities))))
+          stable? (and (= 1 (get-in env [:root-definitions sym]))
+                       (not (dynamic-definition? entry)))
+          domain (guards/input-type (get-in arities [0 :params 0]))
+          domain (if (#{:any :unknown} (:t (t/resolve-t env domain))) t/unknown domain)
+          ctx {:env env :file (:pfile entry) :locals {}}
+          plan (when (and unary? stable?) (guards/compile-body (guard-compiler ctx) [(:val param)] body))]
+      (when (or claim (guards/useful? plan))
+        [sym {:claim claim :entry entry :definition definition :ctx ctx
+              :unary? unary? :stable? stable? :domain domain :plan plan}]))))
+
+(defn- compile-guards [env opts]
+  (let [candidates (into {} (keep #(guard-candidate env %)) (:vars env))
+        solved (atom {})
+        summaries (atom {})
+        diagnostics (atom [])]
+    (letfn [(finish [sym result]
+              (swap! solved assoc sym result)
+              result)
+            (reject! [candidate code message reason]
+              (when-let [node (get-in candidate [:claim :node])]
+                (swap! diagnostics conj {:code code :severity :error :file (get-in candidate [:entry :file])
+                                         :pos (:pos node) :message message :reasons #{reason}})))
+            (body-valid? [{:keys [ctx definition]}]
+              (binding [*diags* (atom []) *types* nil *ignores* (atom []) *rets* (atom {})
+                        *trust* (atom {:cast 0 :any 0 :ignore 0})]
+                (let [checked (into {} (filter #(= :checked (:mode (val %)))) @summaries)]
+                  (check-defn (-> ctx (assoc :opts (assoc opts :strict false)) (assoc-in [:env :guards] checked)) definition)
+                  (not-any? #(= :error (:severity %)) @*diags*))))
+            (visit [sym path]
+              (cond
+                (path sym) :recursive
+                (>= (count path) 64) :limit
+                (contains? @solved sym) (get @solved sym)
+                :else
+                (when-let [{:keys [claim unary? stable? domain plan] :as candidate} (get candidates sym)]
+                  (let [{:keys [valid? mode target two-sided]} claim
+                        deps (when (and plan (not= :trusted mode)) (guards/dependencies plan))
+                        dependency-error (some #{:recursive :limit} (map #(visit % (conj path sym)) (sort deps)))
+                        proof-env (assoc env :guards @summaries)]
+                    (cond
+                      (or (and claim (not valid?)) (not unary?))
+                      (do (reject! candidate "TSP250-03" "invalid guard declaration or unsupported parameter list" :invalid-guard)
+                          (finish sym :invalid))
+
+                      (not stable?)
+                      (do (reject! candidate "TSP250-03" "guard Var can have a different definition" :unstable-var)
+                          (finish sym :invalid))
+
+                      (= :trusted mode)
+                      (do (swap! summaries assoc sym {:mode :trusted :domain domain :target target})
+                          (finish sym :trusted))
+
+                      (or dependency-error (not (guards/useful? plan)))
+                      (do (reject! candidate "TSP250-03" "guard body cannot provide checked facts"
+                                   (or dependency-error :unsupported-body))
+                          (finish sym (or dependency-error :unsupported)))
+
+                      (not (body-valid? candidate))
+                      (do (reject! candidate "TSP250-03" "guard body has type errors" :body-errors)
+                          (finish sym :invalid))
+
+                      :else
+                      (let [[yes no] (guards/split proof-env plan domain)]
+                        (cond
+                          (and claim (or (= t/never yes) (not (guards/proves? proof-env yes target))))
+                          (do (reject! candidate "TSP250-01" (str "truthy result does not prove " (t/show target)) :truthy)
+                              (finish sym :invalid))
+
+                          (and two-sided (not= t/never no)
+                               (not= t/never (second (guards/split proof-env plan target))))
+                          (do (reject! candidate "TSP250-02" (str "falsy result does not exclude " (t/show target)) :falsy)
+                              (finish sym :invalid))
+
+                          :else
+                          (do (swap! summaries assoc sym (cond-> {:mode :checked :domain domain :plan plan
+                                                                 :truthy yes :falsy no}
+                                                          claim (assoc :target target)))
+                              (finish sym :checked)))))))))]
+      (run! #(visit % #{}) (sort (keys candidates)))
+      {:guards @summaries :diagnostics @diagnostics})))
+
 ;; ---- infer ----
 
 (defn- parse-directive-type [ctx d]
@@ -2087,7 +2271,7 @@
 ;; ---- entry points ----
 
 (def ^:private known-diagnostic-codes
-  #{"TSP270-01" "TSP270-02" "TSP270-03"
+  #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03"
     "TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
     "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032"
@@ -2160,7 +2344,7 @@
                   (get opts :macro-contracts {}) env0
                   #(not= (get-method special %) (get-method special ::none)))
         env-diags (concat env-diags (:diagnostics compiled))
-        env (assoc env0 :macro-contracts (:contracts compiled)
+        guard-env (assoc env0 :macro-contracts (:contracts compiled)
                    :nss (set (map :ns files))
                    :ns-defs (into {} (for [f files]
                                        [(:ns f) (set (for [form (:forms f)
@@ -2168,11 +2352,14 @@
                                                            :let [[h nm] (:children form)]
                                                            :when (and (= :sym (:op h)) (= :sym (:op nm))
                                                                       (str/starts-with? (name (:val h)) "def"))]
-                                                       (:val nm)))])))]
-    (binding [*diags* (atom (vec (map #(merge {:severity :error} %) env-diags)))
+                                                       (:val nm)))])))
+        guard-result (compile-guards guard-env opts)
+        env (assoc guard-env :guards (:guards guard-result))
+        guard-trust (count (filter #(= :trusted (:mode %)) (vals (:guards env))))]
+    (binding [*diags* (atom (vec (map #(merge {:severity :error} %) (concat env-diags (:diagnostics guard-result)))))
               *types* (atom [])
               *ignores* (atom [])
-              *trust* (atom {:cast 0 :any 0 :ignore 0})
+              *trust* (atom (cond-> {:cast 0 :any 0 :ignore 0} (pos? guard-trust) (assoc :guard guard-trust)))
               *rets* (atom {})]
       (doseq [f files]
         (binding [t/*cur-ns* (:ns f)]

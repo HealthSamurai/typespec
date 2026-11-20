@@ -1,5 +1,5 @@
 (ns typespec.core-types
-  "Signatures of clojure.core and clojure.string functions, written in the type language.
+  "Signatures of Clojure standard library functions, written in the type language.
   The declarations are inert EDN resources in the same format as externs of third-party
   libraries; this namespace only reads them from the classpath. Nothing is evaluated."
   (:require [clojure.edn :as edn]
@@ -8,7 +8,7 @@
 
 (def declared-namespaces
   "Namespaces that have built-in declarations. A fixed list: resources are never discovered."
-  '[clojure.core clojure.string])
+  '[clojure.core clojure.string clojure.spec.alpha])
 
 (defn resource-name
   "Classpath name of the declarations of a namespace. The typespec/ prefix keeps it out of

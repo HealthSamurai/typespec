@@ -155,7 +155,7 @@ The table is validated with a **differential test**: a generator builds random f
   ```
   Immutable collections are covariant; `atom`, `volatile`, arrays, and channels are invariant.
 - **Literals**: `1` in `let` widens to `int?`; in a literal-union position, it remains a literal; `#_(t/const) {...}` is analogous to `as const`.
-- **Narrowing** after `if`/`when`/`cond`/`case`/`when-let`, `some?`/`nil?`/type predicates/`instance?`/`=` with a literal/`contains?` on a map. Custom guard functions can be checked (narrowing is inferred from the body) or trusted via `{:t/guard '::patient}` in the attr-map (counted in the trust budget).
+- **Narrowing** after `if`/`when`/`cond`/`case`/`when-let`, `some?`/`nil?`/type predicates/`instance?`/`=` with a literal/`contains?` on a map. For a function with one positional parameter, the checker can infer independent truthy and falsy facts from its body. An explicit `{:t/guard '{:type ::patient :mode :checked}}` requires a truthy proof. Add `:two-sided true` to require a falsy proof. The trusted form `{:t/guard '::patient}` supplies a truthy fact and is counted once per declaration in the trust budget. `filter`, `filterv` and `take-while` narrow elements using the truthy fact. `remove` uses the falsy fact.
 - **Exhaustiveness**: `case` over literal unions, `cond`/`condp` using `=` on a single variable, and `defmulti` with closed dispatch (`{:t/closed true}`). A `cond` without `:else` yields `T | nil`; this is not an error.
 - **nil-punning**: `(first nil)` → `nil`, `(seq x)` narrows to a non-empty collection, `(:k x)` on `t/unknown` produces a “narrow first” error.
 - **String keys** and **map tails**: `t/keys-str` and `t/keys ... :rest` from section 1.
@@ -397,6 +397,9 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP2678` | a `case` clause that can never match |
 | `TSP2741` | required key is missing |
 | `TSP2790` | two declarations of one signature disagree (`t/sig`, `s/fdef`, sidecar, hints) |
+| `TSP250-01` | truthy result does not prove the declared guard type |
+| `TSP250-02` | falsy result does not exclude the declared guard type |
+| `TSP250-03` | invalid guard declaration or unsupported proof |
 | `TSP270-01` | invalid map type operator arity or nonliteral key |
 | `TSP270-02` | key is absent from the declared map shape |
 | `TSP270-03` | unsupported map shape, conflicting fields, unresolved or cyclic map reference, or resolution limit |

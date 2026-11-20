@@ -47,7 +47,7 @@
   (let [[fixed more] (split-with #(not (and (= :sym (:op %)) (= '& (:val %)))) (:children params))]
     {:fixed (vec fixed) :rest (second more)}))
 
-(defn- attr-get [attr k]
+(defn attr-get [attr k]
   (some (fn [[kn vn]] (when (= k (:val kn)) vn)) (partition 2 (:children attr))))
 
 (defn type-ctx [file fail]
@@ -153,17 +153,24 @@
 
          (#{'defn 'defn-} h)
          (let [parts (defn-parts form)
-               sig-node (some-> (:attr parts) (attr-get :t/sig))]
-           (assoc-in acc [:defns (qualify (:val (:name parts)))]
-                     {:file file :parts parts :pos (:pos (:name parts))
-                      :sig-pos (:pos sig-node)
-                      :sig (when sig-node
-                             (t/parse-type (assoc (type-ctx file (fail sig-node))
-                                                  :operator-error (operator-errors diags file (:pos sig-node)))
-                                           (parse/node->data sig-node true)))}))
+               sig-node (some-> (:attr parts) (attr-get :t/sig))
+               sym (qualify (:val (:name parts)))]
+           (-> acc
+               (update-in [:root-definitions sym] (fnil inc 0))
+               (assoc-in [:defns sym]
+                         {:file file :parts parts :pos (:pos (:name parts))
+                          :definition form
+                          :sig-pos (:pos sig-node)
+                          :sig (when sig-node
+                                 (t/parse-type (assoc (type-ctx file (fail sig-node))
+                                                      :operator-error (operator-errors diags file (:pos sig-node)))
+                                               (parse/node->data sig-node true)))})))
 
          (= 'defmacro h)
          (update acc :macros conj (qualify (:val (second (:children form)))))
+
+         (and (#{'def 'defonce} h) (= :sym (:op (second (:children form)))))
+         (update-in acc [:root-definitions (qualify (:val (second (:children form))))] (fnil inc 0))
 
          :else acc)))
    acc (:forms file)))
@@ -176,7 +183,7 @@
         acc (reduce #(collect-file %1 %2 diags) {:specs {} :fdefs {} :defns {} :macros #{}} files)
         contracts (externs/normalize-contracts (:specs acc) contracts)
         operator-env {:specs (merge (:specs contracts) (:specs acc))}
-        env {:specs (:specs acc) :macros (:macros acc)
+        env {:specs (:specs acc) :macros (:macros acc) :root-definitions (:root-definitions acc)
              :key-nss (set (keep namespace (keys (:specs acc))))}
         vars (into {}
                    (for [[sym d] (:defns acc)
@@ -191,7 +198,7 @@
                          (note diags (:file d) (:name (:parts d)) "TSP2790"
                                (str "t/sig and s/fdef of " (name sym) " disagree: "
                                     (t/show sig) " vs " (t/show (:type fd)))))
-                       [sym {:parts (:parts d) :pfile (:file d)
+                       [sym {:parts (:parts d) :pfile (:file d) :definition (:definition d)
                              :type (or declared (hints-sig env (:file d) (:parts d)))
                              :source (cond sig :sig fd :fdef :else :hints)
                              :tagged? (boolean (or (some #(tag-node (:params %)) (:arities (:parts d)))

@@ -16,7 +16,7 @@
 (def ^:dynamic *trust* nil)
 (def ^:dynamic *rets* nil)
 
-(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn)
+(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow)
 
 (defn- report! [ctx node code msg & {:as extra}]
   (when-not (:quiet ctx)
@@ -206,10 +206,112 @@
       (update :why #(if why (assoc % sym why) (dissoc % sym)))
       (update :hinted #(if hinted (conj (or % #{}) sym) (disj (or % #{}) sym)))
       (update :params #(if param (conj (or % #{}) sym) (disj (or % #{}) sym)))
+      (assoc-in [:binding-ids sym] (Object.))
+      (update :projections dissoc sym)
+      (update :conditions dissoc sym)
       (update :missing-of dissoc sym)))
 
-(def ^:private pred-narrow
-  '{string? :string int? :int number? :number keyword? :keyword map? :map vector? :vector boolean? :boolean})
+(defn- plain-local [ctx node]
+  (when (and (= :sym (:op node)) (empty? (:directives node))
+             (contains? (:locals ctx) (:val node)))
+    (:val node)))
+
+(defn- builtin-head [ctx node]
+  (let [head (env/head (:file ctx) node)
+        raw (:val (first (:children node)))
+        ns-sym (:ns (:file ctx))
+        core-sym (when (and head (not (namespace head))) (symbol "clojure.core" (name head)))]
+    (when (and head (empty? (:directives node)) (not (env/tag-node node))
+               (not (contains? (:locals ctx) raw))
+               (not (and core-sym (contains? (get-in ctx [:env :ns-defs ns-sym]) head)))
+               (not= :extern (get-in ctx [:env :vars core-sym :source])))
+      head)))
+
+(defn- remember-projection [ctx sym origin path]
+  (assoc-in ctx [:projections sym]
+            {:origin origin :path path :type (get-in ctx [:locals sym])}))
+
+(defn- stable-path [ctx node]
+  (when (and (empty? (:directives node)) (not (env/tag-node node)))
+    (if-let [sym (plain-local ctx node)]
+      (let [ty (get-in ctx [:locals sym])
+            {:keys [origin path type]} (get-in ctx [:projections sym])]
+        (if (and origin (= type ty))
+          {:origin origin :path path :type (get-in ctx [:origins origin])}
+          {:local sym :path [] :type ty}))
+      (when (= :list (:op node))
+        (let [[head a b & more] (:children node)
+              h (builtin-head ctx node)
+              [base path] (cond
+                            (and (= :kw (:op head)) a (nil? b)) [a [(:val head)]]
+                            (and (= 'get h) (= :kw (:op b)) (empty? more)) [a [(:val b)]]
+                            (and (= 'get-in h) (= :vector (:op b)) (seq (:children b))
+                                 (every? #(= :kw (:op %)) (:children b)) (empty? more))
+                            [a (mapv :val (:children b))])]
+          (when-let [p (and base (stable-path ctx base))]
+            (update p :path into path)))))))
+
+(defn- track-path [ctx {:keys [local origin path type]}]
+  (if origin
+    [ctx origin path]
+    (let [origin (Object.)
+          ctx (assoc-in ctx [:origins origin] type)]
+      [(cond-> ctx local (remember-projection local origin [])) origin path])))
+
+(defn- projected-type [ctx ty path]
+  (reduce (fn [current key]
+            (let [{:keys [type status]} (lookup-key ctx current key)]
+              (case status
+                :req (if (t/nilable? (:env ctx) current) (t/union type t/nil-t) type)
+                :opt (t/union type t/nil-t)
+                :nil t/nil-t
+                (reduced nil))))
+          ty path))
+
+(defn- refine-origin [ctx {:keys [local origin]} ty]
+  (when-not (= :never (:t ty))
+    (if origin
+      (reduce-kv (fn [c sym {:keys [path type] :as p}]
+                   (if (and (= origin (:origin p)) (= type (get-in ctx [:locals sym])))
+                     (if-let [narrowed (projected-type c ty path)]
+                       (-> c (assoc-in [:locals sym] narrowed) (remember-projection sym origin path))
+                       c)
+                     c))
+                 (assoc-in ctx [:origins origin] ty) (:projections ctx))
+      (assoc-in ctx [:locals local] ty))))
+
+(defn- path-alternatives
+  "Pairs of [leaf type, rebuild]. Each rebuild retains its enclosing map alternatives."
+  ([ctx ty path] (path-alternatives ctx ty path false))
+  ([ctx ty path presence?]
+   (let [budget (volatile! 256)
+         env (:env ctx)]
+     (letfn [(walk [ty path]
+               (let [members (vec (take (inc @budget) (t/members env (eff ctx ty))))]
+                 (when (and (seq members) (not (neg? (vswap! budget - (count members)))))
+                   (if-let [[key & more] (seq path)]
+                     (let [required (fn [m field]
+                                      (when-let [children (walk field more)]
+                                        (for [[leaf rebuild] children]
+                                          [leaf #(assoc-in m [:req key] (rebuild %))])))
+                           paths (for [m members]
+                                   (cond
+                                     (get-in m [:req key]) (required m (get-in m [:req key]))
+                                     (and presence? (get-in m [:opt key]))
+                                     (let [field (get-in m [:opt key])
+                                           absent [t/nil-t (constantly (assoc-in m [:opt key] t/never))]
+                                           present (required (update m :opt dissoc key) field)]
+                                       (when present (cons absent present)))
+                                     (and presence? (= :nil (:t m))) [[t/nil-t (constantly m)]]))]
+                       (when (every? some? paths)
+                         (mapcat identity paths)))
+                     (map (fn [member] [member identity]) members)))))]
+       (walk ty path)))))
+
+(def ^:private primitive-predicates
+  {'string? [:string string?] 'int? [:int int?] 'number? [:number number?]
+   'keyword? [:keyword keyword?] 'map? [:map map?] 'vector? [:vector vector?]
+   'boolean? [:boolean boolean?]})
 
 (defn- truth-part [env ty truthy?]
   (if (and truthy?
@@ -226,46 +328,213 @@
 (defn- nil-part [env ty]
   (if (some #(#{:nil :unknown :any} (:t %)) (t/members env ty)) t/nil-t t/never))
 
+(defn- refine-alternatives [ctx path alternatives select]
+  (refine-origin ctx path
+                 (apply t/union (keep (fn [[leaf rebuild]]
+                                        (when-let [narrowed (select leaf)]
+                                          (rebuild narrowed)))
+                                      alternatives))))
+
+(defn- literal-node? [node]
+  (and (#{:str :kw :num :bool :nil} (:op node)) (empty? (:directives node))
+       (not (env/tag-node node))))
+
+(defn- literal-type [v]
+  (if (nil? v) t/nil-t (t/lit v)))
+
+(defn- finite-value? [ty]
+  (#{:lit :nil} (:t ty)))
+
+(defn- boolean-type? [ty]
+  (= (t/prim :boolean) (t/strip ty)))
+
+(defn- expand-boolean [ty]
+  (if (boolean-type? ty) [(t/lit false) (t/lit true)] [ty]))
+
+(defn- refine-path [ctx node split]
+  (let [subject (stable-path ctx node)
+        alternatives (when subject (path-alternatives ctx (:type subject) (:path subject) true))
+        local (when-not alternatives (plain-local ctx node))
+        subject (if local {:local local} subject)
+        alternatives (or alternatives (when local (path-alternatives ctx (get-in ctx [:locals local]) [])))]
+    (when alternatives
+      (let [parts (map (fn [[leaf rebuild]] [(split leaf) rebuild]) alternatives)
+            branch (fn [i]
+                     (refine-alternatives ctx subject parts #(nth % i)))]
+        [(branch 0) (branch 1)]))))
+
+(defn- equality-parts [ctx value leaf]
+  (let [literal (literal-type value)]
+    (cond
+      (finite-value? leaf) (if (= value (:val leaf)) [leaf nil] [nil leaf])
+      (= :never (:t leaf)) [nil nil]
+      (boolean-type? leaf)
+      (if (boolean? value) [literal (t/lit (not value))] [nil leaf])
+      (and (= :prim (:t leaf)) (not (t/sub? (:env ctx) literal leaf))) [nil leaf]
+      :else [literal leaf])))
+
+(defn- equality-contexts [ctx expr value]
+  (refine-path ctx expr #(equality-parts ctx value %)))
+
+(defn- presence-parts [key leaf]
+  (case (:t leaf)
+    :nil [nil leaf]
+    :never [nil nil]
+    :map (cond
+           (contains? (:req leaf) key) [leaf nil]
+           (contains? (:opt leaf) key)
+           (let [field (get-in leaf [:opt key])
+                 absent (assoc-in leaf [:opt key] t/never)]
+             [(when-not (= :never (:t field))
+                (-> leaf (assoc-in [:req key] field) (update :opt dissoc key)))
+              absent])
+           :else [leaf leaf])
+    [leaf leaf]))
+
+(def ^:private scalar-primitives #{:int :double :number :string :keyword :boolean :symbol})
+
+(defn- predicate-parts [ctx head target leaf]
+  (let [tag (:t leaf)
+        env (:env ctx)
+        pred (second (primitive-predicates head))]
+    (cond
+      (= :never tag) [nil nil]
+      (#{:unknown :any} tag) [target leaf]
+      ;; Specs compare numeric literals by value; int? and instance? can
+      ;; distinguish representations of the same number.
+      (and (= 'int? head)
+           (or (and (= :lit tag) (integer? (:val leaf))) (= :int (:name leaf))))
+      [leaf leaf]
+      (and (finite-value? leaf) pred)
+      (if (pred (:val leaf)) [leaf nil] [nil leaf])
+      (= :nil tag) [nil leaf]
+      (t/sub? env leaf target) [leaf nil]
+      (t/sub? env target leaf) [target leaf]
+      (and (= :prim tag) (= :prim (:t target))
+           (or (scalar-primitives (:name leaf)) (scalar-primitives (:name target))))
+      [nil leaf]
+      :else [target leaf])))
+
+(defn- instance-parts [ctx class-name leaf]
+  (if (= "java.lang.Object" class-name)
+    [(when-not (#{:nil :never} (:t leaf)) leaf)
+     (when (#{:nil :unknown :any} (:t leaf)) t/nil-t)]
+    (let [target (t/class-type class-name)
+          [positive negative] (predicate-parts ctx 'instance? target leaf)]
+      (if (#{:int :double} (:name target))
+        [positive (when-not (= :never (:t leaf)) leaf)]
+        [positive negative]))))
+
+(defn- join-contexts [base paths]
+  (let [paths (vec (remove nil? paths))]
+    (case (count paths)
+      0 nil
+      1 (first paths)
+      (let [locals (apply merge-with t/union (map :locals paths))]
+        (reduce-kv (fn [c sym {:keys [origin path]}]
+                     (if (every? #(= (get-in % [:locals sym]) (get-in % [:projections sym :type])) paths)
+                       (remember-projection c sym origin path)
+                       c))
+                   (assoc base :locals locals :origins (apply merge-with t/union (map :origins paths)))
+                   (:projections base))))))
+
+(defn- logical-contexts [ctx args and?]
+  (let [proceed (if and? first second)
+        stop (if and? second first)
+        [last-path stopped] (reduce (fn [[active stopped] arg]
+                                      (if active
+                                        (let [branches (narrow active arg)]
+                                          [(proceed branches) (conj stopped (stop branches))])
+                                        (reduced [nil stopped])))
+                                    [ctx []] args)
+        stopped (join-contexts ctx stopped)]
+    (if and? [last-path stopped] [stopped last-path])))
+
+(defn- condition-capture [ctx node]
+  (let [head (builtin-head ctx node)]
+    (when (or (primitive-predicates head)
+              (#{'some? 'nil? 'not 'and 'or '= 'not= 'contains? 'instance? 'clojure.spec.alpha/valid?} head))
+      {:test node
+       :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
+                            [(:val n) (get-in ctx [:binding-ids (:val n)])]))})))
+
+(defn- truth-contexts [ctx node]
+  (refine-path ctx node (fn [leaf]
+                         (for [truthy? [true false]
+                               :let [ty (truth-part (:env ctx) leaf truthy?)]]
+                           (when-not (= :never (:t ty)) ty)))))
+
 (defn- narrow
-  "[ctx-when-truthy ctx-when-falsy] for a test expression."
+  "Truth and falsity contexts. A nil context denotes an unreachable path."
   [ctx test]
   (let [env (:env ctx)
-        h (env/head (:file ctx) test)
-        args (rest (:children test))
-        local (fn [n] (when (and (= :sym (:op n)) (contains? (:locals ctx) (:val n))) (:val n)))
-        non-nil (fn [c s] (update-in c [:locals s] #(t/remove-nil env %)))
-        lit-node? #(#{:str :kw :num} (:op %))]
+        h (builtin-head ctx test)
+        [a b :as args] (vec (rest (:children test)))
+        local (plain-local ctx test)
+        {captured-test :test bindings :bindings} (get-in ctx [:conditions local])]
     (cond
-      (local test)
-      (let [s (local test)]
-        [(update-in ctx [:locals s] #(truth-part env % true))
-         (let [fc (update-in ctx [:locals s] #(truth-part env % false))]
-           ;; Missing-key provenance applies only when falsiness proves nil,
-           ;; not when a present false value could have selected this branch.
-           (if (= t/nil-t (get-in fc [:locals s]))
-             (reduce non-nil fc (get-in ctx [:missing-of s]))
-             fc))])
-      (and (#{'some? 'nil?} h) (local (first args)))
-      (let [s (local (first args))
-            present (non-nil ctx s)
-            absent (update-in ctx [:locals s] #(nil-part env %))]
-        (if (= 'some? h) [present absent] [absent present]))
-      (= 'not h) (vec (reverse (narrow ctx (first args))))
-      (= 'and h) [(reduce (fn [c a] (first (narrow c a))) ctx args) ctx]
-      (= 'or h) [ctx (reduce (fn [c a] (second (narrow c a))) ctx args)]
-      (and (= '= h) (= 2 (count args)) (some local args) (some lit-node? args))
-      [(assoc-in ctx [:locals (some local args)] (t/lit (:val (first (filter lit-node? args))))) ctx]
-      (and (= 'instance? h) (local (second args)))
-      (if-let [c (and (= :sym (:op (first args))) (t/resolve-class (:imports (:file ctx)) (:val (first args))))]
-        [(assoc-in ctx [:locals (local (second args))] (t/class-type c)) ctx]
-        [ctx ctx])
-      (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op (first args))) (local (second args)))
-      [(assoc-in ctx [:locals (local (second args))] (t/ref-t (:val (first args)))) ctx]
-      (and (pred-narrow h) (local (first args)))
-      (let [s (local (first args)) p (t/prim (pred-narrow h))
-            keep-ms (filter #(t/sub? env % p) (t/members env (get-in ctx [:locals s])))]
-        [(assoc-in ctx [:locals s] (if (and (seq keep-ms) (not-any? #(#{:unknown :any} (:t %)) keep-ms)) (apply t/union keep-ms) p)) ctx])
-      :else [ctx ctx])))
+      (and captured-test (every? (fn [[sym id]] (= id (get-in ctx [:binding-ids sym]))) bindings))
+      (narrow ctx captured-test)
+
+      (literal-node? test)
+      (if (:val test) [ctx nil] [nil ctx])
+
+      local
+      (let [ty (eff ctx (get-in ctx [:locals local]))
+            positive (truth-part env ty true)
+            negative (truth-part env ty false)
+            update-type (fn [ty] (when-not (= :never (:t ty)) (assoc-in ctx [:locals local] ty)))
+            fc (update-type negative)]
+        (or (when (seq (get-in ctx [:projections local :path])) (truth-contexts ctx test))
+            [(update-type positive)
+             (if (= t/nil-t negative)
+               (reduce (fn [c s] (update-in c [:locals s] #(t/remove-nil env %))) fc (get-in ctx [:missing-of local]))
+               fc)]))
+
+      (#{'some? 'nil?} h)
+      (or (when (= 1 (count args))
+            (refine-path ctx a (fn [leaf]
+                                 (let [nil? (= :nil (:t leaf))
+                                       vague? (#{:unknown :any} (:t leaf))
+                                       present (when-not (or nil? (= :never (:t leaf))) leaf)
+                                       absent (when (or nil? vague?) t/nil-t)]
+                                   (if (= 'some? h) [present absent] [absent present])))))
+          [ctx ctx])
+
+      (and (= 'not h) (= 1 (count args))) (vec (reverse (narrow ctx a)))
+      (= 'and h) (logical-contexts ctx args true)
+      (= 'or h) (logical-contexts ctx args false)
+
+      (and (#{'= 'not=} h) (= 2 (count args)))
+      (let [branches (or (cond (and (literal-node? a) (literal-node? b))
+                               (if (= (:val a) (:val b)) [ctx nil] [nil ctx])
+                               (literal-node? b) (equality-contexts ctx a (:val b))
+                               (literal-node? a) (equality-contexts ctx b (:val a)))
+                         [ctx ctx])]
+        (if (= '= h) branches (vec (reverse branches))))
+
+      (and (= 'contains? h) (= 2 (count args)) (= :kw (:op b)) (literal-node? b))
+      (or (refine-path ctx a #(presence-parts (:val b) %)) [ctx ctx])
+
+      (and (= 'instance? h) (= 2 (count args)) (= :sym (:op a)))
+      (or (when-let [c (t/resolve-class (:imports (:file ctx)) (:val a))]
+            (refine-path ctx b #(instance-parts ctx c %)))
+          [ctx ctx])
+
+      (and (= 'clojure.spec.alpha/valid? h) (= 2 (count args)) (= :kw (:op a)) (plain-local ctx b))
+      [(assoc-in ctx [:locals (plain-local ctx b)] (t/ref-t (:val a))) ctx]
+
+      (and (primitive-predicates h) (= 1 (count args)))
+      (let [target (t/prim (first (primitive-predicates h)))]
+        (or (refine-path ctx a #(predicate-parts ctx h target %)) [ctx ctx]))
+
+      :else (or (truth-contexts ctx test) [ctx ctx]))))
+
+(defn- condition-contexts [ctx test]
+  (let [ty (eff ctx (infer ctx test))
+        [tc fc] (narrow ctx test)]
+    [(when-not (= :never (:t (truth-part (:env ctx) ty true))) tc)
+     (when-not (= :never (:t (truth-part (:env ctx) ty false))) fc)]))
 
 ;; ---- destructuring ----
 
@@ -277,13 +546,16 @@
   (and (= :map (:op pattern))
        (some (fn [[k _]] (or (:bang? (keys-directive k)) (has-bang? k))) (partition 2 (:children pattern)))))
 
-(defn- destructure-map [ctx pattern ty outer-why]
+(defn- destructure-map [ctx pattern ty outer-why projection]
   (let [env (:env ctx)
         pairs (partition 2 (:children pattern))
         special (into {} (for [[k v] pairs :when (and (= :kw (:op k)) (nil? (namespace (:val k))))] [(:val k) v]))
         defaults (into {} (for [[k v] (partition 2 (:children (:or special)))] [(:val k) v]))
         missing-sym (some-> (:missing special) :val)
         tname (t/show (t/remove-nil env ty))
+        ;; Destructuring evaluates its input once. Its whole value and plain
+        ;; field bindings share this identity, even without :as.
+        [ctx origin path] (track-path ctx (or projection {:path [] :type ty}))
         ctx (cond-> ctx missing-sym (bind missing-sym (t/union (t/prim :map) t/nil-t)))
         ctx (reduce
              (fn [ctx [k v]]
@@ -312,14 +584,18 @@
                                          (str key " is " (t/show (t/resolve-t env type))
                                               ", and :or applies only when the key is absent")))
                             optional?
-                            (bind ctx sym (t/union type t/nil-t)
-                                  :why (cond (= :req status) (or outer-why "the destructured value may be nil")
-                                             declared? (str key " is optional in " tname)
-                                             :else (str key " may be absent")))
-                            :else (bind ctx sym type)))))
+                            (-> (bind ctx sym (t/union type t/nil-t)
+                                      :why (cond (= :req status) (or outer-why "the destructured value may be nil")
+                                                 declared? (str key " is optional in " tname)
+                                                 :else (str key " may be absent")))
+                                (remember-projection sym origin (conj path key)))
+                            :else (-> (bind ctx sym type)
+                                      (remember-projection sym origin (conj path key)))))))
                     ctx (:children v))
 
-                   (and (= :kw (:op k)) (= :as (:val k))) (bind ctx (:val v) ty)
+                   (and (= :kw (:op k)) (= :as (:val k)))
+                   (-> (bind ctx (:val v) ty)
+                       (remember-projection (:val v) origin path))
                    (and (= :kw (:op k)) (= :missing (:val k))) ctx
                    (and (= :kw (:op k)) (#{:select :excess :all} (:val k))) (bind ctx (:val v) t/unknown)
                    (and (= :kw (:op k)) (#{:strs :syms :strs! :syms!} (:val k)))
@@ -333,7 +609,9 @@
                      (bind-pattern ctx k (cond bang? (t/remove-nil env type)
                                                optional? (t/union type t/nil-t)
                                                :else type)
-                                   (when (and optional? declared?) (str (:val v) " is optional in " tname))))
+                                   (when (and optional? declared?) (str (:val v) " is optional in " tname))
+                                   (when (and (not bang?) (not (contains? defaults (:val k))))
+                                     {:origin origin :path (conj path (:val v))})))
                    :else ctx)))
              ctx pairs)]
     ctx))
@@ -361,15 +639,18 @@
 
 (defn bind-pattern
   ([ctx pattern ty] (bind-pattern ctx pattern ty nil))
-  ([ctx pattern ty why]
+  ([ctx pattern ty why] (bind-pattern ctx pattern ty why nil))
+  ([ctx pattern ty why projection]
    (case (:op pattern)
      :sym (let [h (check-hint! ctx pattern ty "type")
                 env (:env ctx)
                 ;; the compiler believes the hint; keep the inferred type only when it agrees and says more
                 use-hint? (and h (or (#{:unknown :any} (:t (t/resolve-t env ty)))
-                                     (not (t/sub? env (t/remove-nil env (eff ctx ty)) h))))]
-            (bind ctx (:val pattern) (if use-hint? h ty) :why (when-not use-hint? why) :hinted (boolean h)))
-     :map (destructure-map ctx pattern ty why)
+                                     (not (t/sub? env (t/remove-nil env (eff ctx ty)) h))))
+                [c origin path] (if (and projection (not use-hint?)) (track-path ctx projection) [ctx])]
+            (cond-> (bind c (:val pattern) (if use-hint? h ty) :why (when-not use-hint? why) :hinted (boolean h))
+              origin (remember-projection (:val pattern) origin path)))
+     :map (destructure-map ctx pattern ty why projection)
      :vector (let [el (elem-type ctx ty)]
                (loop [ctx ctx [p & more] (:children pattern)]
                  (cond (nil? p) ctx
@@ -701,10 +982,14 @@
 (defn- bind-pairs [ctx bindings]
   (reduce (fn [ctx [p init]]
             (let [ty (dissoc (infer ctx init) :fresh)
-                  ctx' (bind-pattern ctx p ty (why-of ctx init ty))]
+                  why (why-of ctx init ty)
+                  sym (when (= :sym (:op p)) (:val p))
+                  captured (when (and sym (not (env/tag-node p))) (condition-capture ctx init))
+                  ctx' (bind-pattern ctx p ty why (stable-path ctx init))]
               (record! ctx p (get-in ctx' [:locals (:val p)] ty))
               (cond-> ctx'
-                (and (= :sym (:op p)) (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) (:val p)))))
+                captured (assoc-in [:conditions sym] captured)
+                (and sym (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) sym))))
           ctx (partition 2 (:children bindings))))
 
 (defn- bind-seq-pairs [ctx bindings]
@@ -712,7 +997,7 @@
             (if (= :kw (:op p))
               (case (:val p)
                 :let (bind-pairs ctx init)
-                (:when :while) (do (infer ctx init) (first (narrow ctx init)))
+                (:when :while) (or (first (condition-contexts ctx init)) ctx)
                 ctx)
               (bind-pattern ctx p (elem-type ctx (infer ctx init)))))
           ctx (partition 2 (:children bindings))))
@@ -951,32 +1236,19 @@
 
 (doseq [h '[some? nil?]]
   (defmethod special h [ctx node head]
-    (let [ty (infer ctx (first (args-of node)))
+    (let [ty (eff ctx (infer ctx (first (args-of node))))
           present (t/remove-nil (:env ctx) ty)
           absent (nil-part (:env ctx) ty)]
       (cond (= :never (:t present)) (t/lit (= head 'nil?))
             (= :never (:t absent)) (t/lit (= head 'some?))
             :else (t/prim :boolean)))))
 
-(defn- condition-parts [ctx test]
-  (let [ty (infer ctx test)
-        h (env/head (:file ctx) test)
-        arg (first (args-of test))]
-    (if (#{'some? 'nil?} h)
-      (let [aty (infer ctx arg)
-            present (t/remove-nil (:env ctx) aty)
-            absent (nil-part (:env ctx) aty)]
-        (if (= 'some? h) [present absent] [absent present]))
-      [(truth-part (:env ctx) ty true) (truth-part (:env ctx) ty false)])))
-
 (defn- if-form [ctx node inverted?]
   (let [[test then else] (args-of node)
-        contexts (narrow ctx test)
-        parts (condition-parts ctx test)
-        [tc fc] (if inverted? (reverse contexts) contexts)
-        [positive negative] (if inverted? (reverse parts) parts)]
-    (t/union (if (= :never (:t positive)) t/never (infer tc then))
-             (if (= :never (:t negative)) t/never (if else (infer fc else) t/nil-t)))))
+        branches (condition-contexts ctx test)
+        [tc fc] (if inverted? (reverse branches) branches)]
+    (t/union (if tc (infer tc then) t/never)
+             (if fc (if else (infer fc else) t/nil-t) t/never))))
 
 (defmethod special 'if [ctx node _] (if-form ctx node false))
 
@@ -984,12 +1256,10 @@
 
 (defn- when-form [ctx node inverted?]
   (let [[test & body] (args-of node)
-        contexts (narrow ctx test)
-        parts (condition-parts ctx test)
-        [tc _] (if inverted? (reverse contexts) contexts)
-        [positive negative] (if inverted? (reverse parts) parts)]
-    (t/union (if (= :never (:t positive)) t/never (infer-body tc body))
-             (if (= :never (:t negative)) t/never t/nil-t))))
+        branches (condition-contexts ctx test)
+        [tc fc] (if inverted? (reverse branches) branches)]
+    (t/union (if tc (infer-body tc body) t/never)
+             (if fc t/nil-t t/never))))
 
 (defmethod special 'when [ctx node _] (when-form ctx node false))
 (defmethod special 'when-not [ctx node _] (when-form ctx node true))
@@ -1022,28 +1292,42 @@
 
 (defmethod special 'cond [ctx node _]
   (loop [ctx ctx pairs (partition 2 (args-of node)) out []]
-    (if (empty? pairs)
-      (apply t/union (conj out t/nil-t))
-      (let [[test branch] (first pairs)]
-        (if (or (= :kw (:op test)) (= true (:val test)))
-          (apply t/union (conj out (infer ctx branch)))
-          (let [_ (infer ctx test)
-                [tc fc] (narrow ctx test)]
-            (recur fc (rest pairs) (conj out (infer tc branch)))))))))
+    (cond
+      (nil? ctx) (apply t/union out)
+      (empty? pairs) (apply t/union (conj out t/nil-t))
+      :else (let [[test branch] (first pairs)
+                  [tc fc] (condition-contexts ctx test)]
+              (recur fc (rest pairs) (cond-> out tc (conj (infer tc branch))))))))
 
 (defn- logical-form [ctx args and?]
   (if (empty? args)
     (t/lit and?)
-    (let [a (first args) ty (infer ctx a)
-          stop (truth-part (:env ctx) ty (not and?))
-          proceed (truth-part (:env ctx) ty and?)]
-      (if (or (not (next args)) (= :never (:t proceed)))
+    (let [a (first args)
+          ty (infer ctx a)]
+      (if-not (next args)
         ty
-        (t/union stop (logical-form ((if and? first second) (narrow ctx a))
-                                   (rest args) and?))))))
+        (let [branches (narrow ctx a)
+              [proceed stop] (if and? branches (reverse branches))
+              ety (eff ctx ty)
+              proceed-type (truth-part (:env ctx) ety and?)
+              stop-type (truth-part (:env ctx) ety (not and?))]
+          (t/union (if stop stop-type t/never)
+                   (if (and proceed (not= :never (:t proceed-type)))
+                     (logical-form proceed (rest args) and?)
+                     t/never)))))))
 
 (defmethod special 'and [ctx node _] (logical-form ctx (args-of node) true))
 (defmethod special 'or [ctx node _] (logical-form ctx (args-of node) false))
+
+(defn- case-int? [v]
+  (and (integer? v) (<= Integer/MIN_VALUE v Integer/MAX_VALUE)))
+
+(defn- case-tag-type? [int-mode? {:keys [t val]}]
+  (or (= :nil t)
+      (and (= :lit t)
+           (or (keyword? val) (string? val) (boolean? val)
+               ;; Hash-based case can distinguish equal numbers by JVM representation.
+               (and int-mode? (case-int? val))))))
 
 (defmethod special 'case [ctx node _]
   (let [[test & clauses] (args-of node)
@@ -1052,26 +1336,91 @@
         default? (odd? (count clauses))
         pairs (partition 2 clauses)
         lits (fn [n] (if (= :list (:op n)) (:children n) [n]))
-        members (t/members env tty)
-        closed? (and (seq members) (every? #(= :lit (:t %)) members))
-        handled (set (for [[c _] pairs l (lits c)] (:val l)))
-        local (when (and (= :sym (:op test)) (contains? (:locals ctx) (:val test))) (:val test))]
+        labels (mapcat (comp lits first) pairs)
+        literal-labels? (every? literal-node? labels)
+        subject (stable-path ctx test)
+        int-mode? (every? #(case-int? (:val %)) labels)
+        paths (when (and subject literal-labels?)
+                (for [[member rebuild] (path-alternatives ctx (:type subject) (:path subject))
+                      leaf (expand-boolean member)]
+                  [leaf rebuild]))
+        leaves (if subject (map first paths) (mapcat expand-boolean (t/members env (eff ctx tty))))
+        closed? (and literal-labels? (seq leaves) (every? #(case-tag-type? int-mode? %) leaves))
+        variants (when closed? paths)
+        members (distinct leaves)
+        handled (set (map :val labels))
+        missing (remove #(contains? handled (:val %)) members)
+        local (plain-local ctx test)
+        infer-variant (fn [labels branch]
+                        (if-let [branch-ctx (if variants
+                                             (refine-alternatives ctx subject variants #(when (contains? labels (:val %)) %))
+                                             (when (some #(contains? labels (:val %)) members) ctx))]
+                          (infer branch-ctx branch)
+                          t/never))]
     (when closed?
-      (doseq [[c _] pairs l (lits c) :when (and (#{:str :kw :num} (:op l)) (not (some #(= (:val l) (:val %)) members)))]
+      (doseq [l labels :when (not (some #(= (:val l) (:val %)) members))]
         (report! ctx l "TSP2678" (str (pr-str (:val l)) " is not a possible value of " (show-ref ctx tty)
                                       (hint-suffix (:val l) (map :val members)))))
-      (when-not default?
-        (when-let [missing (seq (remove #(contains? handled (:val %)) members))]
-          (report! ctx node "TSP8001" (str "case is not exhaustive: " (str/join ", " (map #(pr-str (:val %)) missing))
-                                          (if (next missing) " are" " is") " not handled")))))
+      (when (and (not default?) (seq missing))
+        (report! ctx node "TSP8001" (str "case is not exhaustive: " (str/join ", " (map #(pr-str (:val %)) missing))
+                                        (if (next missing) " are" " is") " not handled"))))
     (apply t/union
            (concat
             (for [[c branch] pairs]
-              (infer (if local
-                       (assoc-in ctx [:locals local] (apply t/union (map #(t/lit (:val %)) (lits c))))
-                       ctx)
-                     branch))
-            (when default? [(infer ctx (last clauses))])))))
+              (if closed?
+                (infer-variant (set (map :val (lits c))) branch)
+                (infer (if (and local (every? literal-node? (lits c)))
+                         (assoc-in ctx [:locals local] (apply t/union (map (comp literal-type :val) (lits c))))
+                         ctx)
+                       branch)))
+            (when default?
+              [(if closed?
+                 (infer-variant (set (map :val missing)) (last clauses))
+                 (infer ctx (last clauses)))])))))
+
+(defn- literal-domain [ctx expr]
+  (when-let [{:keys [type path]} (stable-path ctx expr)]
+    (let [leaves (mapcat (comp expand-boolean first) (path-alternatives ctx type path))]
+      (when (and (seq leaves) (every? finite-value? leaves))
+        (distinct (map :val leaves))))))
+
+(defn- condp-clauses [nodes]
+  (loop [[test branch result & more :as left] nodes out []]
+    (cond
+      (nil? branch) {:pairs out :default test}
+      (and (= :>> (:val branch)) result) (recur more (conj out [test result true]))
+      :else (recur (drop 2 left) (conj out [test branch false])))))
+
+(defmethod special 'condp [ctx node _]
+  (let [[pred expr & clauses] (args-of node)
+        pred-type (infer ctx pred)
+        expr-type (infer ctx expr)
+        equality? (= '= (builtin-head ctx {:op :list :children [pred]}))
+        {:keys [pairs default]} (condp-clauses clauses)
+        finite? (and equality? (every? #(literal-node? (first %)) pairs) (seq (literal-domain ctx expr)))]
+    (loop [ctx ctx [[test result invoke?] & more] pairs out []]
+      (cond
+        (nil? ctx) (apply t/union out)
+        (nil? test) (if default
+                      (apply t/union (conj out (infer ctx default)))
+                      (do (when-let [missing (and finite? (seq (literal-domain ctx expr)))]
+                            (report! ctx node "TSP8001" (str "condp is not exhaustive: " (str/join ", " (map pr-str missing))
+                                                            (if (next missing) " are" " is") " not handled")))
+                          (apply t/union out)))
+        :else (let [test-type (infer ctx test)
+                    matched (apply-type ctx pred-type [test-type expr-type] test "condp predicate")
+                    [yes no] (or (when (and equality? (literal-node? test))
+                                  (equality-contexts ctx expr (:val test)))
+                                [ctx ctx])
+                    present (truth-part (:env ctx) matched true)
+                    absent (truth-part (:env ctx) matched false)
+                    yes (when-not (= :never (:t present)) yes)
+                    no (when-not (= :never (:t absent)) no)]
+                (recur no more
+                       (cond-> out yes
+                         (conj (if invoke?
+                                 (apply-fn-node yes result [present])
+                                 (infer yes result))))))))))
 
 (defmethod special 'fn [ctx node _] (infer-fn ctx node nil))
 (defmethod special 'fn* [ctx node _] (infer-fn ctx node nil))

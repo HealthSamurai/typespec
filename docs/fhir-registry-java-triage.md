@@ -1,5 +1,8 @@
 # FHIR registry: Java builder triage (metadata only)
 
+F530 исправил описанный ниже случай. Сводка повторного прогона на
+неизменённом upstream приведена в [результатах get-ig](fhir-registry-result.md#перепроверка-после-f530).
+
 ## Verdict
 
 `src/fhir/registry/gcs.clj:49:76`, TSP2339 (`ServiceOptions$Builder has no method build`) is a **checker false positive caused by erasing an inherited generic self type**. It is not evidence that the application's builder lacks `build`. The generic `B` returned by `setCredentials` resolves to `StorageOptions$Builder`, which exposes public `build`. No checker or application code was changed. No claim is made that credentials, network access, or the entire service works at runtime.
@@ -89,7 +92,7 @@ CLJ
 "$J/javap" -classpath "$CP" -c -p 'com.google.cloud.ServiceOptions$Builder'
 ```
 
-## Root cause and proposed fix (not implemented)
+## Root cause and original proposal
 
 `src/typespec/java.clj`, `methods-named`, records `Method.getReturnType()` only. For `setCredentials`, it returns `:ret "com.google.cloud.ServiceOptions$Builder"` and discards generic return `B`. `src/typespec/check.clj:1229`, `java-ret`, converts that erased name straight into a class type. On the next call the receiver is therefore the base builder. Its `build` is **protected**, so `Class.getMethods()` correctly does not expose it; the checker then emits TSP2339. The false step was the earlier loss of type information, not reflection's visibility rules.
 

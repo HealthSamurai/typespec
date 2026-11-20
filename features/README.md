@@ -71,7 +71,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F450](F450-effects-and-purity.md) | Эффекты и проверяемая чистота | `proposed` | `not-implemented` | functions | Typespec |
 | [F510](F510-jvm-contracts.md) | Чтение контрактов JVM | `designed` | `partial` | java | Clojure |
 | [F520](F520-java-overloads.md) | Java-вызовы и перегрузки | `designed` | `partial` | java | Clojure |
-| [F530](F530-java-generics-nullability.md) | Java generics и nullability | `designed` | `not-implemented` | java | Clojure |
+| [F530](F530-java-generics-nullability.md) | Java generics и nullability | `designed` | `partial` | java | Clojure |
 | [F610](F610-macro-contracts.md) | Макросы и границы проверяемого кода | `designed` | `partial` | core | Typespec |
 | [F710](F710-externs-and-exports.md) | Контракты библиотек и экспорт интерфейсов | `designed` | `partial` | core | Typespec |
 | [F711](F711-external-declarations.md) | Внешние декларации для библиотек и core | `designed` | `partial` | modules | TypeScript |

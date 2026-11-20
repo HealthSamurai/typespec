@@ -226,7 +226,7 @@ Clojure on the JVM already has a type system — Java's. Typespec uses it fully 
 
 - **Classes, interfaces, inheritance**: subtyping follows Java (`ArrayList <: List <: Collection`), and Clojure collections are Java collections too (`IPersistentVector <: java.util.List`).
 - **Methods, constructors, static fields, varargs**: arity and argument types are checked; overload resolution follows the Clojure compiler's rules.
-- **Generics** from signatures: `Map<String, List<UUID>>` → `(t/class java.util.Map String (t/class java.util.List UUID))`; `.get` returns `(t/platform (t/class java.util.List UUID))`.
+- **Inherited generic returns.** When a concrete receiver binds a superclass or interface type variable, Typespec uses its known nominal class as the method result. Raw receivers and unresolved variables retain the erased return. [F530 scope](../features/F530-java-generics-nullability.md)
 - **Nullability**: JSpecify, JetBrains, jakarta, Android `@Nullable`/`@NonNull`, and `@NullMarked` packages. Without annotations, results are platform types (section 4.1).
 - **`instance?`, `cond->` and `case` on classes** narrow types; `(instance? Long x)` narrows to `Long`.
 - **`reify`, `proxy`, `deftype`, `defrecord` implementing interfaces**: method signatures are checked against the interface.

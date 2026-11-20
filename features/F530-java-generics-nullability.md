@@ -3,7 +3,7 @@ id: F530
 title: Java generics и nullability
 status: designed
 decision: accepted
-implementation: not-implemented
+implementation: partial
 area: java
 origin: Clojure
 ---
@@ -18,15 +18,30 @@ Clojure-код постоянно пересекает границу JVM: чи�
 
 ## Что действительно работает сейчас
 
-Проверено по исходникам, а не только по проектному reference:
+Для наследуемого публичного Java-метода чекер может восстановить номинальный
+тип результата, если он объявлен как параметр класса или интерфейса.
+Подстановка проходит по `getGenericSuperclass` и `getGenericInterfaces`.
+Например, `StorageOptions$Builder` подставляется вместо `B` в
+`ServiceOptions$Builder.setCredentials`. Следующий `.build()` проверяется
+на `StorageOptions$Builder`.
 
-- `java/methods-named` читает `getParameterTypes` / `getReturnType`, а не generic/annotated reflection API. Типы стёрты; есть declaring class, но нет параметров класса, bounds или аннотаций.
+- `java/methods-named` сохраняет стёртые параметры перегрузок и использует
+  `getGenericReturnType` для подстановки результата. При совпадающих
+  сигнатурах параметров предпочитаются обычные методы перед bridge и
+  synthetic методами, затем более конкретные тип результата и владелец.
+- При raw-наследовании, неизвестной переменной или недоступной metadata
+  используется стёртый тип результата. Подстановка сохраняет класс
+  `List` для результата `List<T>`. Вложенный `T`, generic-параметры
+  вызова и ограничения параметров метода остаются за рамками реализации.
 - В `types/parse-type` ветка `t/class` разрешает только имя класса. Аргументы после имени **игнорируются**: `(t/class java.util.List String)` пока не сохраняет `String`. Само принятие такой формы не означает проверку generics.
 - `check/java-ret` обрабатывает небольшой список `java/nullable-return?`: например, `Map.get`, `Map.remove`, `Queue.poll`, `System.getenv`. Для остальных подходящих результатов используется platform type; `types/platform` не делает примитивы nullable. Это не чтение JSpecify или иных аннотаций.
 - `check/eff` при `:strict-nil` превращает platform type в объединение с `nil`; `method-call` выдаёт `TSP2531` при nullable receiver. Метаданные `:null-return` сохраняют причину для известных nullable-методов, в том числе через hint.
 - `java-arg-ok?` для ссылочных параметров удаляет `nil` перед проверкой совместимости. Полноценной проверки non-null **аргументов** Java-методов нет.
 
-Поэтому `implementation: not-implemented` сохранён: отдельная эвристика nullable-return реализована, но центральный механизм параметризованных Java-типов и аннотаций отсутствует.
+Локальный Java-fixture проверяет наследование через классы и интерфейсы,
+raw fallback, bridge-метод, отсутствующие методы и сохранение nil-политики.
+На get-ig приёмка воспроизводит исправленную цепочку на закреплённом GCS
+classpath. [Тесты](../test/typespec/java_generic_return_test.clj) · [Прогон get-ig](../docs/fhir-registry-result.md#перепроверка-после-f530)
 
 ## Примеры и ожидаемое поведение
 

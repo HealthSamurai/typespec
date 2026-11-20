@@ -24,7 +24,8 @@
     typespec.extern-resources-test
     typespec.pg-boundary-contract-test
     typespec.metadata-autoload-test
-    typespec.metadata-determinism-test])
+    typespec.metadata-determinism-test
+    typespec.http-replace-regression-test])
 
 (defn run-suites []
   ;; Missing namespaces are an error, never a silently skipped test group.

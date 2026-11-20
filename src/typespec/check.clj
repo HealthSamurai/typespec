@@ -551,20 +551,26 @@
       :else (let [all (map #(arg-problems ctx % arg-nodes arg-types node) fits)
                   passing (keep-indexed (fn [i ps] (when (empty? ps) i)) all)
                   vague? (some #(#{:unknown :any} (:t (t/resolve-t (:env ctx) %))) arg-types)
+                  ;; Incomplete evidence is not a mismatch. Prefer a candidate
+                  ;; whose known arguments fit, but still emit its uncertainty.
+                  incomplete (keep-indexed
+                               (fn [i ps]
+                                 (when (and (seq ps)
+                                            (every? #(= "TSP210-01" (first (second %))) ps)) i)) all)
                   ;; overloads go from narrow to general: with an unknown argument only the general one is safe
                   ;; nothing fits: if the only trouble is a possible nil, keep the overload that fits otherwise
                   non-nil (mapv #(t/remove-nil (:env ctx) (eff ctx %)) arg-types)
                   nil-only (first (keep-indexed
                                    (fn [i a] (when (empty? (arg-problems (assoc ctx :quiet true) a arg-nodes non-nil node)) i))
                                    fits))
-                  i (or (if vague? (last passing) (first passing)) nil-only (dec (count all)))]
+                  i (or (if vague? (last passing) (first passing)) (first incomplete) nil-only (dec (count all)))]
               (doseq [[pn [code msg extra]] (nth all i)]
                 (apply report! ctx pn code msg (mapcat identity extra)))
               ;; an unknown argument and several overloads that fit: the result is not known either
               (if (or (and vague? (next (distinct (map #(:ret (nth fits %)) passing))))
                       (and (empty? passing)
-                           (some (fn [ps] (some #(= "TSP210-01" (first (second %))) ps)) all)
-                           (next (distinct (map :ret fits)))))
+                           (seq incomplete)
+                           (next (distinct (map #(:ret (nth fits %)) incomplete)))))
                 t/unknown
                 (:ret (nth fits i))))))))
 

@@ -1,0 +1,6 @@
+{:paths ["."]
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}
+        local/typespec {:local/root "../.."}
+        context/http {:git/url "https://github.com/context-clj/http"
+                      :git/sha "e158b6b244c2b8e053de2a097d1071d9419adef9"}}
+ :aliases {:check {:main-opts ["check.clj"]}}}

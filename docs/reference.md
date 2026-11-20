@@ -150,6 +150,7 @@ The table is validated with a **differential test**: a generator builds random f
 - **`t/exact`** forbids extra keys everywhere.
 - **Map operations.** `get-in` uses the default when a literal path may be absent and preserves `nil` stored at the final key. `assoc-in` and `update-in` track keyword paths and keep sibling fields. [Supported paths](../features/F312-literal-map-paths.md)
 - **Fixed vector positions.** `s/tuple` checks length and element order. Vector literals supply positional types for destructuring and constant indices. [Supported operations](../features/F331-fixed-vector-positions.md)
+- **`apply` with a fixed tail.** Arguments before the final sequence and its known positions form one checked call. [Supported tails](../features/F411-apply-fixed-tail.md)
 - **Generics** with explicit binders and constraints:
   ```clojure
   {:t/sig '(t/all [a (r :< :fhir/resource)] [(s/coll-of r) (t/fn [r :-> a]) :-> (s/coll-of a)])}
@@ -417,6 +418,7 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP280-02` | malformed or conflicting literal directive |
 | `TSP330-01` | vector length does not match a tuple contract |
 | `TSP330-02` | constant `nth` index may be out of bounds without a default |
+| `TSP410-01` | the length or positions of an `apply` tail could not be verified |
 | `TSP2791` | `types.edn` entry is not a subtype of the `s/def` |
 | `TSP7010` | strict mode: a public function has no signature |
 | `TSP7020`–`TSP7026` | hints and interop (section 4.2) |

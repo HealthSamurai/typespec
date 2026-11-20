@@ -959,13 +959,13 @@
                    state callbacks)]
         (generic-result ctx node label state)))))
 
-(defn- call-fn [ctx node fname ftype arg-nodes]
+(defn- call-fn [ctx node fname ftype arg-nodes & [typed-args]]
   (if (= :all (:t ftype))
-    (call-generic ctx node fname ftype arg-nodes nil)
+    (call-generic ctx node fname ftype arg-nodes typed-args)
     (let [n (count arg-nodes)
         ars (:arities ftype)
           fits (matching-arities ftype n)
-        arg-types (infer-call-arguments ctx node arg-nodes fits)]
+        arg-types (or typed-args (infer-call-arguments ctx node arg-nodes fits))]
     (cond
       (empty? ars) (or (:ret ftype) t/unknown)
       (empty? fits) (do (report! ctx node "TSP2554"
@@ -2231,6 +2231,70 @@
             member))
         (t/members (:env ctx) ty)))
 
+(defn- spread-tail-types [ctx tail ty]
+  (let [form (if (= :quote (:op tail)) (first (:children tail)) tail)]
+    (if (and (= :list (:op form)) (empty? (:children form)) (empty? (:directives tail)))
+      [[]]
+      (mapv #(if (= :nil (:t %)) [] (:items %)) (t/members (:env ctx) (eff ctx ty))))))
+
+(defn- spread-tail-nodes [tail items]
+  (if (and (= :vector (:op tail)) (empty? (:directives tail)) (not (env/tag-node tail))
+           (= (count items) (count (:children tail))))
+    (:children tail)
+    (mapv (fn [i ty]
+            (cond-> {:op :spread :pos (:pos tail) :synthetic true
+                     :display (str (parse/unparse tail) " at index " i)}
+              (and (= :lit (:t ty)) (keyword? (:val ty))) (assoc :op :kw :val (:val ty))))
+          (range) items)))
+
+(defn- checkable-spread-contract? [ty]
+  (or (= :all (:t ty))
+      (some (fn [{:keys [params rest kwargs]}]
+              (or (not rest) kwargs
+                  (some #(not (#{:unknown :any} (:t %))) (conj params rest))))
+            (:arities ty))))
+
+(defmethod special 'apply [ctx node _]
+  (let [[f & args] (args-of node)]
+    (if (empty? args)
+      (do (when f (infer ctx f))
+          (report! ctx node "TSP2554" "apply expects a function and a final sequence argument")
+          t/unknown)
+      (let [prefix (vec (butlast args))
+            tail (last args)
+            prefix-types (mapv #(infer ctx %) prefix)
+            tail-type (infer ctx tail)
+            spreads (spread-tail-types ctx tail tail-type)
+            exact? (every? some? spreads)
+            expected (when (and exact? (callback-node? ctx f))
+                       {:t :fn :arities (mapv #(hash-map :params (into prefix-types %) :ret t/unknown) spreads)})
+            ftype (t/resolve-t (:env ctx) (infer ctx f expected))
+            invalid-tail (unsupported-sequence-member ctx tail-type)
+            callable? (or (= :all (:t ftype)) (seq (:arities ftype)))]
+        (cond
+          (some #(= :never (:t %)) (into [ftype tail-type] prefix-types)) t/never
+
+          invalid-tail
+          (do (report! ctx tail "TSP2345" (str "apply cannot spread " (t/show invalid-tail)))
+              t/unknown)
+
+          (and exact? callable?)
+          (let [label (str "apply " (parse/unparse f))]
+            (apply t/union
+                   (for [items spreads]
+                     (call-fn ctx node label ftype (into prefix (spread-tail-nodes tail items))
+                              (into prefix-types items)))))
+
+          exact?
+          (do (when-not (= :any (:t ftype)) (check-composable! ctx f ftype "apply"))
+              t/unknown)
+
+          :else
+          (do (when (or (:strict (:opts ctx)) (checkable-spread-contract? ftype))
+                (report! ctx tail "TSP410-01" "apply cannot verify the length or positions of the final argument"
+                         :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:apply-tail}))
+              t/unknown))))))
+
 (defmethod special 'lazy-seq [ctx node _]
   (let [forms (args-of node)
         body (infer-body (dissoc ctx :recur-types) forms)]
@@ -2941,7 +3005,7 @@
 
 (def ^:private known-diagnostic-codes
   #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03" "TSP280-01" "TSP280-02"
-    "TSP330-01" "TSP330-02"
+    "TSP330-01" "TSP330-02" "TSP410-01"
     "TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
     "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032" "TSP721-01"

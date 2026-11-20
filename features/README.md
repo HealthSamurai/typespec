@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 14 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 15 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
@@ -70,6 +70,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F340](F340-mutation-and-variance.md) | Изменяемые значения и variance | `designed` | `not-implemented` | core | Typespec |
 | [F350](F350-records.md) | Records и номинальные классы | `designed` | `not-implemented` | data | Clojure |
 | [F410](F410-arities-and-apply.md) | Арности, перегрузки и apply | `designed` | `partial` | functions | Clojure |
+| [F411](F411-apply-fixed-tail.md) | Проверка apply с известными позициями хвоста | `implemented` | `implemented` | functions | Clojure |
 | [F420](F420-control-flow.md) | Throw, assert и try | `designed` | `partial` | functions | Clojure |
 | [F430](F430-protocols.md) | Протоколы и reify | `designed` | `not-implemented` | functions | Clojure |
 | [F440](F440-multimethods.md) | Multimethod dispatch | `designed` | `not-implemented` | functions | Clojure |

@@ -172,6 +172,14 @@
   (and (every? (fn [[k tv]] (when-let [sv (get (:req s) k)] (sub? env sv tv))) (:req t))
        (every? (fn [[k tv]] (if-let [sv (or (get (:req s) k) (get (:opt s) k))] (sub? env sv tv) true)) (:opt t))))
 
+(defn arity-minimum [arity]
+  (+ (count (:params arity)) (get arity :rest-min 0)))
+
+(defn arity-fits? [arity n]
+  (if (or (:rest arity) (:kwargs arity))
+    (<= (arity-minimum arity) n)
+    (= (arity-minimum arity) n)))
+
 (defn- arity-sub?
   "Source accepts every call described by target; arguments are contravariant.
   Supports fixed positional parameters and a homogeneous rest parameter only."
@@ -180,39 +188,41 @@
         sr (:rest s) tr (:rest t)]
     (and (not (:kwargs s)) (not (:kwargs t))
          (vector? sp) (vector? tp) (:ret s) (:ret t)
-         (if tr
-           (and sr (<= (count sp) (count tp)))
-           (if sr (<= (count sp) (count tp)) (= (count sp) (count tp))))
+         (arity-fits? s (arity-minimum t))
+         (or (nil? tr) sr)
          (every? true? (map-indexed
                        (fn [i p] (sub? env p (if (< i (count sp)) (nth sp i) sr))) tp))
-         (or (nil? tr) (sub? env tr sr))
+         (or (nil? tr)
+             (and (every? #(sub? env tr %) (drop (count tp) sp))
+                  (sub? env tr sr)))
          (sub? env (:ret s) (:ret t)))))
 
 (defn dispatch-arity
   "Clojure chooses a fixed arity before its variadic fallback."
   [arities n]
-  (or (some #(when (and (not (:rest %)) (= n (count (:params %)))) %) arities)
-      (some #(when (and (:rest %) (<= (count (:params %)) n)) %) arities)))
+  (or (some #(when (and (not (:rest %)) (arity-fits? % n)) %) arities)
+      (some #(when (and (:rest %) (arity-fits? % n)) %) arities)))
 
 (defn dispatch-plan
   "Source branches and argument contracts needed to implement one expected arity."
   [source target]
-  (let [minimum (count (:params target))]
+  (let [minimum (arity-minimum target)]
     (if-not (:rest target)
       (when-let [a (dispatch-arity source minimum)] [[a target]])
       (when-let [rest-arity (first (filter :rest source))]
-        (let [rest-minimum (count (:params rest-arity))
+        (let [rest-minimum (arity-minimum rest-arity)
               fixed (filter #(not (:rest %)) source)
               fixed-counts (set (map #(count (:params %)) fixed))
-              params-at (fn [n] (into (:params target) (repeat (- n minimum) (:rest target))))]
+              params-at (fn [n] (into (:params target) (repeat (- n (count (:params target))) (:rest target))))]
           (when (every? fixed-counts (range minimum rest-minimum))
-            (conj (vec (for [a fixed :let [n (count (:params a))] :when (<= minimum n)]
-                         [a (assoc target :params (params-at n) :rest nil)]))
-                  [rest-arity (assoc target :params (params-at (max rest-minimum minimum)))])))))))
+            (let [target (dissoc target :rest-min)]
+              (conj (vec (for [a fixed :let [n (count (:params a))] :when (<= minimum n)]
+                           [a (assoc target :params (params-at n) :rest nil)]))
+                    [rest-arity (assoc target :params (params-at (max rest-minimum minimum)))]))))))))
 
 (defn- fn-sub?
-  "Every target arity needs a source arity. Mixed fixed/rest dispatch and kwargs
-  are deliberately unsupported (except identical types), not guessed compatible."
+  "Every target arity needs a source arity. Where overloads share a return type,
+  any matching source arity can cover a target. Other overlaps need dispatch."
   [env s t]
   (let [sa (:arities s) ta (:arities t)]
     (cond
@@ -224,6 +234,7 @@
       (and (seq sa) (seq ta)
              (not-any? :kwargs sa) (not-any? :kwargs ta)
              (or (= 1 (count sa))
+                 (apply = (map :ret sa))
                  (and (not-any? :rest sa)
                       (= (count sa) (count (distinct (map #(count (:params %)) sa)))))))
       (every? (fn [target] (some #(arity-sub? env % target) sa)) ta)
@@ -367,6 +378,7 @@
               (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?")) ")"))
       :fn (if-let [ars (seq (:arities t))]
             (let [ar (fn [a] (str "[" (str/join " " (concat (map show (:params a))
+                                                            (repeat (get a :rest-min 0) (some-> (:rest a) show))
                                                             (when (:rest a) ["&" (show (:rest a))])
                                                             (when (:kwargs a) ["&" (show (:kwargs a))])
                                                             [":->" (show (:ret a))])) "]"))]
@@ -384,9 +396,10 @@
     map? :map vector? :vector set? :set seq? :seq list? :seq sequential? :coll coll? :coll
     fn? :fn ifn? :fn})
 
-(defn- op [ctx sym]
+(defn type-form-op [ctx sym]
   (when (symbol? sym)
-    (let [n (namespace sym)
+    (let [sym (get (:refers ctx) sym sym)
+          n (namespace sym)
           full (when n (str (get (:aliases ctx) (symbol n) n)))]
       (cond (#{"clojure.spec.alpha" "s"} full) (keyword "s" (name sym))
             (= "t" n) (keyword "t" (name sym))
@@ -436,25 +449,57 @@
                                         "one map type")))
           (with-meta unknown {::invalid-operator true})))))
 
-(defn cat-items
-  "Items of (s/cat :a A :b (s/? B) :c (s/* C)), or nil when the form is not an s/cat."
-  [ctx form]
-  (when (and (seq? form) (= :s/cat (op ctx (first form))) (odd? (count form)))
-    (for [[_ f] (partition 2 (rest form))]
-      (let [o (when (seq? f) (op ctx (first f)))]
-        (case o
-          :s/? {:mod :opt :type (parse-type ctx (second f))}
-          (:s/* :s/+) {:mod :rest :type (parse-type ctx (second f))}
-          {:type (parse-type ctx f)})))))
+(def ^:private spec-regex-ops #{:s/cat :s/alt :s/? :s/* :s/+ :s/& :s/keys*})
 
-(defn cat->arities [items ret]
-  (let [[plain more] (split-with #(nil? (:mod %)) items)
-        opts (take-while #(= :opt (:mod %)) more)
-        after (drop (count opts) more)
-        rest-t (when (= :rest (:mod (first after))) (:type (first after)))]
-    (when (or (empty? after) (and rest-t (= 1 (count after))))
-      (let [ars (vec (reductions conj (mapv :type plain) (map :type opts)))]
-        (vec (map-indexed (fn [i ps] {:params ps :rest (when (= i (dec (count ars))) rest-t) :ret ret}) ars))))))
+(defn- regex-op [ctx form]
+  (when (seq? form)
+    (spec-regex-ops (type-form-op ctx (first form)))))
+
+(defn- bounded-arities [arities]
+  (let [limit 64
+        branches (vec (take (inc limit) (distinct arities)))]
+    (when (<= (count branches) limit) branches)))
+
+(defn- regex-branches [ctx form]
+  (let [empty-branch {:params [] :rest nil}
+        operator (regex-op ctx form)
+        operands (when operator (rest form))
+        inner (first operands)]
+    (case operator
+      (:s/cat :s/alt)
+      (when (and (even? (count operands))
+                 (every? keyword? (take-nth 2 operands))
+                 (or (= :s/cat operator) (seq operands)))
+        (let [branches (mapv #(regex-branches ctx %) (take-nth 2 (next operands)))]
+          (when (every? some? branches)
+            (if (= :s/alt operator)
+              (when (not-any? :rest (mapcat identity branches))
+                (bounded-arities (mapcat identity branches)))
+              (reduce (fn [prefix suffix]
+                        (if (and (some :rest prefix) (some #(or (:rest %) (seq (:params %))) suffix))
+                          (reduced nil)
+                          (or (bounded-arities
+                               (for [p prefix s suffix]
+                                 (merge p (if (:rest p) (dissoc s :rest) s)
+                                        {:params (into (:params p) (:params s))})))
+                              (reduced nil))))
+                      [empty-branch] branches)))))
+
+      :s/? (when (= 1 (count operands))
+             (when-let [branches (regex-branches ctx inner)]
+               (when-not (some :rest branches)
+                 (bounded-arities (cons empty-branch branches)))))
+      (:s/* :s/+) (when (and (= 1 (count operands)) (not (regex-op ctx inner)))
+                    [(cond-> (assoc empty-branch :rest (parse-type ctx inner))
+                       (= :s/+ operator) (assoc :rest-min 1))])
+      (:s/& :s/keys*) nil
+      [(assoc empty-branch :params [(parse-type ctx form)])])))
+
+(defn spec-args->arities [ctx args ret]
+  (when (some? args)
+    (if-let [branches (when (regex-op ctx args) (regex-branches ctx args))]
+      (mapv #(assoc % :ret ret) branches)
+      (do ((:fail ctx) args) nil))))
 
 (defn parse-sig
   "[A B :-> R], [A & B :-> R], or a list of such vectors."
@@ -497,16 +542,22 @@
         (if @failed unknown {:t :all :binders binders :body t})))))
 
 (defn alpha-equivalent?
-  "Equality modulo names/identities of top-level rank-1 binders. Metadata is retained."
+  "Equality modulo rank-1 binder names and equivalent rest minima."
   [a b]
   (let [normalize (fn [ty]
-                    (if-not (= :all (:t ty)) ty
-                      (let [ids (zipmap (map :id (:binders ty)) (range))]
-                        (walk/postwalk
-                         (fn [node]
-                           (if (and (map? node) (contains? ids (:id node)))
-                             (-> node (assoc :id (get ids (:id node))) (dissoc :name)) node)) ty))))]
-    (= (normalize a) (normalize b))))
+                    (let [ids (zipmap (map :id (:binders ty)) (range))]
+                      (walk/postwalk
+                       (fn [node]
+                         (cond
+                           (and (map? node) (contains? ids (:id node)))
+                           (-> node (assoc :id (get ids (:id node))) (dissoc :name))
+                           (and (map? node) (pos? (get node :rest-min 0)))
+                           (-> node
+                               (update :params into (repeat (:rest-min node) (:rest node)))
+                               (dissoc :rest-min))
+                           :else node))
+                       ty)))]
+    (or (= a b) (= (normalize a) (normalize b)))))
 
 (defn parse-type
   "Reads a type form (plain data). ctx: {:aliases :imports :fail (fn [form])}."
@@ -534,11 +585,12 @@
                     (fail))
       (vector? form) (if (and (:inside-all ctx) (some #{'&} form)) (fail) (parse-sig ctx form))
       (seq? form)
-      (case (op ctx (first form))
+      (case (type-form-op ctx (first form))
         :t/all (parse-all ctx form)
         :quote (p (second form))
         :s/nilable (vary-meta (union (p (second form)) nil-t) assoc ::shape-form 's/nilable)
-        :s/or (vary-meta (apply union (map p (take-nth 2 (drop 2 form)))) assoc ::shape-form 's/or)
+        :s/or (vary-meta (apply union (map p (take-nth 2 (drop 2 form))))
+                         assoc ::shape-form 's/or ::spec-tags (vec (take-nth 2 (rest form))))
         :t/or (vary-meta (apply union (map p (rest form))) assoc ::shape-form 't/or)
         (:s/and :t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
         :s/spec (p (second form))
@@ -549,13 +601,13 @@
                                 (cond-> {:t :coll :of (p inner) :kind (get kinds kind)}
                                   (or (some #(not= :kind %) (keys opts))
                                       (and (contains? opts :kind) (not (contains? (dissoc kinds 'list?) kind)))
-                                      (= :s/every (op ctx (first form))))
+                                      (= :s/every (type-form-op ctx (first form))))
                                   (with-meta {::unchecked-contract true})))
         :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
         :s/tuple (with-meta (tuple (mapv p (rest form))) {::tuple-contract true})
         :s/fspec (if (:inside-all ctx) (fail) (let [{:keys [args ret]} (apply hash-map (rest form))
                        r (if ret (p ret) unknown)]
-                   {:t :fn :arities (some-> (cat-items ctx args) (cat->arities r)) :ret r}))
+                   {:t :fn :arities (spec-args->arities ctx args r) :ret r}))
         :t/fn (if (:inside-all ctx)
                 (if (and (= 2 (count form)) (vector? (second form))) (p (second form)) (fail))
                 (parse-sig ctx (second form)))

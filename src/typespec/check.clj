@@ -6,6 +6,7 @@
             [typespec.types :as t]
             [typespec.literals :as literals]
             [typespec.type-operators :as operators]
+            [typespec.spec-conform :as conform]
             [typespec.solver :as solver]
             [typespec.env :as env]
             [typespec.java :as java]
@@ -254,7 +255,7 @@
   (let [head (env/head (:file ctx) node)
         raw (:val (first (:children node)))
         ns-sym (:ns (:file ctx))
-        core-sym (when (and head (not (namespace head))) (symbol "clojure.core" (name head)))]
+        core-sym (when head (if (namespace head) head (symbol "clojure.core" (name head))))]
     (when (and head (empty? (:directives node)) (not (env/tag-node node))
                (not (contains? (:locals ctx) raw))
                (not (and core-sym (contains? (get-in ctx [:env :ns-defs ns-sym]) head)))
@@ -294,6 +295,11 @@
   (assoc-in ctx [:projections sym]
             {:origin origin :path path :type (get-in ctx [:locals sym])}))
 
+(declare projected-type)
+
+(defn- map-entry-type? [ctx ty]
+  (every? :map-entry? (t/members (:env ctx) ty)))
+
 (defn- stable-path [ctx node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
     (if-let [sym (plain-local ctx node)]
@@ -310,9 +316,19 @@
                             (and (= 'get h) (= :kw (:op b)) (empty? more)) [a [(:val b)]]
                             (and (= 'get-in h) (= :vector (:op b)) (seq (:children b))
                                  (every? #(= :kw (:op %)) (:children b)) (empty? more))
-                            [a (mapv :val (:children b))])]
+                            [a (mapv :val (:children b))]
+                            (and (#{'first 'second 'key 'val} h) a (nil? b))
+                            [a [(if (#{'first 'key} h) 0 1)]]
+                            (and (= 'nth h) (= :num (:op b)) (integer? (:val b))
+                                 (<= 0 (:val b) Integer/MAX_VALUE) (empty? more)
+                                 (empty? (:directives b)) (not (env/tag-node b)))
+                            [a [(int (:val b))]])]
           (when-let [p (and base (stable-path ctx base))]
-            (update p :path into path)))))))
+            (when (or (not (integer? (first path)))
+                      (let [base-type (projected-type ctx (:type p) (:path p))]
+                        (and (or (not (#{'key 'val} h)) (map-entry-type? ctx base-type))
+                             (projected-type ctx base-type path))))
+              (update p :path into path))))))))
 
 (defn- track-path [ctx {:keys [local origin path type]}]
   (if origin
@@ -323,12 +339,15 @@
 
 (defn- projected-type [ctx ty path]
   (reduce (fn [current key]
-            (let [{:keys [type status]} (lookup-key ctx current key)]
-              (case status
-                :req (if (t/nilable? (:env ctx) current) (t/union type t/nil-t) type)
-                :opt (t/union type t/nil-t)
-                :nil t/nil-t
-                (reduced nil))))
+            (if (integer? key)
+              (let [positions (map #(get (:items %) key) (t/members (:env ctx) current))]
+                (if (every? some? positions) (apply t/union positions) (reduced nil)))
+              (let [{:keys [type status]} (lookup-key ctx current key)]
+                (case status
+                  :req (if (t/nilable? (:env ctx) current) (t/union type t/nil-t) type)
+                  :opt (t/union type t/nil-t)
+                  :nil t/nil-t
+                  (reduced nil)))))
           ty path))
 
 (defn- refine-origin [ctx {:keys [local origin]} ty]
@@ -344,7 +363,7 @@
       (assoc-in ctx [:locals local] ty))))
 
 (defn- path-alternatives
-  "Pairs of [leaf type, rebuild]. Each rebuild retains its enclosing map alternatives."
+  "Pairs of [leaf type, rebuild]. Each rebuild retains its enclosing map or tuple."
   ([ctx ty path] (path-alternatives ctx ty path false))
   ([ctx ty path presence?]
    (let [budget (volatile! 256)
@@ -359,6 +378,14 @@
                                           [leaf #(assoc-in m [:req key] (rebuild %))])))
                            paths (for [m members]
                                    (cond
+                                     (integer? key)
+                                     (when-let [field (get (:items m) key)]
+                                       (when-let [children (walk field more)]
+                                         (for [[leaf rebuild] children]
+                                           [leaf (fn [new-leaf]
+                                                   (let [items (assoc (:items m) key (rebuild new-leaf))]
+                                                     (assoc m :items items :of (apply t/union items))))])))
+
                                      (get-in m [:req key]) (required m (get-in m [:req key]))
                                      (and presence? (get-in m [:opt key]))
                                      (let [field (get-in m [:opt key])
@@ -439,6 +466,11 @@
 (defn- equality-contexts [ctx expr value]
   (refine-path ctx expr #(equality-parts ctx value %)))
 
+(defn- invalid-parts [ctx leaf]
+  (if (#{:coll :map :map-of :fn} (:t leaf))
+    [nil leaf]
+    (equality-parts ctx conform/invalid-key leaf)))
+
 (defn- presence-parts [key leaf]
   (case (:t leaf)
     :nil [nil leaf]
@@ -517,7 +549,8 @@
   (let [head (builtin-head ctx node)]
     (when (or (primitive-predicates head)
               (guard-call ctx node)
-              (#{'some? 'nil? 'not 'and 'or '= 'not= 'contains? 'instance? 'clojure.spec.alpha/valid?} head))
+              (#{'some? 'nil? 'not 'and 'or '= 'not= 'contains? 'instance?
+                 'clojure.spec.alpha/valid? 'clojure.spec.alpha/invalid?} head))
       {:test node
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
                             [(:val n) (get-in ctx [:binding-ids (:val n)])]))})))
@@ -587,6 +620,9 @@
 
       (and (= 'clojure.spec.alpha/valid? h) (= 2 (count args)) (= :kw (:op a)) (plain-local ctx b))
       [(assoc-in ctx [:locals (plain-local ctx b)] (t/ref-t (:val a))) ctx]
+
+      (and (= 'clojure.spec.alpha/invalid? h) (= 1 (count args)))
+      (or (refine-path ctx a #(invalid-parts ctx %)) [ctx ctx])
 
       (and (primitive-predicates h) (= 1 (count args)))
       (let [target (t/prim (first (primitive-predicates h)))]
@@ -745,25 +781,31 @@
             (cond-> (bind c (:val pattern) (if use-hint? h ty) :why (when-not use-hint? why) :hinted (boolean h))
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
-     :vector (loop [ctx ctx, i 0, [p & more] (:children pattern)]
-               (cond (nil? p) ctx
-                     (and (= :sym (:op p)) (= '& (:val p)))
-                     (recur (bind-pattern ctx (first more) (positional-rest ctx ty i)) i (next more))
-                     (and (= :kw (:op p)) (= :as (:val p))) (bind-pattern ctx (first more) ty)
-                     :else (recur (bind-pattern ctx p (positional-type ctx ty i)) (inc i) more)))
+     :vector (let [members (t/members (:env ctx) ty)
+                   [ctx origin path] (if (every? :items members)
+                                       (track-path ctx (or projection {:path [] :type ty}))
+                                       [ctx])
+                   project (fn [path] (when origin {:origin origin :path path}))]
+               (loop [ctx ctx, i 0, [p & more] (:children pattern)]
+                 (cond (nil? p) ctx
+                       (and (= :sym (:op p)) (= '& (:val p)))
+                       (recur (bind-pattern ctx (first more) (positional-rest ctx ty i)) i (next more))
+                       (and (= :kw (:op p)) (= :as (:val p)))
+                       (bind-pattern ctx (first more) ty why (project path))
+                       :else
+                       (recur (bind-pattern ctx p (positional-type ctx ty i) nil
+                                            (when (every? #(contains? (:items %) i) members)
+                                              (project (conj path i))))
+                              (inc i) more))))
      ctx)))
 
 ;; ---- function calls ----
-
-(defn- arity-fits? [a n]
-  (let [k (count (:params a))]
-    (or (= n k) (and (> n k) (or (:rest a) (:kwargs a))))))
 
 (defn- matching-arities [ftype n]
   (let [arities (:arities ftype)]
     (if (::t/dispatch (meta ftype))
       (when-let [arity (t/dispatch-arity arities n)] [arity])
-      (filter #(arity-fits? % n) arities))))
+      (filter #(t/arity-fits? % n) arities))))
 
 (defn- keyword-parameter [m k]
   (some (fn [[declared ty]] (when (= (name declared) (name k)) ty))
@@ -970,7 +1012,7 @@
     (cond
       (empty? ars) (or (:ret ftype) t/unknown)
       (empty? fits) (do (report! ctx node "TSP2554"
-                                 (str fname " expects " (str/join " or " (distinct (map #(str (count (:params %)) (when (or (:rest %) (:kwargs %)) "+")) ars)))
+                                 (str fname " expects " (str/join " or " (distinct (map #(str (t/arity-minimum %) (when (or (:rest %) (:kwargs %)) "+")) ars)))
                                       " argument(s), got " n))
                         (apply t/union (map :ret ars)))
       :else (let [all (map #(arg-problems ctx % arg-nodes arg-types node) fits)
@@ -1312,7 +1354,7 @@
             (bind-pattern c rest (cond kwargs kwargs
                                        (not (seq contracts)) t/unknown
                                        (= t/never rest-of) t/nil-t
-                                       (some #(= (count fixed) (count (:params %))) contracts) (t/union tail t/nil-t)
+                                       (some #(= (count fixed) (t/arity-minimum %)) contracts) (t/union tail t/nil-t)
                                        :else tail))
             c)]
     (cond-> {:params (if (seq contracts)
@@ -1491,7 +1533,7 @@
             incomplete (some (fn [[_ ps]] (when (and (seq ps) (every? #(= "TSP210-01" (first (second %))) ps)) ps))
                              candidates)
             rest-minimum (when (::t/dispatch (meta shape))
-                           (some (fn [[a _]] (when (:rest a) (count (:params a)))) valid))]
+                           (some (fn [[a _]] (when (:rest a) (t/arity-minimum a))) valid))]
         (cond
           (empty? fits) (report! ctx node "TSP2554" (str "partial: no arity accepts " n " captured argument(s)"))
           (or incomplete (empty? valid))
@@ -1505,7 +1547,12 @@
                      candidates))
           (unchecked-hof! ctx node "partial: residual dispatch not checked" :unsupported-function)
           :else
-          (assoc shape :arities (mapv #(update (first %) :params (fn [params] (vec (drop n params)))) valid))))
+          (assoc shape :arities
+                 (mapv (fn [[arity _]]
+                         (let [remaining (max 0 (- (t/arity-minimum arity) (max n (count (:params arity)))))]
+                           (cond-> (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min))
+                             (pos? remaining) (assoc :rest-min remaining))))
+                       valid))))
       (do (run! #(infer ctx %) args)
           (check-composable! ctx f ty "partial")))))
 
@@ -1630,6 +1677,33 @@
 (doseq [h '[ns comment declare require import in-ns defmacro defprotocol defrecord deftype defmulti
             definterface set! clojure.spec.alpha/def clojure.spec.alpha/fdef]]
   (defmethod special h [_ _ _] t/unknown))
+
+(defmethod special 'clojure.spec.alpha/conform [ctx node _]
+  (let [[spec value :as args] (args-of node)]
+    (if (= 2 (count args))
+      (let [form (when (or (and (= :kw (:op spec)) (literal-node? spec))
+                           (#{'clojure.spec.alpha/or 'clojure.spec.alpha/spec} (builtin-head ctx spec)))
+                   (parse/node->data spec))
+            result (when form
+                     (conform/tagged-result (:env ctx)
+                                            (assoc (env/type-ctx (:file ctx) nil) :locals (:locals ctx))
+                                            form))]
+        (when-not (and result (= :list (:op spec))) (infer ctx spec))
+        (if (= t/never (infer ctx value)) t/never (or result t/unknown)))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "s/conform expects two arguments")
+          t/unknown))))
+
+(defmethod special 'clojure.spec.alpha/invalid? [ctx node _]
+  (let [[value :as args] (args-of node)]
+    (if (= 1 (count args))
+      (let [leaves (t/members (:env ctx) (eff ctx (infer ctx value)))
+            parts (map #(invalid-parts ctx %) leaves)]
+        (apply t/union (concat (when (some first parts) [(t/lit true)])
+                               (when (some second parts) [(t/lit false)]))))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "s/invalid? expects one argument")
+          t/unknown))))
 
 (defn- var-reference [ctx [target & more]]
   (if (and (= :sym (:op target)) (empty? more))
@@ -2315,6 +2389,15 @@
   (defmethod special h [ctx node _]
     (positional-type ctx (infer ctx (first (args-of node))) i)))
 
+(doseq [[h i] {'key 0 'val 1}]
+  (defmethod special h [ctx node _]
+    (let [[entry :as args] (args-of node)
+          ty (infer ctx entry)]
+      (run! #(infer ctx %) (rest args))
+      (if (and (= 1 (count args)) (map-entry-type? ctx ty))
+        (positional-type ctx ty i)
+        t/unknown))))
+
 (doseq [h '[last peek rand-nth ffirst]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)]
@@ -2626,13 +2709,39 @@
                                                  (when opt? " (it is optional in the returned map)")))
                 (report! ctx node "TSP2322" (str "returns " (show-ref ctx actual) ", but the signature says " (show-ref ctx expected))))))))
 
+(defn- spec-implementation-plans [bodies contracts]
+  (let [runtime (mapv (fn [{:keys [params]}]
+                        (let [{:keys [fixed rest]} (env/split-params params)]
+                          {:node params :params (vec (repeat (count fixed) t/unknown))
+                           :rest (when rest t/unknown)}))
+                      bodies)]
+    (mapv #(t/dispatch-plan runtime %) contracts)))
+
+(defn- merge-implementation-contracts [n contracts]
+  (when (seq contracts)
+    {:params (mapv (fn [i] (apply t/union (map #(nth (:params %) i) contracts))) (range n))
+     :tail (apply t/union
+                  (for [{:keys [params rest] :as contract} contracts]
+                    (if rest
+                      (let [tail {:t :coll :kind :seq :of (apply t/union rest (drop n params))}]
+                        (if (= n (t/arity-minimum contract)) (t/union tail t/nil-t) tail))
+                      (if (= n (count params))
+                        t/nil-t
+                        (assoc (t/tuple (subvec params n)) :kind :seq)))))
+     :ret (apply t/union (map :ret contracts))}))
+
 (defn- check-defn [ctx node]
   (let [file (:file ctx) env (:env ctx)
         parts (env/defn-parts node)
         nm (:name parts)
         sym (symbol (str (:ns file)) (str (:val nm)))
         v (get-in env [:vars sym])
-        ftype (if (= :all (:t (:type v))) (solver/open-rigid (:type v)) (:type v))]
+        ftype (if (= :all (:t (:type v))) (solver/open-rigid (:type v)) (:type v))
+        bodies (:arities parts)
+        plans (when (and (= :fdef (:source v))
+                         (not-any? #(= :map (:op (:rest (env/split-params (:params %))))) bodies))
+                (spec-implementation-plans bodies (:arities ftype)))
+        body-contracts (group-by (comp :node first) (mapcat identity plans))]
     (when-let [tn (env/tag-node nm)]
       (when (t/primitives (str (:val tn)))
         (report! ctx tn "TSP7021"
@@ -2640,12 +2749,16 @@
     (when (and (:strict (:opts ctx)) (not (:private? parts)) (= :hints (:source v))
                (some (fn [a] (or (= :unknown (:t (:ret a))) (some #(= :unknown (:t %)) (:params a)))) (:arities ftype)))
       (report! ctx nm "TSP7010" (str "public function " (:val nm) " has no signature: add s/fdef, {:t/sig '[...]} or type hints")))
-    (doseq [{:keys [params body]} (:arities parts)
+    (when (some nil? plans)
+      (report! ctx nm "TSP2790" (str "implementation of " (:val nm) " does not accept every arity in " (t/show ftype))))
+    (doseq [{:keys [params body]} bodies
             :let [{:keys [fixed rest]} (env/split-params params)
-                  declared (or (first (filter #(and (= (count fixed) (count (:params %)))
+                  declared (if plans
+                             (merge-implementation-contracts (count fixed) (map second (get body-contracts params)))
+                             (or (first (filter #(and (= (count fixed) (count (:params %)))
                                                     (= (boolean rest) (boolean (or (:rest %) (:kwargs %)))))
                                               (:arities ftype)))
-                               (first (filter #(= (count fixed) (count (:params %))) (:arities ftype))))]]
+                                 (first (filter #(= (count fixed) (count (:params %))) (:arities ftype)))))]]
       (if (nil? declared)
         (report! ctx params "TSP2790" (str "the signature of " (:val nm) " has no arity with " (count fixed) " parameter(s)"))
         (let [prims (filter #(some-> (env/tag-node %) :val str t/primitives) fixed)
@@ -2658,6 +2771,7 @@
                            (dissoc ctx :recur-types :load-time?) (map vector fixed (:params declared)))
               ctx' (cond (nil? rest) ctx'
                          (:kwargs declared) (bind-pattern ctx' rest (:kwargs declared))
+                         (:tail declared) (bind-pattern ctx' rest (:tail declared))
                          (:rest declared) (bind-pattern ctx' rest (t/union {:t :coll :kind :seq :of (:rest declared)} t/nil-t))
                          :else (bind-pattern ctx' rest t/unknown))
               ret-hint (env/hint-type file params)]
@@ -2715,7 +2829,7 @@
                             n (count fixed)
                             method-arity [(:val method) n]
                             contracts (get-in ctx [:env :vars var :contract-arities])
-                            contract (first (filter #(= n (count (:params %))) contracts))]]
+                            contract (merge-implementation-contracts n (filter #(= n (count (:params %))) contracts))]]
                 (cond
                   (or rest (not (contains? allowed n)))
                   (report! ctx params "TSP430-01" (str var " has no fixed arity " n " in " full))

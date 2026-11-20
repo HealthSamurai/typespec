@@ -141,7 +141,7 @@
   (some (fn [[kn vn]] (when (= k (:val kn)) vn)) (partition 2 (:children attr))))
 
 (defn type-ctx [file fail]
-  {:aliases (:aliases file) :imports (:imports file) :fail fail})
+  (assoc (select-keys file [:ns :aliases :refers :imports]) :fail fail))
 
 (defn- map-pattern-keys
   "[[key required?] ...] of a map destructuring pattern, without positions."
@@ -230,7 +230,9 @@
 (defn- register-spec [acc bucket sym entry diags]
   (when-let [previous (get-in acc [bucket sym])]
     (when (and (not= (:file entry) (:file previous))
-               (not (t/alpha-equivalent? (:type entry) (:type previous))))
+               (or (not (t/alpha-equivalent? (:type entry) (:type previous)))
+                   (not= (some-> previous :type meta ::t/spec-tags)
+                         (some-> entry :type meta ::t/spec-tags))))
       (let [[earlier later] (sort-by :file [previous entry])]
         (note diags later later "TSP722-01"
               (str "conflicting spec declarations for " sym ", also declared in " (:file earlier))))))
@@ -249,10 +251,12 @@
          (= 'clojure.spec.alpha/def h)
          (let [[_ k body] (:children form)]
            (if (and (= :kw (:op k)) body)
-             (register-spec acc :specs (:val k)
-                            {:file (:file file) :pos (:pos k)
-                             :type (t/parse-type (type-ctx file (opaque body)) (parse/node->data body))}
-                            diags)
+             (let [spec-form (parse/node->data body)]
+               (register-spec acc :specs (:val k)
+                              {:file (:file file) :pos (:pos k)
+                               :type (t/parse-type (type-ctx file (opaque body)) spec-form)
+                               :spec-form spec-form :spec-context (dissoc (type-ctx file nil) :fail)}
+                              diags))
              acc))
 
          (= 'clojure.spec.alpha/fdef h)
@@ -260,7 +264,7 @@
                {:keys [args ret]} (apply hash-map (parse/node->data {:op :list :children opts}))
                ctx (type-ctx file (opaque form))
                r (if ret (t/parse-type ctx ret) t/unknown)
-               ars (some-> (t/cat-items ctx args) (t/cat->arities r))]
+               ars (t/spec-args->arities ctx args r)]
            (if (and (= :sym (:op nm)) ars)
              (register-spec acc :fdefs (qualify (:val nm))
                             {:type {:t :fn :arities ars} :file (:file file) :pos (:pos form)} diags)

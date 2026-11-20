@@ -1,6 +1,7 @@
 (ns typespec.project-contracts
   "Assemble public contract declarations, referenced specs, and source uses after a full check."
-  (:require [typespec.types :as t]))
+  (:require [typespec.spec-conform :as conform]
+            [typespec.types :as t]))
 
 (defn- references [ty]
   (into #{} (keep #(when (and (map? %) (= :ref (:t %))) (:name %)))
@@ -30,9 +31,11 @@
                   :signature (t/show signature)
                   :declaration (or (location relative contract) (location relative entry))
                   :specs (mapv (fn [key]
-                                 (let [spec (get specs key)]
-                                   {:name (str key) :type (some-> spec :type t/show)
-                                    :declaration (location relative spec)}))
+                                 (let [spec (get specs key)
+                                       output (conform/tagged-result env nil key)]
+                                   (cond-> {:name (str key) :type (some-> spec :type t/show)
+                                            :declaration (location relative spec)}
+                                     output (assoc :conform (t/show output)))))
                                (dependencies specs signature))
                   :uses (mapv #(assoc (location relative %) :kind (:kind %)) (get by-var sym))}
            protocol (assoc :protocol (str protocol))))))))

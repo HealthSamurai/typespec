@@ -17,7 +17,8 @@ nil?     any?      t/unknown  t/never                ; any? = explicit opt-out, 
 (s/keys :req-un [:patient/id])                       ; unqualified key :id, type from :patient/id
 (s/coll-of T :kind vector?)  (s/map-of K V)  (s/tuple A B)
 (s/merge A B)                                        ; input must satisfy both = intersection of requirements
-(s/cat :a A :b B)  (s/* T)  (s/? T)                  ; argument lists, as in s/fdef
+(s/cat :a A :b B)  (s/alt :a A :b B)                 ; argument lists, as in s/fdef
+(s/* T)  (s/+ T)  (s/? T)                            ; repeated and optional arguments
 String  long  java.time.Instant                      ; Java classes and primitives
 (t/class java.util.List String)                      ; Java generics
 (t/array String)                                     ; Java arrays
@@ -78,6 +79,8 @@ This is a regular `defn` attr-map. The type is **quoted**, so the compiler simpl
 ```
 
 `s/fdef` is also supported for code that already uses it: the type checker reads the `s/fdef` form from source. If a function has both `t/sig` and `s/fdef`, they must match; otherwise, it produces `TSP2790`.
+
+In `s/fdef` and `s/fspec`, finite `s/alt` branches describe alternative argument lists. A trailing `s/+` requires at least one argument of its element type. An `apply` with a statically known tail uses the same arity checks as a direct call. Unsupported argument regexes report `TSP9002`. [Supported forms and limits](../features/F412-spec-regex-arities.md)
 
 Keys from other namespaces are written with an alias; `(:require [app.patient :as-alias patient])` gives the alias without loading the namespace.
 
@@ -160,6 +163,7 @@ The table is validated with a **differential test**: a generator builds random f
 - **Transducers in `into`.** An inline `comp` passes element types through its `map` and `filter` stages from left to right. [Supported forms](../features/F235-transducer-composition.md)
 - **Literals.** `let` preserves existing literal types. `#_(t/const)` preserves the literal element types of nested map, vector and set literals. `#_(t/satisfies T)` checks the inferred type against `T` and keeps the inferred type. [Supported contracts and examples](../features/F280-literal-preservation.md)
 - **Narrowing** after `if`/`when`/`cond`/`case`/`when-let`, `some?`/`nil?`/type predicates/`instance?`/`=` with a literal/`contains?` on a map. For a function with one positional parameter, the checker can infer independent truthy and falsy facts from its body. An explicit `{:t/guard '{:type ::patient :mode :checked}}` requires a truthy proof. Add `:two-sided true` to require a falsy proof. The trusted form `{:t/guard '::patient}` supplies a truthy fact and is counted once per declaration in the trust budget. `filter`, `filterv` and `take-while` narrow elements using the truthy fact. `remove` uses the falsy fact.
+- **Tagged conformation.** `s/conform` of a known `s/or` yields tagged entries or `:clojure.spec.alpha/invalid`. After checking `s/invalid?`, destructure the entry and use `case` on its tag to narrow the payload. The `contracts` command adds a `conform` field to referenced tagged specs. [Supported specs and example](../features/F261-spec-conform.md)
 - **Exhaustiveness**: `case` over literal unions, `cond`/`condp` using `=` on a single variable, and `defmulti` with closed dispatch (`{:t/closed true}`). A `cond` without `:else` yields `T | nil`; this is not an error.
 - **nil-punning**: `(first nil)` → `nil`, `(seq x)` narrows to a non-empty collection, `(:k x)` on `t/unknown` produces a “narrow first” error.
 - **String keys** and **map tails**: `t/keys-str` and `t/keys ... :rest` from section 1.

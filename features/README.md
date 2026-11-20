@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 17 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 19 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
@@ -53,6 +53,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F250](F250-checked-guards.md) | Проверяемые guard-функции | `implemented` | `implemented` | narrowing | Flow |
 | [F251](F251-refinement-evidence.md) | Область действия и инвалидация фактов о типах | `proposed` | `not-implemented` | types | Research |
 | [F260](F260-opaque-refinements.md) | Уточнения spec как номинальные свидетельства | `designed` | `not-implemented` | types | Flow |
+| [F261](F261-spec-conform.md) | Тип результата s/conform для s/or | `implemented` | `implemented` | types | Clojure |
 | [F270](F270-type-operators.md) | Операторы над типами мап | `implemented` | `implemented` | core | Typespec |
 | [F271](F271-mapped-types.md) | Mapped types: преобразование полей типа | `proposed` | `not-implemented` | types | TypeScript |
 | [F272](F272-conditional-types.md) | Условные типы и извлечение компонентов | `proposed` | `not-implemented` | types | TypeScript |
@@ -71,6 +72,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F350](F350-records.md) | Records и номинальные классы | `designed` | `not-implemented` | data | Clojure |
 | [F410](F410-arities-and-apply.md) | Арности, перегрузки и apply | `designed` | `partial` | functions | Clojure |
 | [F411](F411-apply-fixed-tail.md) | Проверка apply с известными позициями хвоста | `implemented` | `implemented` | functions | Clojure |
+| [F412](F412-spec-regex-arities.md) | Арности из s/+ и конечных s/alt | `implemented` | `implemented` | functions | Clojure |
 | [F420](F420-control-flow.md) | Throw, assert и try | `designed` | `partial` | functions | Clojure |
 | [F430](F430-protocols.md) | Протоколы и reify | `designed` | `not-implemented` | functions | Clojure |
 | [F431](F431-protocol-method-specs.md) | Проверка reify и extend-type по s/fdef | `implemented` | `implemented` | functions | Clojure |

@@ -1,6 +1,6 @@
 {:review
- "Initial candidate: seven false-positive TSP2345 errors removed; six routing warnings number? -> int?; other 38 warnings unchanged. Coverage identical to immutable initial capture.",
- :counts {:warning 44},
+ "After the initial replace audit, F220 adds three unproven reduce accumulators and one newly reachable routing argument warning.",
+ :counts {:warning 48},
  :coverage
  [{:file "src/http.clj",
    :opaque-nodes 5,
@@ -127,6 +127,20 @@
    "macro http/register-endpoint is not described: its body is not checked"
    nil
    "142ecaf1421c95557be60d3d4d7d388c"]
+  ["src/http.clj"
+   {:row 286, :col 16, :end-row 287, :end-col 43}
+   :warning
+   "TSP210-01"
+   "reduce accumulator is not checked"
+   #{:accumulator}
+   "8e9623de2e80d6daff7b66dad93d6c60"]
+  ["src/http.clj"
+   {:row 306, :col 16, :end-row 307, :end-col 52}
+   :warning
+   "TSP210-01"
+   "reduce accumulator is not checked"
+   #{:accumulator}
+   "47487ba7408a94c3a7d6f8f00e777022"]
   ["src/http.clj"
    {:row 31, :col 20, :end-row 31, :end-col 49}
    :warning
@@ -281,6 +295,20 @@
    "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
    #{:unknown}
    "3fba6ef6b07e28010d4311555f46921d"]
+  ["src/http/routing.clj"
+   {:row 53, :col 25, :end-row 78, :end-col 28}
+   :warning
+   "TSP210-01"
+   "reduce accumulator is not checked"
+   #{:accumulator}
+   "8ae011b6e1773bfeecedf5ccd0dc340a"]
+  ["src/http/routing.clj"
+   {:row 56, :col 89, :end-row 56, :end-col 92}
+   :warning
+   "TSP210-01"
+   "compatibility not checked: t/unknown to int? (unknown)"
+   #{:unknown}
+   "8580a616b33793035dcee573d7027bc2"]
   ["src/http/routing.clj"
    {:row 60, :col 133, :end-row 60, :end-col 136}
    :warning

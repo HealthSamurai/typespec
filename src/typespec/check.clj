@@ -16,7 +16,7 @@
 (def ^:dynamic *trust* nil)
 (def ^:dynamic *rets* nil)
 
-(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow)
+(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback)
 
 (defn- report! [ctx node code msg & {:as extra}]
   (when-not (:quiet ctx)
@@ -209,6 +209,7 @@
       (assoc-in [:binding-ids sym] (Object.))
       (update :projections dissoc sym)
       (update :conditions dissoc sym)
+      (update :contextual-params dissoc sym)
       (update :missing-of dissoc sym)))
 
 (defn- plain-local [ctx node]
@@ -665,13 +666,29 @@
   (let [k (count (:params a))]
     (or (= n k) (and (> n k) (or (:rest a) (:kwargs a))))))
 
+(defn- matching-arities [ftype n]
+  (let [arities (:arities ftype)]
+    (if (::t/dispatch (meta ftype))
+      (when-let [arity (t/dispatch-arity arities n)] [arity])
+      (filter #(arity-fits? % n) arities))))
+
+(defn- keyword-parameter [m k]
+  (some (fn [[declared ty]] (when (= (name declared) (name k)) ty))
+        (concat (:req m) (:opt m))))
+
 (defn- arg-problems [ctx a arg-nodes arg-types call-node]
-  (let [k (count (:params a))
-        fixed (mapcat (fn [n at pt] (map #(vector n %) (problems ctx n at pt))) arg-nodes arg-types (:params a))
+  (let [check-arg (fn [n at pt]
+                    (when at
+                      (if-let [[expected actual] (::callback-arity-error (meta at))]
+                        [[n ["TSP2554" (str "callback expects " expected " parameter(s) in this call, got " actual)]]]
+                        (map #(vector n %) (problems ctx n at pt)))))
+        k (count (:params a))
+        fixed (mapcat check-arg
+                      arg-nodes arg-types (:params a))
         extra (drop k (map vector arg-nodes arg-types))]
     (concat
      fixed
-     (when (:rest a) (mapcat (fn [[n at]] (map #(vector n %) (problems ctx n at (:rest a)))) extra))
+     (when (:rest a) (mapcat (fn [[n at]] (check-arg n at (:rest a))) extra))
      (when-let [kw (:kwargs a)]
        (let [given (into {} (for [[[kn _] [vn vt]] (partition 2 extra) :when (= :kw (:op kn))] [(:val kn) [vn vt]]))
              m (first (map-members ctx kw))]
@@ -679,8 +696,8 @@
           (for [rk (keys (:req m)) :when (not (contains? given (keyword (name rk))))]
             [call-node ["TSP2741" (str "required key " (keyword (name rk)) " is missing")]])
           (for [[gk [vn vt]] given
-                :let [exp (some (fn [[dk dv]] (when (= (name dk) (name gk)) dv)) (concat (:req m) (:opt m)))]
-                :when exp
+                :let [exp (keyword-parameter m gk)]
+                :when (and exp vt)
                 p (problems ctx vn vt exp)]
             [vn p])))))))
 
@@ -751,25 +768,65 @@
                (not-any? unresolved-type? (:params ca)))
       (:params ca))))
 
-(defn- fn-lit-arity
-  "Number of positional parameters of #(...), or nil when it uses %&."
-  [node]
-  (let [syms (keep #(when (= :sym (:op %)) (name (:val %))) (tree-seq :children :children node))]
-    (when-not (some #{"%&"} syms)
-      (reduce max 0 (keep #(cond (= "%" %) 1
-                                 (re-matches #"%[1-9][0-9]*" %) (parse-long (subs % 1)))
-                          syms)))))
+(defn- fn-lit-parameters [node]
+  (let [syms (keep #(when (and (= :sym (:op %)) (simple-symbol? (:val %))) (name (:val %)))
+                   (tree-seq :children :children node))
+        n (reduce max 0 (keep #(cond (= "%" %) 1
+                                    (re-matches #"%[1-9][0-9]*" %) (or (parse-long (subs % 1)) 21)) syms))]
+    (when (<= n 20)
+      {:fixed (mapv #(hash-map :op :sym :val (symbol (str "%" %))) (range 1 (inc n)))
+       :rest (when (some #{"%&"} syms) {:op :sym :val '%&})})))
 
-(defn- infer-fn-lit
-  "Type of #(...) when the context gives its parameter types."
-  [ctx node arg-types]
-  (let [n (fn-lit-arity node)
-        ptypes (mapv #(nth arg-types % t/unknown) (range n))
-        ctx' (reduce (fn [c [i ty]] (cond-> (bind c (symbol (str "%" (inc i))) ty)
-                                      (zero? i) (bind '% ty)))
-                     (dissoc ctx :recur-types) (map-indexed vector ptypes))]
-    {:t :fn :arities [{:params ptypes :rest nil
-                       :ret (infer ctx' {:op :list :children (:children node) :pos (:pos node)})}]}))
+(defn- inline-callback? [ctx node]
+  (or (= :fn-lit (:op node))
+      (#{'fn 'fn*} (builtin-head ctx (dissoc node :directives :meta)))))
+
+(defn- callback-signature [ctx expected]
+  (let [members (remove #(= :nil (:t %)) (t/members (:env ctx) expected))
+        ty (first members)]
+    (when (and (= 1 (count members)) (= :fn (:t ty)) (seq (:arities ty))
+               (not-any? :kwargs (:arities ty)))
+      ty)))
+
+(defn- deferred-callback [ctx node]
+  (when-let [sym (plain-local ctx node)]
+    (::deferred-callback (meta (get-in ctx [:locals sym])))))
+
+(defn- callback-node? [ctx node]
+  (or (inline-callback? ctx node) (deferred-callback ctx node)))
+
+(defn- argument-type [ctx ar args i]
+  (let [fixed (count (:params ar))]
+    (cond
+      (< i fixed) (nth (:params ar) i)
+      (:rest ar) (:rest ar)
+      (and (:kwargs ar) (odd? (- i fixed)))
+      (let [key (nth args (dec i))]
+        (when (= :kw (:op key))
+          (keyword-parameter (first (map-members ctx (:kwargs ar))) (:val key)))))))
+
+(defn- common-callback-signature [ctx fits args i]
+  (let [signatures (mapv #(callback-signature ctx (argument-type ctx % args i)) fits)
+        inputs (fn [signature] (mapv #(select-keys % [:params :rest]) (:arities signature)))]
+    (when (and (seq signatures) (every? some? signatures)
+               (apply = (map inputs signatures)))
+      {:t :fn :arities (apply mapv (fn [& ars] (assoc (first ars) :ret (apply t/union (map :ret ars))))
+                               (map :arities signatures))})))
+
+(defn- infer-call-arguments [ctx call-node arg-nodes fits]
+  (let [pending? (fn [i arg]
+                   (and (callback-node? ctx arg)
+                        (some #(callback-signature ctx (argument-type ctx % arg-nodes i)) fits)))
+        types (mapv (fn [i arg] (when-not (pending? i arg) (infer ctx arg))) (range) arg-nodes)
+        candidates (when (some nil? types)
+                     (let [possible (filter #(every? (fn [[_ [code]]] (= "TSP210-01" code))
+                                                    (arg-problems ctx % arg-nodes types call-node)) fits)]
+                       (or (seq possible) (when (= 1 (count fits)) fits))))]
+    (mapv (fn [i arg ty]
+            (or ty (if-let [expected (common-callback-signature ctx candidates arg-nodes i)]
+                     (infer ctx arg expected)
+                     (infer ctx arg))))
+          (range) arg-nodes types)))
 
 (defn- call-generic
   "Rank-1, single fixed arity: infer ordinary arguments before contextual callbacks.
@@ -778,9 +835,7 @@
   (let [state (solver/instantiate ftype)
         ars (:arities (:type state)) ar (first ars)
         n (count (or typed-args arg-nodes))
-        inline? (fn [nd] (or (= :fn-lit (:op nd))
-                             (and (= :list (:op nd))
-                                  (#{'fn 'fn* 'clojure.core/fn} (:val (first (:children nd)))))))]
+        inline? #(callback-node? ctx %)]
     (cond
       (or (not= 1 (count ars)) (:rest ar) (:kwargs ar))
       (do (when-not typed-args (run! #(infer ctx %) arg-nodes))
@@ -804,13 +859,9 @@
             state (reduce
                    (fn [st {:keys [i expected node]}]
                      (let [params (callback-context expected partial)
-                           actual (cond
-                                    (= :fn-lit (:op node))
-                                    (if (and params (fn-lit-arity node))
-                                      (infer-fn-lit ctx node params)
-                                      (do (infer ctx node) t/unknown))
-                                    params (infer-fn ctx node params)
-                                    :else (do (infer-fn ctx node nil) t/unknown))]
+                           actual (if params
+                                    (infer ctx node {:t :fn :arities [{:params params :ret t/unknown}]})
+                                    (do (infer ctx node) t/unknown))]
                        ;; Keep the original expected return ivar: the callback's result solves it.
                        (solver/constrain st actual expected {:argument i :callback true})))
                    state callbacks)]
@@ -820,9 +871,9 @@
   (if (= :all (:t ftype))
     (call-generic ctx node fname ftype arg-nodes nil)
     (let [n (count arg-nodes)
-        arg-types (mapv #(infer ctx %) arg-nodes)
         ars (:arities ftype)
-        fits (filter #(arity-fits? % n) ars)]
+          fits (matching-arities ftype n)
+        arg-types (infer-call-arguments ctx node arg-nodes fits)]
     (cond
       (empty? ars) (or (:ret ftype) t/unknown)
       (empty? fits) (do (report! ctx node "TSP2554"
@@ -878,7 +929,9 @@
 
 (defn- record! [ctx node ty]
   (when (and *types* (:pos node) (not (:synthetic node)))
-    (swap! *types* conj {:file (:file (:file ctx)) :pos (:pos node) :type ty :ns (:ns (:file ctx))}))
+    (let [parameter (when (= :sym (:op node)) (get-in ctx [:contextual-params (:val node)]))]
+      (swap! *types* conj (cond-> {:file (:file (:file ctx)) :pos (:pos node) :type ty :ns (:ns (:file ctx))}
+                           parameter (assoc :context parameter)))))
   ty)
 
 (defn- known-ns? [ctx ns-sym]
@@ -908,11 +961,13 @@
     (when-not (or (contains? (:aliases (:file ctx)) n) (known-ns? ctx n))
       (t/resolve-class (:imports (:file ctx)) n))))
 
-(defn- quietly
-  "Infers a type without reporting or recording anything."
-  [ctx node]
-  (binding [*types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]
-    (infer (assoc ctx :quiet true) node)))
+(defn- probe [ctx f]
+  (binding [*types* nil *diags* (atom []) *trust* (atom {:cast 0 :any 0 :ignore 0})
+            *ignores* (atom []) *rets* (atom (when *rets* @*rets*))]
+    (f (assoc ctx :quiet true))))
+
+(defn- quietly [ctx node]
+  (probe ctx #(infer % node)))
 
 (defn- widen [ty]
   (case (:t ty)
@@ -981,12 +1036,24 @@
 
 (defn- bind-pairs [ctx bindings]
   (reduce (fn [ctx [p init]]
-            (let [ty (dissoc (infer ctx init) :fresh)
+            (let [sym (when (= :sym (:op p)) (:val p))
+                  pending (:pending-callbacks ctx)
+                  defer? (and sym pending (not (env/tag-node p)) (not (env/tag-node init))
+                              (empty? (:directives init)))
+                  callback (when defer?
+                             (or (deferred-callback ctx init)
+                                 (when (inline-callback? ctx init)
+                                   (let [callback {:ctx (dissoc ctx :pending-callbacks)
+                                                   :node init :type (atom nil)}]
+                                     (vswap! pending conj callback)
+                                     callback))))
+                  ty (if callback
+                       (with-meta {:t :fn} {::deferred-callback callback})
+                       (dissoc (infer ctx init) :fresh))
                   why (why-of ctx init ty)
-                  sym (when (= :sym (:op p)) (:val p))
                   captured (when (and sym (not (env/tag-node p))) (condition-capture ctx init))
                   ctx' (bind-pattern ctx p ty why (stable-path ctx init))]
-              (record! ctx p (get-in ctx' [:locals (:val p)] ty))
+              (when-not callback (record! ctx p (get-in ctx' [:locals (:val p)] ty)))
               (cond-> ctx'
                 captured (assoc-in [:conditions sym] captured)
                 (and sym (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) sym))))
@@ -1005,29 +1072,92 @@
 (defn infer-body [ctx forms]
   (reduce (fn [_ f] (infer ctx f)) t/nil-t forms))
 
-(defn- infer-fn
-  "Type of a (fn ...) form. `arg-types` gives the parameter types when the context knows them."
-  [ctx node arg-types]
-  (let [ctx (dissoc ctx :recur-types)
-        more (rest (:children node))
-        more (if (= :sym (:op (first more))) (rest more) more)
-        arities (if (= :vector (:op (first more)))
-                  [more]
-                  (for [l more :when (= :list (:op l))] (:children l)))]
-    {:t :fn
-     :arities (vec (for [[params & body] arities
-                         :let [{:keys [fixed rest]} (env/split-params params)
-                               ptypes (map-indexed (fn [i p] (or (get (vec arg-types) i) (env/pattern-type (:env ctx) (:file ctx) p))) fixed)
-                               ctx' (reduce (fn [c [p ty]] (bind-pattern c p ty)) ctx (map vector fixed ptypes))
-                               ctx' (if rest (bind-pattern ctx' rest t/unknown) ctx')]]
-                     {:params (vec ptypes) :rest (when rest t/unknown) :ret (infer-body ctx' body)}))}))
+(defn- fn-bodies [node]
+  (if (= :fn-lit (:op node))
+    (when-let [params (fn-lit-parameters node)]
+      [(assoc params :body [{:op :list :children (:children node) :pos (:pos node) :synthetic true}]
+                     :reader? true)])
+    (let [more (rest (:children node))
+          more (if (= :sym (:op (first more))) (rest more) more)
+          bodies (if (= :vector (:op (first more))) [more]
+                     (for [l more :when (= :list (:op l))] (:children l)))]
+      (mapv (fn [[params & body]] (assoc (env/split-params params) :body body)) bodies))))
+
+(defn- infer-fn-branch [ctx {:keys [fixed rest body reader?]} contracts]
+  (let [env (:env ctx)
+        file (:file ctx)
+        kwargs (when (= :map (:op rest)) (env/pattern-type env file rest))
+        ptypes (mapv (fn [i p]
+                       (if (seq contracts)
+                         (apply t/union (map #(nth (:params %) i) contracts))
+                         (env/pattern-type env file p)))
+                     (range) fixed)
+        c (reduce (fn [c [i p ty]]
+                    (let [bound (cond-> (bind-pattern c p ty)
+                                  (and (seq contracts) (= :sym (:op p)))
+                                  (assoc-in [:contextual-params (:val p)] {:source :callback :parameter (inc i) :type ty}))]
+                      (when (seq contracts)
+                        (record! bound p (get-in bound [:locals (:val p)] ty)))
+                      bound))
+                  ctx (map vector (range) fixed ptypes))
+        c (cond-> c (and reader? (seq ptypes)) (bind '% (first ptypes)))
+        rest-of (when (and rest (not kwargs))
+                  (if (seq contracts)
+                    (apply t/union (mapcat #(concat (drop (count fixed) (:params %))
+                                                   (when-let [r (:rest %)] [r])) contracts))
+                    t/unknown))
+        tail {:t :coll :kind :seq :of rest-of}
+        c (if rest
+            (bind-pattern c rest (cond kwargs kwargs
+                                       (not (seq contracts)) t/unknown
+                                       (= t/never rest-of) t/nil-t
+                                       (some #(= (count fixed) (count (:params %))) contracts) (t/union tail t/nil-t)
+                                       :else tail))
+            c)]
+    (cond-> {:params (if (seq contracts)
+                       (mapv #(or (env/hint-type file %1) %2) fixed ptypes)
+                       ptypes)
+             :rest rest-of
+             :ret (let [ret (infer-body c body)] (if (seq contracts) (eff ctx ret) ret))}
+      kwargs (assoc :kwargs kwargs))))
+
+(defn- infer-callback [ctx node expected]
+  (let [bodies (fn-bodies node)
+        shapes (mapv (fn [i {:keys [fixed rest]}]
+                       {:i i :params (vec (repeat (count fixed) t/unknown)) :rest (when rest t/unknown)})
+                     (range) bodies)
+        positional? (not-any? #(= :map (:op (:rest %))) bodies)
+        targets (:arities expected)
+        plans (when positional? (mapv #(t/dispatch-plan shapes %) targets))
+        contracts (group-by (comp :i first) (mapcat identity plans))
+        name-node (second (:children node))
+        ctx (cond-> (dissoc ctx :recur-types)
+              (and (= :list (:op node)) (= :sym (:op name-node)))
+              (bind (:val name-node) (or expected {:t :fn :arities (mapv #(assoc % :ret t/unknown) shapes)})))
+        ft (with-meta {:t :fn :arities (mapv (fn [i branch]
+                                             (infer-fn-branch ctx branch (map second (get contracts i))))
+                                           (range) bodies)}
+             {::t/dispatch positional?})]
+    (cond-> ft
+      (and positional? (= 1 (count targets) (count shapes)) (nil? (first plans)) (not (:rest (first targets))))
+      (vary-meta assoc ::callback-arity-error
+                 [(count (:params (first targets))) (count (:params (first shapes)))]))))
+
+(defn- infer-fn [ctx node arg-types]
+  (infer-callback ctx node (when arg-types {:t :fn :arities [{:params (vec arg-types) :ret t/unknown}]})))
+
+(defn- force-callback [ctx {:keys [node type] captured :ctx} expected]
+  (or @type
+      (let [ty (infer (cond-> captured (:quiet ctx) (assoc :quiet true)) node expected)]
+        (when-not (:quiet ctx) (reset! type ty))
+        ty)))
 
 (defn- apply-type
   "Result of calling a function type with these argument types; mismatches are reported at `at`."
   [ctx ftype arg-types at label]
   (if (= :all (:t ftype))
     (call-generic ctx at label ftype nil arg-types)
-    (if-let [fits (seq (filter #(arity-fits? % (count arg-types)) (:arities ftype)))]
+    (if-let [fits (seq (matching-arities ftype (count arg-types)))]
     (let [bad (fn [ar] (first (for [[a p] (map vector arg-types (concat (:params ar) (repeat (:rest ar))))
                                     :when (and p (not (t/sub? (:env ctx) (eff ctx a) p)))]
                                 [a p])))
@@ -1055,14 +1185,12 @@
 (defn apply-fn-node [ctx fnode arg-types]
   (case (:op fnode)
     :kw (read-key ctx (first arg-types) (:val fnode) fnode)
-    :fn-lit (let [ctx' (reduce (fn [c [s ty]] (bind c s ty)) (dissoc ctx :recur-types)
-                               (map vector '[% %1 %2 %3] (cons (first arg-types) arg-types)))]
-              (infer ctx' {:op :list :children (:children fnode) :pos (:pos fnode)}))
     :set (t/union (first arg-types) t/nil-t)
-    :list (if (#{'fn 'fn*} (env/head (:file ctx) fnode))
-            (apply t/union (map :ret (:arities (infer-fn ctx fnode arg-types))))
-            (apply-type ctx (infer ctx fnode) arg-types fnode (parse/unparse fnode)))
-    (apply-type ctx (infer ctx fnode) arg-types fnode (parse/unparse fnode))))
+    (let [ty (if (callback-node? ctx fnode)
+               (infer ctx fnode {:t :fn :arities [{:params arg-types :ret t/unknown}]})
+               (infer ctx fnode))
+          ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)]
+      (apply-type ctx ty arg-types fnode (parse/unparse fnode)))))
 
 (defn- single-map [ctx ty]
   (let [ms (t/members (:env ctx) ty)]
@@ -1196,8 +1324,12 @@
 (defmethod special 'defonce [ctx node _] (some->> (last (args-of node)) (infer ctx)) t/unknown)
 
 (defmethod special 'let [ctx node _]
-  (let [[bindings & body] (args-of node)]
-    (infer-body (bind-pairs ctx bindings) body)))
+  (let [[bindings & body] (args-of node)
+        pending (volatile! [])
+        c (bind-pairs (assoc ctx :pending-callbacks pending) bindings)
+        result (infer-body (dissoc c :pending-callbacks) body)]
+    (run! #(force-callback ctx % nil) @pending)
+    result))
 
 (defmethod special 'loop [ctx node _]
   (let [[bindings & body] (args-of node)
@@ -1267,7 +1399,7 @@
 (defn- if-let-form [ctx node some?]
   (let [[bindings then else] (args-of node)
         [p init] (:children bindings)
-        ty (infer ctx init)
+        ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
         tc (bind-pattern ctx p (dissoc positive :fresh))]
@@ -1280,7 +1412,7 @@
 (defn- when-let-form [ctx node some?]
   (let [[bindings & body] (args-of node)
         [p init] (:children bindings)
-        ty (infer ctx init)
+        ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
         tc (bind-pattern ctx p (dissoc positive :fresh))]
@@ -1651,14 +1783,77 @@
             (max-key min-key) el
             group-by {:t :map-of :k (widen ret) :v (coll-of :vector el)}))))))
 
+(defn- collection-count [ctx node type]
+  (cond
+    (#{:vector :set} (:op node)) (count (:children node))
+    (and (= :quote (:op node)) (= :list (:op (first (:children node)))))
+    (count (:children (first (:children node))))
+    (= t/never (elem-type ctx type)) 0))
+
+(defn- reduction-function [ctx f calls]
+  (let [expected {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown) calls)}
+        ty (if (callback-node? ctx f) (infer ctx f expected) (infer ctx f))]
+    (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)))
+
+(defn- reduction-result [ctx f ty args]
+  (if (or (= :all (:t ty)) (seq (:arities ty)))
+    (let [ret (eff ctx (apply-type ctx ty args f (parse/unparse f)))]
+      ;; reduce unwraps Reduced. Until its value is represented, the wrapper
+      ;; cannot serve as evidence of the final accumulator type.
+      (if (some #(= "clojure.lang.Reduced" (:name %)) (t/members (:env ctx) ret)) t/unknown ret))
+    t/unknown))
+
+(defn- join-accumulator [acc step]
+  (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
+    (update acc :of t/union (:of step))
+    (t/union acc step)))
+
+(defn- reduction-accumulator [ctx f seed el empty-call?]
+  (loop [acc seed iterations 0]
+    (let [args [acc el]
+          calls (cond-> [] empty-call? (conj []) true (conj args))
+          step (probe ctx #(reduction-result % f (reduction-function % f calls) args))]
+      (cond
+        (t/sub? (:env ctx) step acc) acc
+        (= :unknown (:t step)) nil
+        (= iterations 7) nil
+        :else (recur (join-accumulator acc (widen (dissoc step :fresh))) (inc iterations))))))
+
 (defmethod special 'reduce [ctx node _]
-  (let [[f a b] (args-of node)
-        [init c] (if b [a b] [nil a])
-        el (elem-type ctx (infer ctx c))
-        acc (if init (widen (dissoc (infer ctx init) :fresh)) el)]
-    (if (and (= :sym (:op f)) (not (contains? (:locals ctx) (:val f))))
-      (apply-type ctx (infer ctx f) [acc el] f (parse/unparse f))
-      (do (apply-fn-node ctx f [acc el]) (if init acc t/unknown)))))
+  (let [[f a b & more :as args] (args-of node)]
+    (if (or (< (count args) 2) (seq more))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "reduce expects 2 or 3 arguments")
+          t/unknown)
+      (let [[init c] (if b [a b] [nil a])
+            initial (when init (infer ctx init))
+            ct (infer ctx c)
+            el (elem-type ctx ct)
+            n (collection-count ctx c ct)
+            may-be-empty? (or (nil? n) (zero? n))
+            step? (or (nil? n) (>= n (if init 1 2)))
+            repeat? (and step? (or (nil? n) (>= n (if init 2 3))))
+            start (if init (widen (dissoc initial :fresh)) el)
+            empty-call? (and (not init) may-be-empty?)
+            invariant (if repeat? (reduction-accumulator ctx f start el empty-call?) start)
+            step-args [(or invariant start) el]
+            calls (cond-> [] empty-call? (conj []) step? (conj step-args))
+            ty (if (seq calls) (reduction-function ctx f calls) (infer ctx f))
+            step (when step? (reduction-result ctx f ty step-args))
+            base (if init
+                   (if may-be-empty? initial t/never)
+                   (t/union (if may-be-empty? (reduction-result ctx f ty []) t/never)
+                            (if (or (nil? n) (= n 1)) el t/never)))]
+        (when (or (and step? (or (nil? invariant) (= :unknown (:t step)))
+                       (or (empty? (:arities ty)) (seq (matching-arities ty 2))))
+                  (and empty-call? (not (or (= :all (:t ty)) (seq (:arities ty))))))
+          (report! ctx f "TSP210-01" "reduce accumulator is not checked"
+                   :severity (if (:strict (:opts ctx)) :error :warning)
+                   :reasons #{:accumulator}))
+        (cond
+          (not step?) base
+          (nil? invariant) t/unknown
+          :else (t/union base step))))))
 
 (defmethod special 'conj [ctx node _]
   (let [[c & xs] (args-of node)
@@ -1784,10 +1979,17 @@
                           (read-key-default ctx ty (:val h) h (infer ctx default))
                           (read-key ctx ty (:val h) h)))
       (not= :sym (:op h)) (do (infer ctx h) (run! #(infer ctx %) args) t/unknown)
-      (contains? (:locals ctx) (:val h)) (let [ft (get-in ctx [:locals (:val h)])]
-                                           (if (or (= :all (:t ft)) (seq (:arities ft)))
-                                             (call-fn ctx node (str (:val h)) ft args)
-                                             (do (run! #(infer ctx %) args) t/unknown)))
+      (contains? (:locals ctx) (:val h))
+      (if-let [callback (deferred-callback ctx h)]
+        (let [types (mapv #(infer ctx %) args)
+              params (mapv #(widen (dissoc % :fresh)) types)
+              ft (force-callback ctx callback {:t :fn :arities [{:params params :ret t/unknown}]})]
+          (apply-type ctx ft types node (str (:val h))))
+        (let [local (get-in ctx [:locals (:val h)])
+              ft (if (= :ref (:t local)) (t/resolve-t (:env ctx) local) local)]
+          (if (or (= :all (:t ft)) (seq (:arities ft)))
+            (call-fn ctx node (str (:val h)) ft args)
+            (do (run! #(infer ctx %) args) t/unknown))))
       :else
       (let [sym (:val h) n (name sym) head (env/head file node)
             own? (and (nil? (namespace head)) (contains? (get-in (:env ctx) [:ns-defs (:ns file)]) head))
@@ -1857,28 +2059,30 @@
                                    (dissoc vty :fresh))])))}
              (do (run! #(infer ctx %) (:children node)) (t/prim :map))))
     :quote (if (= :sym (:op (first (:children node)))) (t/prim :symbol) t/unknown)
-    :fn-lit (do (infer (reduce #(bind %1 %2 t/unknown) (dissoc ctx :recur-types) '[% %1 %2 %3 %&])
-                       {:op :list :children (:children node) :pos (:pos node)})
-                {:t :fn})
+    :fn-lit (infer-callback ctx node nil)
     :list (infer-list ctx node)
     t/unknown))
 
-(defn infer [ctx node]
-  (let [dirs (:directives node)
-        dhead (fn [d] (:val (first (:children d))))
-        find-d (fn [h] (first (filter #(= h (dhead %)) dirs)))
-        ty (infer* ctx node)
-        ty (if-let [h (and (not= :sym (:op node)) (env/hint-type (:file ctx) node))]
-             (do (check-hint! ctx node ty "type of the expression")
-                 (if-let [why (:null-return (meta ty))]
-                   (with-meta (t/union (dissoc h :platform) t/nil-t) {:null-return why})
-                   h))
-             ty)
-        ty (cond
-             (find-d 't/cast) (do (swap! *trust* update :cast inc) (parse-directive-type ctx (find-d 't/cast)))
-             (find-d 't/any) (do (swap! *trust* update :any inc) t/any)
-             :else ty)]
-    (record! ctx node ty)))
+(defn infer
+  ([ctx node] (infer ctx node nil))
+  ([ctx node callback-arity]
+   (let [dirs (:directives node)
+         dhead (fn [d] (:val (first (:children d))))
+         find-d (fn [h] (first (filter #(= h (dhead %)) dirs)))
+         ty (if-let [callback (deferred-callback ctx node)]
+              (force-callback ctx callback callback-arity)
+              (if callback-arity (infer-callback ctx node callback-arity) (infer* ctx node)))
+         ty (if-let [h (and (not= :sym (:op node)) (env/hint-type (:file ctx) node))]
+              (do (check-hint! ctx node ty "type of the expression")
+                  (if-let [why (:null-return (meta ty))]
+                    (with-meta (t/union (dissoc h :platform) t/nil-t) {:null-return why})
+                    h))
+              ty)
+         ty (cond
+              (find-d 't/cast) (do (swap! *trust* update :cast inc) (parse-directive-type ctx (find-d 't/cast)))
+              (find-d 't/any) (do (swap! *trust* update :any inc) t/any)
+              :else ty)]
+     (record! ctx node ty))))
 
 ;; ---- entry points ----
 

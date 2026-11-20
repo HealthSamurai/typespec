@@ -41,3 +41,10 @@
   (testing "unknown context is still an explicit unchecked boundary"
     (is (some #(= "TSP210-01" (:code %))
               (:diagnostics (checked "(ns app (:require [pg])) (defn f [ctx] (pg/truncate! ctx :x))"))))))
+
+(deftest fetch-context-comes-from-the-edn-declaration
+  (let [prefix "(ns app (:require [pg] [clojure.string :as str])) (pg/fetch {} [] 10 :id "
+        codes (fn [callback] (mapv :code (:diagnostics (checked (str prefix callback ")")))))]
+    (is (empty? (codes "(fn [value index] (when (some? value) (str/upper-case value) (inc index)))")))
+    (is (= ["TSP2531"] (codes "(fn [value index] (str/upper-case value))")))
+    (is (= ["TSP2345"] (codes "(fn [value index] (str/upper-case index))")))))

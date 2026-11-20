@@ -176,18 +176,46 @@
          (or (nil? tr) (sub? env tr sr))
          (sub? env (:ret s) (:ret t)))))
 
+(defn dispatch-arity
+  "Clojure chooses a fixed arity before its variadic fallback."
+  [arities n]
+  (or (some #(when (and (not (:rest %)) (= n (count (:params %)))) %) arities)
+      (some #(when (and (:rest %) (<= (count (:params %)) n)) %) arities)))
+
+(defn dispatch-plan
+  "Source branches and argument contracts needed to implement one expected arity."
+  [source target]
+  (let [minimum (count (:params target))]
+    (if-not (:rest target)
+      (when-let [a (dispatch-arity source minimum)] [[a target]])
+      (when-let [rest-arity (first (filter :rest source))]
+        (let [rest-minimum (count (:params rest-arity))
+              fixed (filter #(not (:rest %)) source)
+              fixed-counts (set (map #(count (:params %)) fixed))
+              params-at (fn [n] (into (:params target) (repeat (- n minimum) (:rest target))))]
+          (when (every? fixed-counts (range minimum rest-minimum))
+            (conj (vec (for [a fixed :let [n (count (:params a))] :when (<= minimum n)]
+                         [a (assoc target :params (params-at n) :rest nil)]))
+                  [rest-arity (assoc target :params (params-at (max rest-minimum minimum)))])))))))
+
 (defn- fn-sub?
   "Every target arity needs a source arity. Mixed fixed/rest dispatch and kwargs
   are deliberately unsupported (except identical types), not guessed compatible."
   [env s t]
   (let [sa (:arities s) ta (:arities t)]
-    (if (and (seq sa) (seq ta)
+    (cond
+      (and (::dispatch (meta s)) (seq sa) (seq ta) (not-any? :kwargs ta))
+      (every? (fn [target]
+                (when-let [plan (dispatch-plan sa target)]
+                  (every? (fn [[a contract]] (arity-sub? env a contract)) plan))) ta)
+
+      (and (seq sa) (seq ta)
              (not-any? :kwargs sa) (not-any? :kwargs ta)
              (or (= 1 (count sa))
                  (and (not-any? :rest sa)
                       (= (count sa) (count (distinct (map #(count (:params %)) sa)))))))
       (every? (fn [target] (some #(arity-sub? env % target) sa)) ta)
-      (inconclusive! :unsupported-function))))
+      :else (inconclusive! :unsupported-function))))
 
 (defn- sub1? [env s t]
   (let [st (:t s) tt (:t t)]

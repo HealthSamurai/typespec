@@ -23,9 +23,9 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 2 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 3 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
-| `designed` | 38 | accepted design; implementation status is separate |
+| `designed` | 37 | accepted design; implementation status is separate |
 | `proposed` | 9 | an idea under discussion, not yet accepted into the design |
 
 This file is generated from the card headers by `clojure -M:test --update`.
@@ -42,7 +42,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F130](F130-namespace-sidecars.md) | Файлы типов рядом с исходником | `designed` | `partial` | declarations | Flow |
 | [F150](F150-schema-providers.md) | Генераторы типов из схем | `designed` | `not-implemented` | sources | Clojure |
 | [F210](F210-unknown-any-never.md) | Unknown, any и never | `designed` | `partial` | core | Typespec |
-| [F220](F220-local-inference.md) | Локальный и контекстный вывод типов | `designed` | `partial` | core | Typespec |
+| [F220](F220-local-inference.md) | Локальный и контекстный вывод типов | `implemented` | `implemented` | core | Typespec |
 | [F230](F230-generics-and-hof.md) | Generics и функции высшего порядка | `designed` | `partial` | core | Typespec |
 | [F231](F231-generic-obligations.md) | Ограничения generics и проверка обязательств | `proposed` | `not-implemented` | types | Rust |
 | [F232](F232-associated-types.md) | Связанные типы контрактов | `proposed` | `not-implemented` | types | Rust |

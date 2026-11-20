@@ -112,6 +112,15 @@ not the previous last fallback. This is only diagnostic target selection,
 warning objects are identical to the initial capture. The reviewed expected
 snapshot records this measured delta, including new diagnostic IDs.
 
+F220 acceptance records **0 errors and 48 warnings** with the same source
+coverage. The three new `:accumulator` warnings are at `http.clj:286` and
+`:306`, where the registered hook's result comes from runtime state, and
+`http/routing.clj:53`, where the accumulator crosses the untyped recursive
+`-match` return. The reducer in `match-fn-params` now infers a possible result
+from `conj`, so the matching branch is checked and reports the unknown `wgt`
+passed to `+` at `http/routing.clj:56`. These are unchecked contracts. All
+44 diagnostic tuples from the replace audit are present in the new snapshot.
+
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,
 then deliberately edit the expected file in a separate review step. There

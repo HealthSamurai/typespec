@@ -14,6 +14,7 @@
     typespec.externs-regression-test
     typespec.solver-test
     typespec.generic-integration-test
+    typespec.contextual-callback-test
     typespec.generic-extern-test
     typespec.generic-maps-test
     typespec.macro-contracts-test

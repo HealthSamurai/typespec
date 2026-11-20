@@ -560,19 +560,36 @@
                   ;; overloads go from narrow to general: with an unknown argument only the general one is safe
                   ;; nothing fits: if the only trouble is a possible nil, keep the overload that fits otherwise
                   non-nil (mapv #(t/remove-nil (:env ctx) (eff ctx %)) arg-types)
-                  nil-only (first (keep-indexed
-                                   (fn [i a] (when (empty? (arg-problems (assoc ctx :quiet true) a arg-nodes non-nil node)) i))
-                                   fits))
+                  non-nil-problems (map #(arg-problems (assoc ctx :quiet true) % arg-nodes non-nil node) fits)
+                  nil-only (first (keep-indexed (fn [i ps] (when (empty? ps) i)) non-nil-problems))
+                  ;; Return evidence must include every candidate that could fit
+                  ;; after removing nil, even if another argument is still unknown.
+                  nil-compatible (keep-indexed
+                                   (fn [i ps]
+                                     (when (every? #(= "TSP210-01" (first (second %))) ps) i))
+                                   non-nil-problems)
+                  unchecked? (and (empty? passing)
+                                  (some #(= "TSP210-01" (first (second %))) (mapcat identity all)))
+                  possible (distinct (concat incomplete nil-compatible))
+                  returns (distinct (map :ret (if (seq possible) (map #(nth fits %) possible) fits)))
                   i (or (if vague? (last passing) (first passing)) (first incomplete) nil-only (dec (count all)))]
               (doseq [[pn [code msg extra]] (nth all i)]
                 (apply report! ctx pn code msg (mapcat identity extra)))
-              ;; an unknown argument and several overloads that fit: the result is not known either
-              (if (or (and vague? (next (distinct (map #(:ret (nth fits %)) passing))))
-                      (and (empty? passing)
-                           (seq incomplete)
-                           (next (distinct (map #(:ret (nth fits %)) incomplete)))))
-                t/unknown
-                (:ret (nth fits i))))))))
+              ;; A merely incomplete candidate must not hide a possible nil
+              ;; boundary on another viable overload. Keep these diagnostics
+              ;; separate from both overload selection and return evidence.
+              (when unchecked?
+                (doseq [[pn [code msg extra]]
+                        (distinct (for [j nil-compatible
+                                        problem (nth all j)
+                                        :when (and (= "TSP2531" (first (second problem)))
+                                                   (not (some #{problem} (nth all i))))]
+                                    problem))]
+                  (apply report! ctx pn code msg (mapcat identity extra))))
+              (cond
+                unchecked? (if (next returns) t/unknown (first returns))
+                (and vague? (next (distinct (map #(:ret (nth fits %)) passing)))) t/unknown
+                :else (:ret (nth fits i))))))))
 
 ;; ---- inference ----
 

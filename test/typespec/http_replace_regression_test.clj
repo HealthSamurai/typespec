@@ -68,3 +68,54 @@
           (is (= expected (#'c/call-fn ctx node 'f {:t :fn :arities ars}
                            [node (assoc node :val 'known)]))))
         (is (= ["TSP210-01"] (mapv :code @c/*diags*)))))))
+
+(deftest rejected-overloads-do-not-prove-a-downstream-return
+  (project "(ns app (:require [vendor :as v]))\n(defn f [x] (v/num (v/h x \"s\")))"
+           "{vendor/h ([string? int? :-> string?] [keyword? int? :-> keyword?]) vendor/num [number? :-> number?]}"
+           {}
+           (fn [{:keys [diagnostics]}]
+             (is (= 1 (count (filter #(= "TSP2345" (:code %)) diagnostics))) (pr-str diagnostics))
+             (is (some #(and (= "TSP2345" (:code %))
+                             (str/includes? (:message %) "int?")) diagnostics) (pr-str diagnostics))
+             (is (not-any? #(str/includes? (:message %) "keyword? is not assignable to number?") diagnostics))
+             (is (some #(= "TSP210-01" (:code %)) diagnostics)))))
+
+(deftest nil-compatible-overload-participates-in-return-evidence
+  (project "(ns app (:require [vendor :as v] [clojure.string :as s]))\n(defn f [x y] (s/upper-case (v/f x (v/ns y))))"
+           "{vendor/f ([int? (s/nilable string?) :-> int?] [any? string? :-> string?]) vendor/ns [any? :-> (s/nilable string?)]}"
+           {}
+           (fn [{:keys [diagnostics]}]
+             (is (not-any? #(= "TSP2345" (:code %)) diagnostics) (pr-str diagnostics))
+             (is (not-any? #(str/includes? (:message %) "int? is not assignable to CharSequence") diagnostics))
+             (is (some #(= "TSP210-01" (:code %)) diagnostics))
+             (is (= 1 (count (filter #(= "TSP2531" (:code %)) diagnostics))) (pr-str diagnostics)))))
+
+(deftest callback-contracts-still-checked
+  (doseq [input ["x" "\"abc\""]]
+    (let [good (diagnostics (str "(defn f [x] (s/replace " input " #\"a\" (fn [m] \"z\")))"))
+          bad (diagnostics (str "(defn f [x] (s/replace " input " #\"a\" (fn [m] 42)))"))]
+      (is (not-any? #(= "TSP2345" (:code %)) good) (pr-str good))
+      (is (= 1 (count (filter #(= "TSP2345" (:code %)) bad))) (pr-str bad))
+      (when (= input "x")
+        (is (some #(= "TSP210-01" (:code %)) good))
+        (is (some #(= "TSP210-01" (:code %)) bad))))))
+
+(deftest all-nil-compatible-candidates-count-including-incomplete-ones
+  (let [node {:op :sym :val 'x :pos {:row 1 :col 1}}
+        ctx {:env {} :file {:file "overloads.clj"} :opts {:strict true}}
+        string (t/prim :string)
+        number (t/prim :number)
+        nullable (t/union t/nil-t string)
+        incomplete {:params [string nullable] :ret string}
+        nil-fit {:params [t/any string] :ret string}
+        nil-incomplete {:params [number string] :ret number}]
+    (doseq [ars [[incomplete nil-fit nil-incomplete]
+                 [nil-incomplete nil-fit incomplete]
+                 [nil-fit incomplete nil-incomplete]]]
+      (binding [c/*diags* (atom [])]
+        (with-redefs [c/infer (fn [_ nd] (if (= 'x (:val nd)) t/unknown nullable))]
+          (is (= t/unknown (#'c/call-fn ctx node 'f {:t :fn :arities ars}
+                            [node (assoc node :val 'y)]))))
+        (is (not-any? #(= "TSP2345" (:code %)) @c/*diags*) (pr-str @c/*diags*))
+        (is (some #(and (= "TSP210-01" (:code %)) (= :error (:severity %))) @c/*diags*))
+        (is (some #(= "TSP2531" (:code %)) @c/*diags*))))))

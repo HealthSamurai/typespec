@@ -39,7 +39,8 @@
            ["(get-in {:a {}} [:a :b])" t/nil-t]
            ["(get-in nil [] :missing)" t/nil-t]
            ["(get-in :root nil :missing)" (t/lit :root)]
-           ["(get-in {:a [nil]} [:a 0] :missing)" (t/union t/nil-t (t/lit :missing))]]]
+           ["(get-in {:a [nil]} [:a 0] :missing)" t/nil-t]
+           ["(get-in {:a [nil]} [:a 1] :missing)" (t/lit :missing)]]]
     (is (= (alternatives expected) (alternatives (infer-type source))) source))
   (let [m (map-type {} {:a (t/union t/nil-t (map-type {} {:b (t/union t/nil-t (t/prim :int))}))})]
     (is (= #{t/nil-t (t/prim :int) (t/lit :missing)}

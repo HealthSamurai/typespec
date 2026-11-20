@@ -13,7 +13,7 @@
       :fn (update ty :arities #(mapv (fn [a] (cond-> (-> a (update :params (fn [ps] (mapv s ps))) (update :ret s))
                                                (:rest a) (update :rest s)
                                                (:kwargs a) (update :kwargs s))) %))
-      :coll (update ty :of s)
+      :coll (cond-> (update ty :of s) (:items ty) (update :items #(mapv s %)))
       :map-of (-> ty (update :k s) (update :v s))
       :map (-> ty (update :req #(into {} (map (fn [[k v]] [k (s v)]) %)))
                  (update :opt #(into {} (map (fn [[k v]] [k (s v)]) %))))
@@ -36,7 +36,7 @@
 
 (defn- children [ty]
   (case (:t ty)
-    :coll [(:of ty)]
+    :coll (or (:items ty) [(:of ty)])
     :map-of [(:k ty) (:v ty)]
     :fn (mapcat #(concat (:params %) [(:ret %)] (when (:rest %) [(:rest %)])) (:arities ty))
     (:union :merge) (:types ty)
@@ -96,7 +96,9 @@
           :else (normalize env (get-in env [:specs k :type]) (dec budget) (conj seen k) fuel)))
       :else
       (case (:t ty)
-        :coll (update ty :of step)
+        :coll (if (:items ty)
+                (let [items (mapv step (:items ty))] (assoc ty :items items :of (apply t/union items)))
+                (update ty :of step))
         :map-of (-> ty (update :k step) (update :v step))
         :map (-> ty (update :req #(into {} (map (fn [[k v]] [k (step v)]) %)))
                    (update :opt #(into {} (map (fn [[k v]] [k (step v)]) %))))
@@ -151,7 +153,11 @@
                      (recur-all [(child (get fields k) v [:key k])]))))
                (:opt r)))
       ;; Right unions need disjunctive search; leave them to concrete subtyping.
-      (and (= :coll (:t l)) (= :coll (:t r))
+      (and (:items l) (:items r) (= (:kind l) (:kind r)))
+      (if (= (count (:items l)) (count (:items r)))
+        (recur-all (map-indexed (fn [i ty] (child ty (nth (:items r) i) [:index i])) (:items l)))
+        [(assoc c :mismatch :tuple-length)])
+      (and (= :coll (:t l)) (= :coll (:t r)) (not (:items r))
            (or (nil? (:kind r)) (= (:kind l) (:kind r))))
       (recur-all [(child (:of l) (:of r) :of)])
       (and (fixed? l) (fixed? r)

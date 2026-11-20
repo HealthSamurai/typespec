@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 12 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 14 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
@@ -63,8 +63,10 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F310](F310-maps-and-destructuring.md) | Мапы, пути и деструктуризация | `designed` | `partial` | core | Typespec |
 | [F311](F311-row-polymorphism.md) | Row polymorphism — сохранение остатка мапы | `proposed` | `not-implemented` | data | TypeScript and research |
 | [F312](F312-literal-map-paths.md) | Литеральные пути мап | `implemented` | `implemented` | data | Clojure |
+| [F313](F313-named-map-transformations.md) | Сохранение формы мапы через именованные функции | `implemented` | `implemented` | data | Clojure |
 | [F320](F320-nil-and-platform.md) | Nil, коллекции и платформенные типы | `designed` | `partial` | core | Typespec |
 | [F330](F330-tuples-and-nonempty.md) | Tuples, длина и непустые коллекции | `designed` | `partial` | data | Clojure |
+| [F331](F331-fixed-vector-positions.md) | Длина и позиции в s/tuple | `implemented` | `implemented` | data | Clojure |
 | [F340](F340-mutation-and-variance.md) | Изменяемые значения и variance | `designed` | `not-implemented` | core | Typespec |
 | [F350](F350-records.md) | Records и номинальные классы | `designed` | `not-implemented` | data | Clojure |
 | [F410](F410-arities-and-apply.md) | Арности, перегрузки и apply | `designed` | `partial` | functions | Clojure |

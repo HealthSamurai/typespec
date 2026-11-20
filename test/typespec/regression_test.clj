@@ -7,6 +7,7 @@
     typespec.incomplete-boundary-test
     typespec.incomplete-overload-test
     typespec.maps-regression-test
+    typespec.tuples-and-rows-test
     typespec.case-narrowing-test
     typespec.checked-guards-test
     typespec.type-operators-test

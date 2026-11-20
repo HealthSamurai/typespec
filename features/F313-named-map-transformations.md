@@ -1,0 +1,41 @@
+---
+id: F313
+title: Сохранение формы мапы через именованные функции
+status: implemented
+decision: accepted
+implementation: implemented
+area: data
+origin: Clojure
+---
+
+# F313 · Сохранение формы мапы через именованные функции
+
+Чекер выводит преобразование результата функции с одним простым
+параметром и одним выражением из `assoc` и `dissoc` с литеральными
+ключами. Операции могут быть вложены или записаны внутри `->`.
+Требования из `s/keys` и `s/fdef` проверяются обычным способом.
+После проверки вызова чекер применяет изменения к конкретной
+форме мапы, сохраняя типы остальных полей.
+
+```clojure example
+(ns example (:require [clojure.spec.alpha :as s]))
+
+(defn stamp [m]
+  (-> m (assoc :version 1) (dissoc :temp)))
+
+(s/fdef label :args (s/cat :id string?) :ret string?)
+(defn label [id]
+  (:name (stamp {:name id :version "old" :temp true})))
+```
+
+```text output
+(no diagnostics)
+```
+
+У `stamp` поле `:name` сохраняет тип аргумента, `:version` получает
+тип `int?`, а `:temp` отсутствует. Вычисляемые ключи и произвольные
+тела функций используют обычный вывод типа. Если уточнённый
+результат несовместим с объявленным типом, действует объявленный
+контракт. Анализ работает с исходниками и не исполняет функцию.
+
+[Сохранение остатка мапы](F311-row-polymorphism.md) · [Регрессии](../test/typespec/tuples_and_rows_test.clj)

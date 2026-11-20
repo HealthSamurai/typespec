@@ -139,7 +139,10 @@
                                                  :map-of (and (= :map-of (:t a))
                                                               (proof (:k a) (:k e) (inc depth))
                                                               (proof (:v a) (:v e) (inc depth)))
-                                                 :coll (and (= :coll (:t a)) (proof (:of a) (:of e) (inc depth)))
+                                                 :coll (and (= :coll (:t a))
+                                                            (if (:items e)
+                                                              (every? true? (map #(proof %1 %2 (inc depth)) (:items a) (:items e)))
+                                                              (proof (:of a) (:of e) (inc depth))))
                                                  true)))
                                         (t/members env expected)))
                                 (t/members env actual))))]

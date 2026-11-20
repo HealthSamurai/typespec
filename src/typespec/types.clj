@@ -43,6 +43,10 @@
   (prim (cond (string? v) :string (keyword? v) :keyword (integer? v) :int
               (number? v) :double (boolean? v) :boolean :else :symbol)))
 
+(defn tuple
+  ([items] (tuple items (apply union items)))
+  ([items element] {:t :coll :kind :vector :items items :of element}))
+
 ;; ---- Java classes ----
 
 (def primitives #{"long" "int" "double" "float" "boolean" "short" "byte" "char"})
@@ -252,13 +256,17 @@
                      ;; A known kind never fits a different :kind (set? is not a vector).
                      :coll (and (contains? #{:vector :set :seq :coll} (:name s))
                                 (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
-                                (if *strict-shapes* (inconclusive! :unsupported) true))
+                                (cond (:items t) (inconclusive! :tuple-length)
+                                      *strict-shapes* (inconclusive! :unsupported)
+                                      :else true))
                      :map-of (and (= :map (:name s))
                                   (if *strict-shapes* (inconclusive! :unsupported) true))
                      false)
       (= :class st) (case tt
                       :class (class-sub? (:name s) (:name t))
                       :prim (class-is-prim? (:name s) (:name t))
+                      :coll (when (and (:items t) (class-is-prim? (:name s) :vector))
+                              (inconclusive! :tuple-length))
                       false)
       (= :map st) (case tt
                     :map (map-sub? env s t)
@@ -273,7 +281,14 @@
                        :class (prim-is-class? :map (:name t))
                        false)
       (= :coll st) (case tt
-                     :coll (and (or (nil? (:kind t)) (= (:kind s) (:kind t))) (sub? env (:of s) (:of t)))
+                     :coll (if (:items t)
+                             (cond (:items s) (and (= (:kind s) (:kind t))
+                                                   (= (count (:items s)) (count (:items t)))
+                                                   (every? true? (map #(sub? env %1 %2) (:items s) (:items t))))
+                                   (#{nil :vector} (:kind s)) (inconclusive! :tuple-length)
+                                   :else false)
+                             (and (or (nil? (:kind t)) (= (:kind s) (:kind t)))
+                                  (sub? env (:of s) (:of t))))
                      :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
                      :class (prim-is-class? (or (:kind s) :coll) (:name t))
                      false)
@@ -347,7 +362,9 @@
                   (when (seq (:opt t)) (str " :opt [" (str/join " " (map show-kw (keys (:opt t)))) "]"))
                   ")"))
       :map-of (str "(s/map-of " (show (:k t)) " " (show (:v t)) ")")
-      :coll (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?")) ")")
+      :coll (if (and (:items t) (::tuple-contract (meta t)))
+              (str "(s/tuple" (apply str (map #(str " " (show %)) (:items t))) ")")
+              (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?")) ")"))
       :fn (if-let [ars (seq (:arities t))]
             (let [ar (fn [a] (str "[" (str/join " " (concat (map show (:params a))
                                                             (when (:rest a) ["&" (show (:rest a))])
@@ -535,8 +552,7 @@
                                       (= :s/every (op ctx (first form))))
                                   (with-meta {::unchecked-contract true})))
         :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
-        :s/tuple (with-meta {:t :coll :kind :vector :of (apply union (map p (rest form)))}
-                   {::unchecked-contract true})
+        :s/tuple (with-meta (tuple (mapv p (rest form))) {::tuple-contract true})
         :s/fspec (if (:inside-all ctx) (fail) (let [{:keys [args ret]} (apply hash-map (rest form))
                        r (if ret (p ret) unknown)]
                    {:t :fn :arities (some-> (cat-items ctx args) (cat->arities r)) :ret r}))

@@ -19,7 +19,8 @@
 (def ^:dynamic *trust* nil)
 (def ^:dynamic *rets* nil)
 
-(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback)
+(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
+         assoc-map-key specialize-map-return dynamic-definition?)
 
 (defn- report! [ctx node code msg & {:as extra}]
   (when-not (:quiet ctx)
@@ -185,16 +186,34 @@
       (when-let [k (first (remove #(contains? (:req (first am)) %) (keys (:req (first em)))))]
         [k (contains? (:opt (first am)) k)]))))
 
+(defn- tuple-problem [ctx actual expected]
+  (let [env (:env ctx)
+        am (t/members env actual)
+        em (t/members env expected)
+        a (:items (first am))
+        e (:items (first em))]
+    (when (and (= 1 (count am) (count em)) a e (= :vector (:kind (first am)) (:kind (first em))))
+      (if (not= (count a) (count e))
+        ["TSP330-01" (str "expected vector length " (count e) ", got " (count a))]
+        (first (keep-indexed (fn [i item]
+                              (let [target (nth e i)]
+                                (when (= :mismatch (:status (t/sub-result env item target)))
+                                  ["TSP2345" (str "vector element " i ": " (show-ref ctx item)
+                                                   " is not assignable to " (show-ref ctx target))])))
+                            a))))))
+
 (defn- problems
   "Why a value of type `actual` (written as `node`) cannot be used as `expected`. Empty when it can."
   [ctx node actual expected]
   (let [env (:env ctx) actual (eff ctx actual)
-        result (t/sub-result env actual expected)]
+        result (t/sub-result env actual expected)
+        tuple-error (when (= :mismatch (:status result)) (tuple-problem ctx actual expected))]
     (cond
       (:generic-failure actual) []
       (= :proved (:status result)) (if (:fresh actual) (filter #(= "TSP2353" (first %)) (fresh-problems ctx actual expected)) [])
       (seq (fresh-problems ctx actual expected)) (fresh-problems ctx actual expected)
       (= :inconclusive (:status result)) [(incomplete-problem ctx actual expected result)]
+      tuple-error [tuple-error]
       (and (not (#{:nil :map} (:op node))) (t/nilable? env actual) (not (t/nilable? env expected))
            (t/sub? env (t/remove-nil env actual) expected))
       [["TSP2531" (str (or (:display node) (parse/unparse node)) " may be nil"
@@ -681,6 +700,25 @@
   [el]
   (if (#{:unknown :any :never :nil} (:t el)) el (assoc el :platform true)))
 
+(defn- positional-type [ctx ty i]
+  (let [members (t/members (:env ctx) ty)]
+    (if (some :items members)
+      (apply t/union (for [m members]
+                       (cond (:items m) (get (:items m) i t/nil-t)
+                             (= :nil (:t m)) t/nil-t
+                             :else (indexed (elem-type ctx m)))))
+      (indexed (elem-type ctx ty)))))
+
+(defn- positional-rest [ctx ty i]
+  (apply t/union
+         (for [m (t/members (:env ctx) ty)]
+           (cond
+             (:items m) (if (< i (count (:items m)))
+                          (assoc (t/tuple (subvec (:items m) i)) :kind :seq)
+                          t/nil-t)
+             (= :nil (:t m)) t/nil-t
+             :else {:t :coll :of (elem-type ctx m)}))))
+
 (defn- check-hint!
   "A hint that cannot be true for the value it is put on."
   [ctx node actual what]
@@ -706,12 +744,12 @@
             (cond-> (bind c (:val pattern) (if use-hint? h ty) :why (when-not use-hint? why) :hinted (boolean h))
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
-     :vector (let [el (elem-type ctx ty)]
-               (loop [ctx ctx [p & more] (:children pattern)]
-                 (cond (nil? p) ctx
-                       (and (= :sym (:op p)) (= '& (:val p))) (bind-pattern ctx (first more) {:t :coll :of el})
-                       (and (= :kw (:op p)) (= :as (:val p))) (bind-pattern ctx (first more) ty)
-                       :else (recur (bind-pattern ctx p (if (#{:unknown :any :never :nil} (:t el)) el (assoc el :platform true))) more))))
+     :vector (loop [ctx ctx, i 0, [p & more] (:children pattern)]
+               (cond (nil? p) ctx
+                     (and (= :sym (:op p)) (= '& (:val p)))
+                     (recur (bind-pattern ctx (first more) (positional-rest ctx ty i)) i (next more))
+                     (and (= :kw (:op p)) (= :as (:val p))) (bind-pattern ctx (first more) ty)
+                     :else (recur (bind-pattern ctx p (positional-type ctx ty i)) (inc i) more)))
      ctx)))
 
 ;; ---- function calls ----
@@ -975,7 +1013,10 @@
               (cond
                 unchecked? (if (next returns) t/unknown (first returns))
                 (and vague? (next (distinct (map #(:ret (nth fits %)) passing)))) t/unknown
-                :else (:ret (nth fits i))))))))
+                :else (let [arity (nth fits i)]
+                        (if (some #{i} passing)
+                          (specialize-map-return ctx arity (first arg-types))
+                          (:ret arity)))))))))
 
 ;; ---- inference ----
 
@@ -1052,30 +1093,91 @@
     :union (apply t/union (map widen (:types ty)))
     ty))
 
+(defn- map-edits [ctx head args]
+  (case head
+    assoc (when (and (seq args) (even? (count args)))
+            (let [pairs (partition 2 args)]
+              (when (every? #(and (= :kw (:op %)) (literal-node? %)) (map first pairs))
+                (let [edits (mapv (fn [[key value]] [(:val key) (quietly ctx value)]) pairs)]
+                  (when (every? (fn [[k ty]]
+                                  (and (not (t/assumption ty))
+                                       (or (nil? (get-in (:env ctx) [:specs k]))
+                                           (t/sub? (:env ctx) (eff ctx ty) (t/ref-t k)))))
+                                edits)
+                    edits)))))
+    dissoc (when (every? #(and (= :kw (:op %)) (literal-node? %)) args)
+             (mapv (fn [key] [(:val key) nil]) args))
+    nil))
+
+(defn- infer-map-edits [ctx param node]
+  (cond
+    (= param (plain-local ctx node)) []
+    (#{'assoc 'dissoc '->} (builtin-head ctx node))
+    (let [[base & args] (args-of node)
+          head (builtin-head ctx node)]
+      (when-let [before (infer-map-edits ctx param base)]
+        (if (= '-> head)
+          (reduce (fn [edits step]
+                    (when-let [next-edits (and edits (map-edits ctx (builtin-head ctx step) (args-of step)))]
+                      (into edits next-edits)))
+                  before args)
+          (when-let [after (map-edits ctx head args)] (into before after)))))))
+
+(defn- specialize-map-return [ctx {:keys [map-edits ret]} arg]
+  (if (or (not map-edits) (:guards-disabled? ctx))
+    ret
+    (let [members (t/members (:env ctx) (eff ctx arg))]
+      (if (every? #(= :map (:t %)) members)
+        (let [result (apply t/union
+                            (for [m members]
+                              (reduce (fn [shape [k v]]
+                                        (if v
+                                          (assoc-map-key shape k (widen (dissoc v :fresh)))
+                                          (cond-> (-> shape (update :req dissoc k) (update :opt dissoc k))
+                                            (not (:complete-keys? shape)) (assoc-in [:opt k] t/never))))
+                                      (dissoc m :fresh) map-edits)))]
+          (if (t/sub? (:env ctx) result ret) (t/with-assumption result (t/assumption arg)) ret))
+        ret))))
+
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
   [ctx sym]
   (when-let [v (get-in (:env ctx) [:vars sym])]
-    (cond
-      (not (and (= :hints (:source v)) (some #(= :unknown (:t (:ret %))) (:arities (:type v))))) (:type v)
-      (contains? @*rets* sym) (get @*rets* sym)
-      :else
-      (do (swap! *rets* assoc sym (:type v)) ; a recursive call sees the declared part only
-          (let [fctx {:env (:env ctx) :file (:pfile v) :opts (:opts ctx) :locals {}}
-                ars (mapv (fn [a {:keys [params body]}]
-                            (if (not= :unknown (:t (:ret a)))
-                              a
-                              (let [{:keys [fixed rest]} (env/split-params params)
-                                    c (reduce (fn [c [p ty]] (bind-pattern c p ty)) (assoc fctx :quiet true)
-                                              (map vector fixed (:params a)))
-                                    c (if rest (bind-pattern c rest (or (:kwargs a) t/unknown)) c)
-                                    ret (binding [*types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]
-                                          (infer-body c body))]
-                                (assoc a :ret (widen (dissoc ret :fresh)) :inferred true))))
-                          (:arities (:type v)) (:arities (:parts v)))
-                ty (assoc (:type v) :arities ars)]
-            (swap! *rets* assoc sym ty)
-            ty)))))
+    (let [infer-return? (and (= :hints (:source v)) (some #(= :unknown (:t (:ret %))) (:arities (:type v))))
+          shape-candidate? (and (#{:hints :sig :fdef} (:source v))
+                                (= 1 (get-in ctx [:env :root-definitions sym]))
+                                (not (dynamic-definition? v))
+                                (= 1 (count (:arities (:type v))) (count (:arities (:parts v))))
+                                (not (get-in v [:type :arities 0 :rest]))
+                                (not (get-in v [:type :arities 0 :kwargs]))
+                                (= 1 (count (get-in v [:type :arities 0 :params]))))]
+      (cond
+        (not (or infer-return? shape-candidate?)) (:type v)
+        (contains? @*rets* sym) (get @*rets* sym)
+        :else
+        (do (swap! *rets* assoc sym (:type v)) ; a recursive call sees the declared part only
+            (let [fctx {:env (:env ctx) :file (:pfile v) :opts (:opts ctx) :locals {} :quiet true}
+                  ars (mapv (fn [a {:keys [params body]}]
+                              (if (and (not shape-candidate?) (not= :unknown (:t (:ret a))))
+                                a
+                                (let [{:keys [fixed rest]} (env/split-params params)
+                                      c (reduce (fn [c [p ty]] (bind-pattern c p ty)) fctx (map vector fixed (:params a)))
+                                      c (if rest (bind-pattern c rest (or (:kwargs a) t/unknown)) c)
+                                      a (if (and infer-return? (= :unknown (:t (:ret a))))
+                                          (let [ret (binding [*types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]
+                                                      (infer-body c body))]
+                                            (assoc a :ret (widen (dissoc ret :fresh)) :inferred true))
+                                          a)
+                                      param (first fixed)
+                                      expr (first body)
+                                      edits (when (and shape-candidate? (not rest) (= :sym (:op param)) (= 1 (count body))
+                                                       (not-any? :directives (tree-seq (comp seq :children) :children expr)))
+                                              (seq (infer-map-edits c (:val param) expr)))]
+                                  (cond-> a edits (assoc :map-edits (vec edits))))))
+                            (:arities (:type v)) (:arities (:parts v)))
+                  ty (assoc (:type v) :arities ars)]
+              (swap! *rets* assoc sym ty)
+              ty))))))
 
 (defn- why-of [ctx init ty]
   (cond
@@ -1267,7 +1369,9 @@
               (let [[code msg extra] (incomplete-problem ctx a p result)]
                 (apply report! ctx at code msg (mapcat identity extra)))
               (report! ctx at "TSP2345" (str label " takes " (show-ref ctx p) ", but gets " (show-ref ctx a)))))))
-      (if (and vague? (next (distinct (map :ret ok)))) t/unknown (:ret ar)))
+      (cond (and vague? (next (distinct (map :ret ok)))) t/unknown
+            (seq ok) (specialize-map-return ctx ar (first arg-types))
+            :else (:ret ar)))
     (if (seq (:arities ftype))
       (do (report! ctx at "TSP2554" (str label " is called with " (count arg-types) " argument(s)")) t/unknown)
       t/unknown))))
@@ -1916,7 +2020,9 @@
            (for [member (t/members env ty)]
              (case (:t member)
                :coll (case (:kind member)
-                       :vector (if (<= 0 index Integer/MAX_VALUE) (:of member) t/never)
+                       :vector (cond (not (<= 0 index Integer/MAX_VALUE)) t/never
+                                     (:items member) (get (:items member) (int index) t/never)
+                                     :else (:of member))
                        :set (:of member)
                        ;; A kindless coll-of can be a map whose entries fit the
                        ;; element spec. get returns the value of an entry there.
@@ -1943,7 +2049,10 @@
       (let [[key & more] keys
             current (eff ctx ty)
             {:keys [type optional?]} (if (= :num (:op key))
-                                       {:type (numeric-path-value ctx current (:val key)) :optional? true}
+                                       (let [i (:val key)]
+                                         {:type (numeric-path-value ctx current i)
+                                          :optional? (not (every? #(and (= :vector (:kind %)) (:items %) (<= 0 i) (< i (count (:items %))))
+                                                                  (t/members (:env ctx) current)))})
                                        (key-info ctx current (:val key) key true))]
         (recur type more (or missing? optional?)))
       (if missing? (t/union ty not-found) ty))))
@@ -1976,7 +2085,10 @@
       ty)))
 
 (defn- forget-map-keys [ctx ty]
-  (apply t/union (map #(if (= :map (:t %)) (t/prim :map) %) (t/members (:env ctx) ty))))
+  (apply t/union (for [member (t/members (:env ctx) ty)]
+                   (cond (= :map (:t member)) (t/prim :map)
+                         (:items member) (assoc (dissoc member :items) :of t/unknown)
+                         :else member))))
 
 (defn- path-writes
   "Find the previous leaf and rebuild each possible root after a keyword-path write."
@@ -2126,15 +2238,39 @@
       (report! ctx (last forms) "TSP2345" (str "lazy-seq cannot realize a sequence from " (t/show bad))))
     (coll-of :seq (if (= t/never body) t/never (elem-type ctx body)))))
 
-(doseq [h '[first second last peek rand-nth ffirst]]
+(doseq [[h i] {'first 0 'second 1}]
+  (defmethod special h [ctx node _]
+    (positional-type ctx (infer ctx (first (args-of node))) i)))
+
+(doseq [h '[last peek rand-nth ffirst]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)]
       (indexed (elem-type ctx (infer ctx c))))))
 
 (defmethod special 'nth [ctx node _]
-  (let [[c & more] (args-of node)]
-    (run! #(infer ctx %) more)
-    (elem-type ctx (infer ctx c))))
+  (let [[c index default & extra :as args] (args-of node)
+        ty (infer ctx c)
+        it (infer ctx index)
+        default-type (when default (infer ctx default))
+        i (:val it)
+        members (t/members (:env ctx) (eff ctx ty))]
+    (cond
+      (or (nil? index) (seq extra))
+      (do (run! #(infer ctx %) extra)
+          (report! ctx node "TSP2554" (str "nth expects 2 or 3 arguments, got " (count args)))
+          t/unknown)
+
+      (and (= :lit (:t it)) (integer? i) (<= Integer/MIN_VALUE i Integer/MAX_VALUE) (some :items members))
+      (let [missing? #(and (:items %) (not (<= 0 i (dec (count (:items %))))))]
+        (when-let [miss (and (nil? default) (first (filter missing? members)))]
+          (report! ctx index "TSP330-02" (str "index " i
+                                              (if (every? missing? members) " is" " may be")
+                                              " out of bounds for length " (count (:items miss)))))
+        (apply t/union (for [m members]
+                         (cond (:items m) (get (:items m) (int i) (or default-type t/never))
+                               (= :nil (:t m)) (or default-type t/nil-t)
+                               :else (t/union (elem-type ctx m) (or default-type t/never))))))
+      :else (t/union (elem-type ctx ty) (or default-type t/never)))))
 
 (doseq [h '[rest next seq reverse distinct sort shuffle butlast vec set doall]]
   (defmethod special h [ctx node _]
@@ -2251,7 +2387,7 @@
 
 (defn- join-accumulator [acc step]
   (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
-    (update acc :of t/union (:of step))
+    (update (dissoc acc :items) :of t/union (:of step))
     (t/union acc step)))
 
 (defn- reduction-accumulator [ctx f seed el empty-call?]
@@ -2307,7 +2443,7 @@
         xts (map #(infer ctx %) xs)
         m (first (remove #(= :nil (:t %)) (t/members (:env ctx) cty)))]
     (if (= :coll (:t m))
-      (assoc m :of (apply t/union (:of m) (map #(widen (dissoc % :fresh)) xts)))
+      (assoc (if (seq xs) (dissoc m :items) m) :of (apply t/union (:of m) (map #(widen (dissoc % :fresh)) xts)))
       cty)))
 
 (defn- transducer-element [ctx ty]
@@ -2357,7 +2493,7 @@
       (apply t/union
              (for [m (t/members (:env ctx) target)]
                (case (:t m)
-                 :coll (update (dissoc m :fresh) :of t/union out)
+                 :coll (update (dissoc m :fresh :items) :of t/union out)
                  (:map :map-of) (t/prim :map)
                  :nil (t/union t/nil-t (coll-of :seq out))
                  :prim (if (#{:vector :set :seq :map :coll} (:name m)) m t/unknown)
@@ -2374,6 +2510,7 @@
               el (elem-type ctx (infer ctx second-arg))]
           (cond (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector el)
                 (and (= :set (:op to)) (empty? (:children to))) (coll-of :set el)
+                (some :items (t/members (:env ctx) target)) (into-transformed ctx target el)
                 :else (dissoc target :fresh)))
       3 (let [target (infer ctx to)
               source (infer ctx from)
@@ -2399,11 +2536,14 @@
   (when-not (or (:generic-failure actual) (#{:unknown :any} (:t expected)))
     (let [env (:env ctx) actual (eff ctx actual)
           result (t/sub-result env actual expected)
+          tuple-error (when (= :mismatch (:status result)) (tuple-problem ctx actual expected))
           emit (fn [[c m extra]] (apply report! ctx node c m (mapcat identity extra)))]
       (cond
         (= :proved (:status result)) (run! emit (problems ctx node actual expected))
         (seq (fresh-problems ctx actual expected)) (run! emit (fresh-problems ctx actual expected))
         (= :inconclusive (:status result)) (emit (incomplete-problem ctx actual expected result))
+        tuple-error (let [[code message] tuple-error]
+                      (report! ctx node (if (= "TSP330-01" code) code "TSP2322") message))
         (and (t/nilable? env actual) (not (t/nilable? env expected)) (t/sub? env (t/remove-nil env actual) expected))
         (report! ctx node "TSP2322"
                  (str "may return nil, but the signature says " (show-ref ctx expected)
@@ -2719,12 +2859,8 @@
               (call-fn ctx node (str sym) type args)
               (check-unknown-call ctx args))))))))
 
-(defn- literal-elements [ctx node]
-  (apply t/union
-         (map (fn [child]
-                (let [ty (cond-> (infer ctx child) (= :vector (:op node)) (dissoc :fresh))]
-                  (if (:preserve-literals? ctx) ty (widen ty))))
-              (:children node))))
+(defn- literal-element-type [ctx types]
+  (apply t/union (if (:preserve-literals? ctx) types (map widen types))))
 
 (defn- infer* [ctx node]
   (case (:op node)
@@ -2742,8 +2878,9 @@
                  (and (nil? (namespace s)) (not (t/primitives (name s)))
                       (t/resolve-class (:imports (:file ctx)) s)) t/unknown
                  :else (or (:type (read-var ctx s node)) t/unknown)))
-    :vector {:t :coll :kind :vector :of (literal-elements ctx node)}
-    :set {:t :coll :kind :set :of (literal-elements ctx node)}
+    :vector (let [items (mapv #(dissoc (infer ctx %) :fresh) (:children node))]
+              (t/tuple items (literal-element-type ctx items)))
+    :set {:t :coll :kind :set :of (literal-element-type ctx (map #(infer ctx %) (:children node)))}
     :map (let [children (:children node)
                pairs (partition 2 children)]
            (when (:missing-directive-target (peek children))
@@ -2804,6 +2941,7 @@
 
 (def ^:private known-diagnostic-codes
   #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03" "TSP280-01" "TSP280-02"
+    "TSP330-01" "TSP330-02"
     "TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
     "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032" "TSP721-01"

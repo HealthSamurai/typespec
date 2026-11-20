@@ -149,6 +149,7 @@ The table is validated with a **differential test**: a generator builds random f
 - A **fresh literal** `{...}` in a call is checked for extra keys **only against the declared type**. An extra qualified key without a declared type is an error; a key that looks like a typo produces an error with Did you mean.
 - **`t/exact`** forbids extra keys everywhere.
 - **Map operations.** `get-in` uses the default when a literal path may be absent and preserves `nil` stored at the final key. `assoc-in` and `update-in` track keyword paths and keep sibling fields. [Supported paths](../features/F312-literal-map-paths.md)
+- **Fixed vector positions.** `s/tuple` checks length and element order. Vector literals supply positional types for destructuring and constant indices. [Supported operations](../features/F331-fixed-vector-positions.md)
 - **Generics** with explicit binders and constraints:
   ```clojure
   {:t/sig '(t/all [a (r :< :fhir/resource)] [(s/coll-of r) (t/fn [r :-> a]) :-> (s/coll-of a)])}
@@ -268,11 +269,12 @@ Every escape hatch is a `#_` directive placed before the expression. Clojure dis
 
 ```clojure
 #_(t/ignore "AIDBOX-123: legacy") (legacy-call x)   ; silence errors in the next form
+#_(t/ignore TSP2345 "Library accepts this input") (legacy-call x)
 #_(t/cast ::patient) row                            ; trust me: row is ::patient
 #_(t/any "dynamic plugin api") (load-plugin id)     ; opt out, with a reason
 ```
 
-A reason string is required for `ignore` and `any`. An unused `ignore` produces a warning (like `@ts-expect-error`).
+A reason string is required for `ignore` and `any`. An `ignore` with a code suppresses only that diagnostic within the following form. An unused `ignore` produces `TSP2578`. Use `:levels {TSP2345 :off}` to disable one diagnostic across the configured paths. File selection is controlled by `:paths` or the CLI paths. There is no source-level directive to skip an entire file.
 
 `#_(t/const) [:active :pending]` preserves literal element types.
 `#_(t/satisfies ::patient) patient` checks compatibility and preserves the
@@ -296,9 +298,8 @@ type of `patient`. These directives add no trust entries.
  :macros       {:lint-as {my.app/defhandler clojure.core/defn}   ; clj-kondo style
                 :hooks   "typespec/hooks"                        ; SCI functions that rewrite a form
                 :expand  false}                                  ; true: expand unknown macros in a sandboxed worker
- :levels       {TSP7024 :off, TSP7026 :warning}                  ; per-code severity
- :baseline     ".typespec/baseline.edn"  ; existing errors do not block; new ones do
- :ignore-ns    [aidbox.legacy.*]}
+ :levels       {TSP7020 :off, TSP7031 :warning}                  ; per-code severity
+ :baseline     ".typespec/baseline.edn"} ; existing errors do not block; new ones do
 ```
 
 ---
@@ -414,6 +415,8 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP270-03` | unsupported map shape, conflicting fields, unresolved or cyclic map reference, or resolution limit |
 | `TSP280-01` | unsupported or unproven `t/satisfies` contract |
 | `TSP280-02` | malformed or conflicting literal directive |
+| `TSP330-01` | vector length does not match a tuple contract |
+| `TSP330-02` | constant `nth` index may be out of bounds without a default |
 | `TSP2791` | `types.edn` entry is not a subtype of the `s/def` |
 | `TSP7010` | strict mode: a public function has no signature |
 | `TSP7020`–`TSP7026` | hints and interop (section 4.2) |

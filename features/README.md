@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 9 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 12 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
@@ -47,6 +47,8 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F231](F231-generic-obligations.md) | Ограничения generics и проверка обязательств | `proposed` | `not-implemented` | types | Rust |
 | [F232](F232-associated-types.md) | Связанные типы контрактов | `proposed` | `not-implemented` | types | Rust |
 | [F233](F233-function-composition.md) | Композиция функций и частичное применение | `implemented` | `implemented` | core | Clojure |
+| [F234](F234-transducers-into.md) | Трансдьюсеры map и filter в into | `implemented` | `implemented` | core | Clojure |
+| [F235](F235-transducer-composition.md) | Композиция трансдьюсеров в into | `implemented` | `implemented` | core | Clojure |
 | [F240](F240-narrowing-and-exhaustiveness.md) | Сужение, tagged unions и полнота веток | `implemented` | `implemented` | core | Typespec |
 | [F250](F250-checked-guards.md) | Проверяемые guard-функции | `implemented` | `implemented` | narrowing | Flow |
 | [F251](F251-refinement-evidence.md) | Область действия и инвалидация фактов о типах | `proposed` | `not-implemented` | types | Research |
@@ -75,6 +77,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F530](F530-java-generics-nullability.md) | Java generics и nullability | `designed` | `partial` | java | Clojure |
 | [F610](F610-macro-contracts.md) | Макросы и границы проверяемого кода | `designed` | `partial` | core | Typespec |
 | [F611](F611-conditional-threading.md) | Условные шаги cond-> и cond->> | `implemented` | `implemented` | core | Clojure |
+| [F612](F612-core-wrapper-bodies.md) | Проверка тел time, lazy-seq и future | `implemented` | `implemented` | core | Clojure |
 | [F710](F710-externs-and-exports.md) | Контракты библиотек и экспорт интерфейсов | `designed` | `partial` | core | Typespec |
 | [F711](F711-external-declarations.md) | Внешние декларации для библиотек и core | `designed` | `partial` | modules | TypeScript |
 | [F720](F720-module-interfaces.md) | Интерфейсы ns и инкрементальная проверка | `designed` | `partial` | core | Typespec |

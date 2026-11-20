@@ -80,6 +80,16 @@
     (is (= ["TSP721-01"] (codes result)) (pr-str (:diagnostics result)))
     (is (= "t/unknown" (main/type-at result "consumer.clj" 2 1)))))
 
+(deftest only-the-eager-wrapper-proves-initialization
+  (let [result (checked "(time (def measured nil))
+                         (def task (future (def async-root nil)))
+                         (def lazy-value (lazy-seq (def deferred-root nil) nil))
+                         (defn install [] (time (def local-root nil)) local-root)"
+                        "p/measured\np/async-root\np/deferred-root\np/local-root")]
+    (is (= (repeat 3 "TSP721-01") (codes result)) (pr-str (:diagnostics result)))
+    (is (= [["consumer.clj" 3] ["consumer.clj" 4] ["consumer.clj" 5]]
+           (mapv (juxt :file (comp :row :pos)) (:diagnostics result))))))
+
 (deftest a-foreign-binding-vector-does-not-prove-a-global-read
   (let [result (checked "(defn install [] (def state nil))
                          (lifecycle/start [state config]

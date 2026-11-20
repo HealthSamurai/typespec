@@ -93,7 +93,8 @@
                 [:not-map nil]))
         rs (map one ms)
         ty-of #(t/with-assumption (apply t/union (keep second rs)) (t/assumption ty))]
-    (cond (empty? ms) (if path? {:status :absent} {:status :nil :type t/nil-t})
+    (cond (= :never (:t ty)) {:status :req :type t/never}
+          (empty? ms) (if path? {:status :absent} {:status :nil :type t/nil-t})
           (or (every? #(= :absent (first %)) rs)
               (and path? (every? #(#{:absent :not-map} (first %)) rs))) {:status :absent}
           (and (not path?) (some #(= :not-map (first %)) rs)) {:status :not-map}
@@ -1149,6 +1150,8 @@
   (case (builtin-head ctx form)
     (def defonce) (when-let [name (env/initialized-var (:file ctx) form)] [name])
     do (mapcat #(body-initializers ctx %) (args-of form))
+    time (let [[expr & more] (args-of form)]
+           (when (and expr (empty? more)) (body-initializers ctx expr)))
     nil))
 
 (defn infer-body [ctx forms]
@@ -1529,6 +1532,18 @@
     (if (= :sym (:op x)) (t/prim :symbol) t/unknown)))
 
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
+
+(defmethod special 'time [ctx node _]
+  (let [[expr & more :as args] (args-of node)]
+    (if (and expr (empty? more))
+      (infer ctx expr)
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "time expects one expression")
+          t/unknown))))
+
+(defmethod special 'future [ctx node _]
+  (infer-body (dissoc ctx :recur-types) (args-of node))
+  (t/class-type "java.util.concurrent.Future"))
 
 (doseq [h '[def defonce]]
   (defmethod special h [ctx node _]
@@ -2097,6 +2112,20 @@
 
 (defn- coll-of [kind ty] {:t :coll :kind kind :of (widen (dissoc ty :fresh))})
 
+(defn- unsupported-sequence-member [ctx ty]
+  (some (fn [member]
+          (when (#{:int :double :number :boolean :keyword :symbol :uuid :inst}
+                 (:name (if (= :lit (:t member)) (t/lit-prim (:val member)) member)))
+            member))
+        (t/members (:env ctx) ty)))
+
+(defmethod special 'lazy-seq [ctx node _]
+  (let [forms (args-of node)
+        body (infer-body (dissoc ctx :recur-types) forms)]
+    (when-let [bad (unsupported-sequence-member ctx body)]
+      (report! ctx (last forms) "TSP2345" (str "lazy-seq cannot realize a sequence from " (t/show bad))))
+    (coll-of :seq (if (= t/never body) t/never (elem-type ctx body)))))
+
 (doseq [h '[first second last peek rand-nth ffirst]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)]
@@ -2172,6 +2201,14 @@
                                               (:body branch))))))]
         (if (guards/useful? plan) (guards/split env plan el) [el el])))))
 
+(defn- apply-predicate [ctx f el narrow?]
+  (let [before (when *diags* (count @*diags*))
+        ret (apply-fn-node ctx f [el])
+        [yes no] (if (and narrow? (not (:guards-disabled? ctx))
+                          (or (nil? before) (= before (count @*diags*))))
+                   (filter-types ctx f el) [el el])]
+    [ret yes no]))
+
 (doseq [h '[filter remove filterv take-while drop-while sort-by group-by some every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
@@ -2179,12 +2216,7 @@
       (if (nil? c)
         (do (infer ctx f) t/unknown)
         (let [el (elem-type ctx (infer ctx c))
-              before (when *diags* (count @*diags*))
-              ret (apply-fn-node ctx f [el])
-              [yes no] (if (and (not (:guards-disabled? ctx))
-                                (#{'filter 'filterv 'remove 'take-while} h)
-                                (or (nil? before) (= before (count @*diags*))))
-                         (filter-types ctx f el) [el el])
+              [ret yes no] (apply-predicate ctx f el (#{'filter 'filterv 'remove 'take-while} h))
               result (fn [kind selected] {:t :coll :kind kind :of (dissoc selected :fresh)})]
           (case h
             (filter take-while) (result :seq yes)
@@ -2278,14 +2310,80 @@
       (assoc m :of (apply t/union (:of m) (map #(widen (dissoc % :fresh)) xts)))
       cty)))
 
+(defn- transducer-element [ctx ty]
+  (t/with-assumption
+   (apply t/union
+          (for [member (t/members (:env ctx) ty)]
+            (case (:t member)
+              :never t/never
+              :map (if (and (:complete-keys? member) (empty? (:req member)) (empty? (:opt member)))
+                     t/never (t/prim :vector))
+              (elem-type ctx member))))
+   (t/assumption ty)))
+
+(defn- apply-transducer
+  "Infer the emitted element type. A nil result means a stage could not be modeled."
+  [ctx xf input]
+  (let [[f & more :as args] (args-of xf)
+        head (when (empty? (:directives (first (:children xf)))) (builtin-head ctx xf))]
+    (cond
+      (= 'comp head)
+      (let [out (reduce (fn [current stage]
+                          ;; An opaque stage can also change completion. Keep the
+                          ;; chain incomplete while still checking following forms.
+                          (let [next-type (apply-transducer ctx stage (or current t/unknown))]
+                            (when current next-type)))
+                        input args)]
+        (record! ctx xf (t/prim :fn))
+        out)
+
+      (and (#{'map 'filter} head) f (empty? more))
+      (let [out (case head
+                  map (apply-fn-node ctx f [input])
+                  filter (let [[ret yes] (apply-predicate ctx f input true)]
+                           (if (= t/never (truth-part (:env ctx) (eff ctx ret) true)) t/never yes)))]
+        (record! ctx xf (t/prim :fn))
+        (if (= :never (:t input)) t/never out))
+
+      :else
+      (do (infer ctx xf)
+          (unchecked-hof! ctx xf "into: transducer input and output types not checked" :unsupported-function)
+          nil))))
+
+(defn- into-transformed [ctx target out]
+  (if (= t/never out)
+    (dissoc target :fresh)
+    (let [out (widen (dissoc out :fresh))]
+      (apply t/union
+             (for [m (t/members (:env ctx) target)]
+               (case (:t m)
+                 :coll (update (dissoc m :fresh) :of t/union out)
+                 (:map :map-of) (t/prim :map)
+                 :nil (t/union t/nil-t (coll-of :seq out))
+                 :prim (if (#{:vector :set :seq :map :coll} (:name m)) m t/unknown)
+                 :never t/never
+                 :any t/any
+                 t/unknown))))))
+
 (defmethod special 'into [ctx node _]
-  (let [[to & more] (args-of node)
-        tty (infer ctx to)
-        el (elem-type ctx (infer ctx (last more)))]
-    (run! #(infer ctx %) (butlast more))
-    (cond (and (= :vector (:op to)) (empty? (:children to)) (= 1 (count more))) (coll-of :vector el)
-          (and (= :set (:op to)) (empty? (:children to)) (= 1 (count more))) (coll-of :set el)
-          :else (dissoc tty :fresh))))
+  (let [[to second-arg from :as args] (args-of node)]
+    (case (count args)
+      0 (coll-of :vector t/never)
+      1 (infer ctx to)
+      2 (let [target (infer ctx to)
+              el (elem-type ctx (infer ctx second-arg))]
+          (cond (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector el)
+                (and (= :set (:op to)) (empty? (:children to))) (coll-of :set el)
+                :else (dissoc target :fresh)))
+      3 (let [target (infer ctx to)
+              source (infer ctx from)
+              out (or (apply-transducer ctx second-arg (transducer-element ctx (eff ctx source))) t/unknown)]
+          (when-let [bad (unsupported-sequence-member ctx source)]
+            (report! ctx from "TSP2345" (str "into cannot reduce " (t/show bad))))
+          (if (= t/never source) t/never (into-transformed ctx target out)))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "into expects zero to three arguments")
+          t/unknown))))
 
 (defmethod special 'new [ctx node _]
   (let [[cls & args] (args-of node)]

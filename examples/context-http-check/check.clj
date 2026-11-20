@@ -72,6 +72,10 @@
       (assert (= "[(t/or number? java.lang.Character) :-> int?]"
                  (main/type-at result "src/http/formats.clj" 305 67))
               "Expected a checked signature for (comp byte int)")
+      (assert (= "java.util.concurrent.Future" (main/type-at result "src/http.clj" 265 5))
+              "Expected future in notify-on-request to have its built-in type")
+      (assert (= "t/unknown" (main/type-at result "src/http.clj" 267 9))
+              "Expected the subscriber call inside future to be analyzed")
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))

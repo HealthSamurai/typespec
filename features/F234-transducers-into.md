@@ -1,0 +1,44 @@
+---
+id: F234
+title: Трансдьюсеры map и filter в into
+status: implemented
+decision: accepted
+implementation: implemented
+area: core
+origin: Clojure
+---
+
+# F234 · Прямые `map` и `filter` в трёхаргументном `into`
+
+В `(into target (map f) source)` чекер берёт тип элемента `source`,
+проверяет, что его принимает `f`, и добавляет тип результата `f` к
+типу элементов назначения. `filter` проверяет предикат и сужает
+элементы с помощью существующих правил для проверенных guards.
+
+```clojure example
+(ns example (:require [clojure.spec.alpha :as s]))
+
+(s/fdef labels :args (s/cat :xs (s/coll-of int?))
+               :ret (s/coll-of string? :kind vector?))
+(defn labels [xs] (into [] (map str) xs))
+
+(into #{} (filter string?) ["a" 1])
+(into [] (map inc) ["bad"])
+```
+
+```text output
+8:15  TSP2345  inc takes number?, but gets string?
+```
+
+Когда источник заведомо пуст, прямые `map` и `filter` сохраняют
+тип назначения. Если назначение содержит элементы, их типы
+сохраняются вместе с типами новых значений. При записи в мапу
+результат сохраняет тип `map?`. Вывод отдельных ключей из
+произвольных пар остаётся за рамками этого правила.
+
+Прямой `comp` из `map` и `filter` поддерживает [F235](F235-transducer-composition.md).
+Вычисляемый или неподдержанный трансдьюсер получает `TSP210-01`.
+При известном назначении вектор или множество сохраняют вид
+коллекции и получают `t/unknown` для новых элементов.
+
+[Функции высшего порядка](F230-generics-and-hof.md) · [Регрессии](../test/typespec/contextual_callback_test.clj)

@@ -155,6 +155,7 @@ The table is validated with a **differential test**: a generator builds random f
   ```
   Immutable collections are covariant; `atom`, `volatile`, arrays, and channels are invariant.
 - **Function composition.** `comp` checks each unary link from right to left and preserves the rightmost input arities. `partial` checks the captured arguments and retains the remaining positional arities. [Supported signatures and examples](../features/F233-function-composition.md)
+- **Transducers in `into`.** An inline `comp` passes element types through its `map` and `filter` stages from left to right. [Supported forms](../features/F235-transducer-composition.md)
 - **Literals.** `let` preserves existing literal types. `#_(t/const)` preserves the literal element types of nested map, vector and set literals. `#_(t/satisfies T)` checks the inferred type against `T` and keeps the inferred type. [Supported contracts and examples](../features/F280-literal-preservation.md)
 - **Narrowing** after `if`/`when`/`cond`/`case`/`when-let`, `some?`/`nil?`/type predicates/`instance?`/`=` with a literal/`contains?` on a map. For a function with one positional parameter, the checker can infer independent truthy and falsy facts from its body. An explicit `{:t/guard '{:type ::patient :mode :checked}}` requires a truthy proof. Add `:two-sided true` to require a falsy proof. The trusted form `{:t/guard '::patient}` supplies a truthy fact and is counted once per declaration in the trust budget. `filter`, `filterv` and `take-while` narrow elements using the truthy fact. `remove` uses the falsy fact.
 - **Exhaustiveness**: `case` over literal unions, `cond`/`condp` using `=` on a single variable, and `defmulti` with closed dispatch (`{:t/closed true}`). A `cond` without `:else` yields `T | nil`; this is not an error.
@@ -186,6 +187,8 @@ Typespec does not run project code, so a macro has to be known to it in one of f
 Existing `clj-kondo` configuration (`:lint-as`, hooks, `clj-kondo.exports/` in jars) is reused as is. An unknown macro gives `TSP7031`; its body is not checked and its value is `t/unknown`. With `:macros {:expand true}` unknown macros are expanded in a separate worker process without network access, and the expansion is checked; macro code is then trusted code.
 
 `cond->` and `cond->>` check each reachable step and combine the accumulator types from executed and skipped steps. [Examples](../features/F611-conditional-threading.md)
+
+`time`, `lazy-seq` and `future` check their bodies and report diagnostics at the original expressions. [Wrapper types](../features/F612-core-wrapper-bodies.md)
 
 ---
 

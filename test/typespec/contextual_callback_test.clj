@@ -18,6 +18,93 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest into-contextualizes-direct-map-and-filter-transducers
+  (let [forms ["(into [] (map str) [1 2])"
+               "(into [:seed] (clojure.core/map #(str/upper-case %)) [\"abc\"])"
+               "(into #{} (filter string?) [\"abc\" 42])"
+               "(into [] (filter #(when (string? %) %)) [\"abc\" 42])"
+               "(into [] (filter (fn [_] false)) [1 2])"
+               "(into [] (map :name) [])"
+               "(into [] (map (fn [{:keys [name]}] (str name))) nil)"]
+        result (check-source (str/join "\n" forms))
+        start (inc (count (str/split-lines spec-source)))]
+    (is (empty? (codes result)) (pr-str (:diagnostics result)))
+    (is (= ["(s/coll-of string? :kind vector?)"
+            "(s/coll-of (t/or keyword? string?) :kind vector?)"
+            "(s/coll-of string? :kind set?)"
+            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of t/never :kind vector?)"
+            "(s/coll-of t/never :kind vector?)"
+            "(s/coll-of t/never :kind vector?)"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) (range start (+ start (count forms))))))))
+
+(deftest into-reports-incorrect-callbacks-and-keeps-opaque-transducers-incomplete
+  (let [result (check-source "(into [] (map inc) [\"bad\"])
+(into [] (filter (fn [x y] true)) [1])
+(into [] (map #(inc %)) [\"bad\"])
+(into [] (map str) 42)
+(into [] identity [1])
+(let [map (fn [f] identity)] (into [] (map inc) [1]))")]
+    (is (= ["TSP2345" "TSP2554" "TSP2345" "TSP2345" "TSP210-01" "TSP210-01"]
+           (codes result)) (pr-str (:diagnostics result)))
+    (is (= "(s/coll-of t/unknown :kind vector?)" (main/type-at result "callbacks.clj" 10 1)))
+    (is (every? #(= #{:unsupported-function} (:reasons %)) (take-last 2 (:diagnostics result)))))
+  (let [r (check-source "(into [] identity [1])" {:strict true})]
+    (is (= [["TSP210-01" :error]] (mapv (juxt :code :severity) (:diagnostics r)))))
+  (let [r (check-source "(into [] (map (fn [n] (str #_(t/any \"fixture\") n))) [1])")]
+    (is (= {:cast 0 :ignore 0 :any 1} (:trust r)))))
+
+(deftest into-contextualizes-a-transducer-from-the-source-spec
+  (let [result (check-source "(s/def ::entry (s/keys :req-un [::name]))
+(s/def ::name string?)
+(s/fdef names :args (s/cat :xs (s/coll-of ::entry)) :ret (s/coll-of string? :kind vector?))
+(defn names [xs]
+  (into [] (map (fn [{:keys [name]}] (str/upper-case name))) xs))
+(s/fdef invalid-names :args (s/cat :xs (s/coll-of ::entry)) :ret vector?)
+(defn invalid-names [xs]
+  (into [] (map (fn [{:keys [name]}] (inc name))) xs))")]
+    (is (= ["TSP2345"] (codes result)) (pr-str (:diagnostics result)))
+    (is (= "(s/coll-of string? :kind vector?)" (main/type-at result "callbacks.clj" 9 3)))))
+
+(deftest into-composes-transducers-in-element-order
+  (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
+               "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"
+               "(into [] (clojure.core/comp (comp (map str)) (filter string?) (map count)) [1])"
+               "(into [] (comp) [1 2])"
+               "(into [42] (comp (filter (fn [_] false)) (map str)) [1])"
+               "(into [] (comp (map :name) (map str)) [])"]
+        result (check-source (str/join "\n" forms))
+        start (inc (count (str/split-lines spec-source)))]
+    (is (empty? (codes result)) (pr-str (:diagnostics result)))
+    (is (= ["(s/coll-of string? :kind vector?)"
+            "(s/coll-of int? :kind set?)"
+            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of t/never :kind vector?)"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) (range start (+ start (count forms))))))))
+
+(deftest into-reports-failing-transducer-links-and-opaque-stages
+  (let [forms ["(into [] (comp (map str/upper-case) (map str)) [1])"
+               "(into [] (comp (map str) (map inc)) [1])"
+               "(into [] (comp (map inc) identity (filter (fn [_] false))) [\"bad\"])"
+               "(into [] (comp (filter (fn [_] false)) identity) [])"
+               "(let [comp (fn [& stages] identity)] (into [] (comp (map str) (map inc)) [1]))"
+               "(into [] (comp identity (map (fn [_] (inc \"bad\")))) [1])"]
+        result (check-source (str/join "\n" forms))
+        start (inc (count (str/split-lines spec-source)))
+        diagnostics (:diagnostics result)]
+    (is (= ["TSP2345" "TSP2345" "TSP2345" "TSP210-01" "TSP210-01" "TSP210-01" "TSP210-01" "TSP2345"]
+           (codes result)) (pr-str diagnostics))
+    (is (= (mapv #(+ start %) [0 1 2 2 3 4 5 5])
+           (mapv (comp :row :pos) diagnostics)))
+    (is (= (inc (str/index-of (second forms) "inc")) (get-in diagnostics [1 :pos :col])))
+    (is (= (inc (str/index-of (nth forms 2) "identity")) (get-in diagnostics [3 :pos :col])))
+    (is (= "(s/coll-of t/unknown :kind vector?)" (main/type-at result "callbacks.clj" (+ start 3) 1))))
+  (let [result (check-source "(into [] (comp (map #(str #_(t/any \"fixture\") %)) (map count)) [1])")]
+    (is (empty? (codes result)) (pr-str (:diagnostics result)))
+    (is (= {:cast 0 :ignore 0 :any 1} (:trust result)))))
+
 (deftest spec-gives-the-inline-callback-a-parameter-type
   (doseq [source ["(use-name (fn [name] (str/upper-case name)))"
                   "(use-name #(str/upper-case %))"

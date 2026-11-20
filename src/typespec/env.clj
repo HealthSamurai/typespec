@@ -87,9 +87,10 @@
         (def defonce) (when-let [init (definition-initializer form)] [init])
         (let let* loop loop* binding with-open if-let if-some when-let when-some)
         (concat (binding-values a) more)
+        time (when (and a (empty? more)) [a])
         case (concat [a] (map second (partition 2 more))
                      (when (odd? (count more)) [(last more)]))
-        (do if if-not when when-not and or cond condp try finally throw)
+        (do if if-not when when-not and or cond condp try finally throw future lazy-seq)
         (rest (:children form))
         catch (drop 3 (:children form))
         nil)
@@ -114,7 +115,7 @@
                                       init? (update-in [sym :initializers] (fnil conj [])
                                                        {:file (:file file) :pos (:pos form)})))
                                   by-name names)]
-              (reduce #(collect %1 file %2 (and at-load? (= 'do operator)))
+              (reduce #(collect %1 file %2 (and at-load? (#{'do 'time} operator)))
                       by-name (expression-children form operator))))]
     (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files)))
 

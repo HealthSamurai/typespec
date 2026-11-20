@@ -19,6 +19,33 @@
                       {:macro-contracts cs})))
 (defn codes [r] (set (map :code (:diagnostics r))))
 
+(deftest core-wrapper-bodies-use-their-original-positions
+  (let [r (checked "\n(time (inc \"bad\"))
+(clojure.core/future (inc \"bad\") :done)
+(lazy-seq (inc \"bad\") nil)
+(lazy-seq 42)
+(time)")
+        ds (:diagnostics r)]
+    (is (= [[5 12 "TSP2345"] [6 27 "TSP2345"] [7 16 "TSP2345"]
+            [8 11 "TSP2345"] [9 1 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) ds))
+        (pr-str ds))))
+
+(deftest core-wrapper-types-reflect-when-their-bodies-run
+  (let [r (checked "\n(time :done)
+(future :done)
+(future (throw (Exception.)))
+(lazy-seq (map inc [1 2]))
+(lazy-seq nil)
+(lazy-seq (throw (Exception.)))
+(time (throw (Exception.)))
+(let [time (fn [x y] y)] (time 1 :local))")]
+    (is (empty? (codes r)) (pr-str (:diagnostics r)))
+    (is (= [":done" "java.util.concurrent.Future" "java.util.concurrent.Future"
+            "(s/coll-of int? :kind seq?)" "(s/coll-of t/never :kind seq?)"
+            "(s/coll-of t/never :kind seq?)" "t/never" "keyword?"]
+           (mapv #(main/type-at r "app.clj" % 1) (range 5 13))))))
+
 (deftest conditional-steps-check-reachable-calls-in-source-order
   (let [r (checked "\n(cond-> 1 true (+ \"bad\"))
                        (cond->> \"bad\" true (+ 1))

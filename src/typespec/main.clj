@@ -7,7 +7,8 @@
             [typespec.parse :as parse]
             [typespec.types :as t]
             [typespec.check :as check]
-            [typespec.externs :as externs]))
+            [typespec.externs :as externs]
+            [typespec.project-contracts :as project-contracts]))
 
 (defn source-files [paths]
   (->> paths
@@ -28,10 +29,12 @@
         prefix (str (.getPath (io/file root)) "/")
         rel #(if (str/starts-with? (str %) prefix) (subs (str %) (count prefix)) (str %))
         res (check/check-files files (assoc cfg :extern-contracts (externs/load-contracts root cfg)))]
-    (-> res
-        (update :diagnostics (fn [ds] (mapv #(update % :file rel) ds)))
-        (update :types (fn [ts] (mapv #(update % :file rel) ts)))
-        (assoc :files (count files)))))
+    (cond-> (-> res
+                (update :diagnostics (fn [ds] (mapv #(update % :file rel) ds)))
+                (update :types (fn [ts] (mapv #(update % :file rel) ts)))
+                (update :uses (fn [uses] (mapv #(update % :file rel) uses)))
+                (assoc :files (count files)))
+      (:track-uses cfg) (assoc :contracts (project-contracts/index res rel)))))
 
 (defn format-diag [d]
   (format "%s:%d:%d  %s  %s%s" (:file d) (:row (:pos d)) (:col (:pos d)) (:code d) (:message d)
@@ -55,6 +58,7 @@
                (format (str "%-" width "s  %s   ; from %s") (name sym) (t/show ty)
                        (case (:source v)
                          :sig "t/sig" :fdef "s/fdef"
+                         :protocol "defprotocol"
                          :extern (str "extern " (:extern/path v))
                          :hints (cond (some :inferred (:arities ty)) "the body"
                                       :else "hints")))))))))
@@ -101,9 +105,18 @@
                 (System/exit (if (pos? errors) 1 0)))
       "sig" (let [res (run-check root nil copts)]
               (run! println (sig-lines res (symbol (first more)))))
+      "contracts" (let [res (run-check root more (assoc copts :track-uses true))
+                        ds (:diagnostics res)
+                        out {:version 1 :contracts (:contracts res) :diagnostics ds}]
+                    (if (:json opts)
+                      (println (json/write-str (assoc out :diagnostics (mapv diag->json ds))))
+                      (prn out))
+                    (shutdown-agents)
+                    (System/exit (if (some #(= :error (:severity %)) ds) 1 0)))
       "type-at" (let [[file row col] (str/split (first more) #":")
                       res (run-check root nil copts)]
                   (println (or (type-at res file (parse-long row) (parse-long col)) "no expression here")))
       (do (println "usage: typespec check [paths] [--json] [--strict] [--strict-nil] [--root dir]")
+          (println "       typespec contracts [paths] [--json] [--root dir]")
           (println "       typespec sig <ns> [--root dir]")
           (println "       typespec type-at <file>:<line>:<col> [--root dir]")))))

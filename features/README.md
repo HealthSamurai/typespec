@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 15 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 17 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
@@ -73,6 +73,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F411](F411-apply-fixed-tail.md) | Проверка apply с известными позициями хвоста | `implemented` | `implemented` | functions | Clojure |
 | [F420](F420-control-flow.md) | Throw, assert и try | `designed` | `partial` | functions | Clojure |
 | [F430](F430-protocols.md) | Протоколы и reify | `designed` | `not-implemented` | functions | Clojure |
+| [F431](F431-protocol-method-specs.md) | Проверка reify и extend-type по s/fdef | `implemented` | `implemented` | functions | Clojure |
 | [F440](F440-multimethods.md) | Multimethod dispatch | `designed` | `not-implemented` | functions | Clojure |
 | [F450](F450-effects-and-purity.md) | Эффекты и проверяемая чистота | `proposed` | `not-implemented` | functions | Typespec |
 | [F510](F510-jvm-contracts.md) | Чтение контрактов JVM | `designed` | `partial` | java | Clojure |
@@ -85,6 +86,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F711](F711-external-declarations.md) | Внешние декларации для библиотек и core | `designed` | `partial` | modules | TypeScript |
 | [F720](F720-module-interfaces.md) | Интерфейсы ns и инкрементальная проверка | `designed` | `partial` | core | Typespec |
 | [F721](F721-var-initialization.md) | Объявление и инициализация Var | `implemented` | `implemented` | modules | Clojure |
+| [F722](F722-project-contract-index.md) | Индекс публичных контрактов и использований | `implemented` | `implemented` | modules | Clojure |
 | [F730](F730-strict-namespaces.md) | Строгий режим по namespace | `designed` | `not-implemented` | modules | Flow |
 | [F810](F810-type-coverage.md) | Покрытие типами | `designed` | `not-implemented` | diagnostics | Flow |
 | [F820](F820-suspicious-nil-lints.md) | Линты подозрительной обработки nil | `designed` | `not-implemented` | diagnostics | Flow |

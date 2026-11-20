@@ -89,7 +89,7 @@
      :refers (into {} (for [s libspecs :when (vector? s)
                             :let [[lib & opts] s o (apply hash-map opts)]
                             r (when (sequential? (:refer o)) (:refer o))]
-                        [r (symbol (str lib) (str r))]))
+                        [(get (:rename o) r r) (symbol (str lib) (str r))]))
      :imports (into {} (for [s imports
                              [short full] (if (symbol? s)
                                             [[(symbol (last (.split (str s) "\\."))) (str s)]]

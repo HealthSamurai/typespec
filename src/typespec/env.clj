@@ -213,6 +213,29 @@
   (fn [code form message]
     (note diags file {:pos (or (:typespec/pos (meta form)) pos)} code message)))
 
+(defn- protocol-methods [file forms]
+  (into {}
+        (for [form forms
+              :when (= :list (:op form))
+              :let [[method & parts] (:children form)]
+              :when (and (= :sym (:op method)) (simple-symbol? (:val method)))
+              :let [arities (into (sorted-set)
+                                  (for [params parts :when (= :vector (:op params))
+                                        :let [{:keys [fixed rest]} (split-params params)]
+                                        :when (and (seq fixed) (nil? rest))]
+                                    (count fixed)))]]
+          [(:val method) {:var (symbol (str (:ns file)) (name (:val method)))
+                          :file (:file file) :pos (:pos method) :arities arities}])))
+
+(defn- register-spec [acc bucket sym entry diags]
+  (when-let [previous (get-in acc [bucket sym])]
+    (when (and (not= (:file entry) (:file previous))
+               (not (t/alpha-equivalent? (:type entry) (:type previous))))
+      (let [[earlier later] (sort-by :file [previous entry])]
+        (note diags later later "TSP722-01"
+              (str "conflicting spec declarations for " sym ", also declared in " (:file earlier))))))
+  (assoc-in acc [bucket sym] entry))
+
 (defn- collect-file [acc file diags]
   (reduce
    (fn [acc form]
@@ -226,9 +249,10 @@
          (= 'clojure.spec.alpha/def h)
          (let [[_ k body] (:children form)]
            (if (and (= :kw (:op k)) body)
-             (assoc-in acc [:specs (:val k)]
-                       {:file (:file file) :pos (:pos k)
-                        :type (t/parse-type (type-ctx file (opaque body)) (parse/node->data body))})
+             (register-spec acc :specs (:val k)
+                            {:file (:file file) :pos (:pos k)
+                             :type (t/parse-type (type-ctx file (opaque body)) (parse/node->data body))}
+                            diags)
              acc))
 
          (= 'clojure.spec.alpha/fdef h)
@@ -238,7 +262,14 @@
                r (if ret (t/parse-type ctx ret) t/unknown)
                ars (some-> (t/cat-items ctx args) (t/cat->arities r))]
            (if (and (= :sym (:op nm)) ars)
-             (assoc-in acc [:fdefs (qualify (:val nm))] {:type {:t :fn :arities ars} :file (:file file) :pos (:pos form)})
+             (register-spec acc :fdefs (qualify (:val nm))
+                            {:type {:t :fn :arities ars} :file (:file file) :pos (:pos form)} diags)
+             acc))
+
+         (= 'defprotocol h)
+         (let [[_ nm & forms] (:children form)]
+           (if (and (= :sym (:op nm)) (simple-symbol? (:val nm)))
+             (assoc-in acc [:protocols (symbol (str (:ns file)) (name (:val nm)))] (protocol-methods file forms))
              acc))
 
          (#{'defn 'defn-} h)
@@ -265,15 +296,38 @@
          :else acc)))
    acc (:forms file)))
 
+(defn- protocol-vars [protocols fdefs diags]
+  (into {}
+        (for [[protocol methods] (sort-by key protocols)
+              [_ {:keys [var file pos arities]}] methods
+              :let [fd (get fdefs var)
+                    contracts (get-in fd [:type :arities])
+                    valid? (fn [arity]
+                             (and (contains? arities (count (:params arity)))
+                                  (not (:rest arity)) (not (:kwargs arity))))
+                    valid (filter valid? contracts)
+                    covered (set (map #(count (:params %)) valid))]]
+          (do
+            (when (some (complement valid?) contracts)
+              (note diags fd fd "TSP430-01"
+                    (str "s/fdef of " var " has an arity outside " protocol " " arities)))
+            [var {:file file :pos pos :protocol protocol :contract (select-keys fd [:file :pos])
+                  :source (if fd :fdef :protocol)
+                  :contract-arities (vec valid)
+                  :type {:t :fn :arities (into (vec valid)
+                                              (for [n arities :when (not (contains? covered n))]
+                                                {:params (vec (repeat n t/unknown)) :ret t/unknown}))}}]))))
+
 (defn build
   "Environment from parsed files: {:specs :vars :macros :key-nss}. Returns [env diagnostics]."
   ([files] (build files {}))
   ([files contracts]
   (let [diags (atom [])
-        acc (reduce #(collect-file %1 %2 diags) {:specs {} :fdefs {} :defns {} :macros #{}} files)
+        acc (reduce #(collect-file %1 %2 diags) {:specs {} :fdefs {} :defns {} :macros #{} :protocols {}} files)
         contracts (externs/normalize-contracts (:specs acc) contracts)
         operator-env {:specs (merge (:specs contracts) (:specs acc))}
         env {:specs (:specs acc) :macros (:macros acc) :root-definitions (:root-definitions acc)
+             :protocols (:protocols acc)
              :key-nss (set (keep namespace (keys (:specs acc))))}
         vars (into {}
                    (for [[sym d] (:defns acc)
@@ -290,6 +344,8 @@
                                     (t/show sig) " vs " (t/show (:type fd)))))
                        [sym {:parts (:parts d) :pfile (:file d) :definition (:definition d)
                              :type (or declared (hints-sig env (:file d) (:parts d)))
+                             :contract (if sig {:file (:file (:file d)) :pos (:sig-pos d)}
+                                           (select-keys fd [:file :pos]))
                              :source (cond sig :sig fd :fdef :else :hints)
                              :tagged? (boolean (or (some #(tag-node (:params %)) (:arities (:parts d)))
                                                    (tag-node (:name (:parts d)))))
@@ -302,5 +358,6 @@
                              :file (:file (:file d)) :pos (:pos d)}])))
         only-fdef (for [[sym fd] (:fdefs acc) :when (not (contains? vars sym))]
                     [sym {:type (:type fd) :source :fdef :file (:file fd) :pos (:pos fd)}])]
-    (let [[env ext-diags] (externs/merge-contracts (assoc env :vars (into vars only-fdef)) contracts)]
+    (let [vars (merge (into vars only-fdef) (protocol-vars (:protocols acc) (:fdefs acc) diags))
+          [env ext-diags] (externs/merge-contracts (assoc env :vars vars) contracts)]
       [env (into @diags ext-diags)]))))

@@ -9,6 +9,8 @@
     typespec.maps-regression-test
     typespec.tuples-and-rows-test
     typespec.apply-test
+    typespec.project-contracts-test
+    typespec.protocol-contracts-test
     typespec.case-narrowing-test
     typespec.checked-guards-test
     typespec.type-operators-test

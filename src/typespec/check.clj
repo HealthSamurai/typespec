@@ -15,6 +15,7 @@
 
 (def ^:dynamic *diags* nil)
 (def ^:dynamic *types* nil)
+(def ^:dynamic *var-uses* nil)
 (def ^:dynamic *ignores* nil)
 (def ^:dynamic *trust* nil)
 (def ^:dynamic *rets* nil)
@@ -1061,9 +1062,17 @@
               initializers)
         (seq initializers))))
 
-(defn- read-var [ctx sym node]
+(defn- record-var-use! [ctx sym node kind]
+  (when (and *var-uses* (not (:quiet ctx)) (not (:synthetic node)) (:pos node)
+             (or (= :var kind) (not (contains? (:possible-bindings ctx) (:val node)))))
+    (when-let [entry (get-in ctx [:env :vars sym])]
+      (when-not (:private? entry)
+        (swap! *var-uses* conj {:var sym :kind kind :file (get-in ctx [:file :file]) :pos (:pos node)})))))
+
+(defn- read-var [ctx sym node kind]
   (let [{full :sym :as resolved} (resolve-var ctx sym node)
         {:keys [tracks-root? initializers]} (get-in ctx [:env :var-declarations full])]
+    (record-var-use! ctx full node kind)
     (if (and tracks-root? (not (root-initialized? ctx full initializers node)))
       (do (when-not (contains? (:possible-bindings ctx) sym)
             (report! ctx node "TSP721-01" (str "Var " full " may be unbound at this read")
@@ -1624,7 +1633,7 @@
 
 (defn- var-reference [ctx [target & more]]
   (if (and (= :sym (:op target)) (empty? more))
-    (do (resolve-var ctx (:val target) target)
+    (do (record-var-use! ctx (:sym (resolve-var ctx (:val target) target)) target :var)
         (t/class-type "clojure.lang.Var"))
     t/unknown))
 
@@ -2663,6 +2672,79 @@
 (defmethod special 'defn [ctx node _] (check-defn ctx node))
 (defmethod special 'defn- [ctx node _] (check-defn ctx node))
 
+(defn- protocol-groups [forms]
+  (reduce (fn [groups form]
+            (case (:op form)
+              :sym (conj groups {:protocol form :methods []})
+              :list (if (seq groups) (update-in groups [(dec (count groups)) :methods] conj form) groups)
+              groups))
+          [] forms))
+
+(defn- protocol-symbol [file sym]
+  (let [resolved (env/resolve-sym file sym)]
+    (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))))
+
+(defn- protocol-diagnostic! [ctx at code message]
+  (report! ctx at code message :severity (if (:strict (:opts ctx)) :error :warning)))
+
+(defn- check-protocol-body [ctx method fixed body params expected receiver]
+  (let [types (or (:params expected) (mapv #(env/pattern-type (:env ctx) (:file ctx) %) fixed))
+        types (if receiver (assoc types 0 receiver) types)
+        method-ctx (reduce (fn [c [p ty]] (record! c p ty) (bind-pattern c p ty))
+                           (dissoc ctx :recur-types :load-time?) (map vector fixed types))
+        actual (infer-body method-ctx body)]
+    (when expected
+      (check-return! method-ctx (or (last body) params method) actual (:ret expected)))))
+
+(defn- check-protocol-group [ctx {:keys [protocol methods]} receiver]
+  (let [full (protocol-symbol (:file ctx) (:val protocol))
+        declared (get-in ctx [:env :protocols full])]
+    (when declared
+      (let [covered (volatile! #{})]
+        (doseq [form methods
+                :let [{method :name arities :arities}
+                      (env/defn-parts (update form :children #(into [{:op :sym :val 'defn}] %)))
+                      {:keys [var] allowed :arities} (get declared (:val method))]]
+          (if-not (and var (seq arities))
+            (report! ctx (or method form) "TSP430-01"
+                     (str "invalid method " (parse/unparse method) " for protocol " full))
+            (do
+              (record-var-use! ctx var method :implementation)
+              (doseq [{:keys [params body]} arities
+                      :let [{:keys [fixed rest]} (env/split-params params)
+                            n (count fixed)
+                            method-arity [(:val method) n]
+                            contracts (get-in ctx [:env :vars var :contract-arities])
+                            contract (first (filter #(= n (count (:params %))) contracts))]]
+                (cond
+                  (or rest (not (contains? allowed n)))
+                  (report! ctx params "TSP430-01" (str var " has no fixed arity " n " in " full))
+
+                  (contains? @covered method-arity)
+                  (report! ctx params "TSP430-01" (str "duplicate implementation of " var " with arity " n))
+
+                  :else
+                  (do (vswap! covered conj method-arity)
+                      (when-not contract
+                        (protocol-diagnostic! ctx method "TSP430-03" (str var " has no s/fdef for arity " n)))
+                      (check-protocol-body ctx method fixed body params contract receiver)))))))
+        (doseq [[method {:keys [var arities]}] (sort-by key declared)
+                n arities :when (not (contains? @covered [method n]))]
+          (protocol-diagnostic! ctx protocol "TSP430-02" (str "missing implementation of " var " with arity " n)))))))
+
+(defmethod special 'reify [ctx node _]
+  (run! #(check-protocol-group ctx % nil) (protocol-groups (args-of node)))
+  t/unknown)
+
+(defmethod special 'extend-type [ctx node _]
+  (let [[target & groups] (args-of node)
+        receiver (case (:op target)
+                   :nil t/nil-t
+                   :sym (some-> (t/resolve-class (get-in ctx [:file :imports]) (:val target)) t/class-type)
+                   nil)]
+    (run! #(check-protocol-group ctx % receiver) (protocol-groups groups)))
+  t/nil-t)
+
 (defn- guard-claim [env entry]
   (when-let [node (env/attr-get (get-in entry [:parts :attr]) :t/guard)]
     (let [raw (parse/node->data node)
@@ -2918,7 +3000,7 @@
           (do (report! ctx h "TSP7031" (str "macro " sym " is not described: its body is not checked") :severity :warning)
               t/unknown)
           :else
-          (let [{:keys [type]} (read-var ctx sym h)]
+          (let [{:keys [type]} (read-var ctx sym h :call)]
             (if type
               (call-fn ctx node (str sym) type args)
               (check-unknown-call ctx args))))))))
@@ -2941,7 +3023,7 @@
                  (java-static? ctx s) t/unknown
                  (and (nil? (namespace s)) (not (t/primitives (name s)))
                       (t/resolve-class (:imports (:file ctx)) s)) t/unknown
-                 :else (or (:type (read-var ctx s node)) t/unknown)))
+                 :else (or (:type (read-var ctx s node :value)) t/unknown)))
     :vector (let [items (mapv #(dissoc (infer ctx %) :fresh) (:children node))]
               (t/tuple items (literal-element-type ctx items)))
     :set {:t :coll :kind :set :of (literal-element-type ctx (map #(infer ctx %) (:children node)))}
@@ -3005,10 +3087,10 @@
 
 (def ^:private known-diagnostic-codes
   #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03" "TSP280-01" "TSP280-02"
-    "TSP330-01" "TSP330-02" "TSP410-01"
+    "TSP330-01" "TSP330-02" "TSP410-01" "TSP430-01" "TSP430-02" "TSP430-03"
     "TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
-    "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032" "TSP721-01"
+    "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032" "TSP721-01" "TSP722-01"
     "TSP8001" "TSP9001" "TSP9002" "TSP9003" "TSP9004" "TSP830-01" "TSP210-01"})
 
 (defn- directive-children
@@ -3078,8 +3160,13 @@
                   (get opts :macro-contracts {}) env0
                   #(not= (get-method special %) (get-method special ::none)))
         env-diags (concat env-diags (:diagnostics compiled))
-        guard-env (merge env0
-                         (env/namespace-vars files (:macros env0))
+        protocol-defs (reduce-kv (fn [names sym entry]
+                                   (if (:protocol entry)
+                                     (update names (symbol (namespace sym)) (fnil conj #{}) (symbol (name sym)))
+                                     names))
+                                 {} (:vars env0))
+        names (update (env/namespace-vars files (:macros env0)) :ns-defs #(merge-with into % protocol-defs))
+        guard-env (merge env0 names
                          {:macro-contracts (:contracts compiled)
                           :nss (set (map :ns files))})
         guard-result (compile-guards guard-env opts)
@@ -3087,6 +3174,7 @@
         guard-trust (count (filter #(= :trusted (:mode %)) (vals (:guards env))))]
     (binding [*diags* (atom (vec (map #(merge {:severity :error} %) (concat env-diags (:diagnostics guard-result)))))
               *types* (atom [])
+              *var-uses* (when (:track-uses opts) (atom #{}))
               *ignores* (atom [])
               *trust* (atom (cond-> {:cast 0 :any 0 :ignore 0} (pos? guard-trust) (assoc :guard guard-trust)))
               *rets* (atom {})]
@@ -3113,5 +3201,6 @@
                     (map #(assoc % :id (diag-id %)))
                     (sort-by (juxt :file #(:row (:pos %)) #(:col (:pos %)) :code)))]
         {:diagnostics (vec ds) :types @*types* :trust @*trust* :env env
+         :uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :var :kind) (when *var-uses* @*var-uses*)))
          :sigs (into {} (for [[sym v] (:vars env)]
                           [sym (var-type {:env env :opts opts} sym)]))}))))

@@ -309,6 +309,7 @@ type of `patient`. These directives add no trust entries.
 
 ```bash
 typespec check src --json            # errors
+typespec contracts src --json        # public signatures, specs, and source uses
 typespec sig app.patients            # inferred and declared ns signatures
 typespec type-at src/app/p.clj:14:9  # expression type (hover)
 typespec annotate app.patients       # draft t/sig and types.edn — data only, no behavior changes
@@ -419,11 +420,15 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP330-01` | vector length does not match a tuple contract |
 | `TSP330-02` | constant `nth` index may be out of bounds without a default |
 | `TSP410-01` | the length or positions of an `apply` tail could not be verified |
+| `TSP430-01` | method or arity conflicts with its protocol declaration |
+| `TSP430-02` | an implementation is missing a protocol method or arity |
+| `TSP430-03` | a protocol implementation has no `s/fdef` for this arity |
 | `TSP2791` | `types.edn` entry is not a subtype of the `s/def` |
 | `TSP7010` | strict mode: a public function has no signature |
 | `TSP7020`–`TSP7026` | hints and interop (section 4.2) |
 | `TSP7031` | unknown macro: describe it with `:lint-as`, a hook or `:t/macro` |
 | `TSP721-01` | the root of a declared Var may be unbound at this read |
+| `TSP722-01` | incompatible spec declarations share a name across files |
 | `TSP8001` | `case`/`cond`/multimethod is not exhaustive |
 | `TSP9001` | form is not a type |
 | `TSP9002` | warning: a spec the checker cannot read (a custom predicate), treated as `t/unknown` |

@@ -1,0 +1,23 @@
+{;; Opt-in contracts; no core override. Sources and restricted coverage in
+ ;; docs/fhir-registry-contracts.md. Normal returns, not exception guarantees.
+ ;; Clojure 1.12.4 clojure/java/io.clj Coercions, IOFactory and file.
+ clojure.java.io/file ([nil? :-> nil?]
+                       [(t/or string? java.io.File java.net.URI java.net.URL) :-> java.io.File]
+                       [(s/nilable (t/or string? java.io.File java.net.URI java.net.URL))
+                        (t/or string? java.io.File java.net.URI java.net.URL) :-> java.io.File])
+ clojure.java.io/reader [(t/or string? java.io.File java.net.URI java.net.URL java.io.Reader java.io.InputStream java.net.Socket) :-> java.io.BufferedReader]
+ clojure.java.io/writer [(t/or string? java.io.File java.net.URI java.net.URL java.io.Writer java.io.OutputStream java.net.Socket) :-> java.io.BufferedWriter]
+ clojure.java.io/output-stream [(t/or string? java.io.File java.net.URI java.net.URL java.io.OutputStream java.net.Socket) :-> java.io.BufferedOutputStream]
+ ;; fhir-package-registry ea79b6a18d9ae759593c3824f502bc1200209e22,
+ ;; src/fhir/registry/semver.clj; nil input and missing components are explicit.
+ :registry.semver/major int?
+ :registry.semver/minor int?
+ :registry.semver/patch int?
+ :registry.semver/pre-release (s/nilable (s/coll-of string? :kind vector?))
+ :registry.semver/build (s/nilable string?)
+ fhir.registry.semver/parse-semver
+ [(s/nilable string?) :-> (s/nilable (s/keys :req-un [:registry.semver/major :registry.semver/minor :registry.semver/patch :registry.semver/pre-release :registry.semver/build]))]
+ fhir.registry.semver/compare-pre-release
+ [(s/nilable (s/coll-of string? :kind vector?)) (s/nilable (s/coll-of string? :kind vector?)) :-> int?]
+ fhir.registry.semver/semver-comparator [(s/nilable string?) (s/nilable string?) :-> int?]
+ fhir.registry.semver/latest [(s/nilable (s/coll-of (s/nilable string?))) :-> (s/nilable string?)]}

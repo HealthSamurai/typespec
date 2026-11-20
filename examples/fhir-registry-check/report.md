@@ -1,0 +1,7 @@
+# Статическая проверка FHIR package registry
+
+Закреплён upstream `fhir-clj/fhir-package-registry@ea79b6a18d9ae759593c3824f502bc1200209e22`. Проверены все **11 файлов src/**: **2405 строк, 204 формы**, ошибок разбора **0**, opaque-узлов **0**. Результат: **2 ошибки и 121 предупреждение**; trust **0/0/0**. Полные исходные результаты отдельно в неизменяемом `baseline-initial/`, новые — в `current/`. SHA256 каждого файла и всего снимка сохранены. Это baseline инструмента, не подтверждение корректности приложения.
+
+Gitlink-зависимости взяты строго по upstream SHA. Полный classpath разрешён; незакрытых dependency-блокеров нет. Пришлось явно выбрать root gitlink context/system поверх конфликтующих транзитивных git-координат (первая ошибка резолюции сохранена). Clojure **1.12.4** вместо upstream **1.12.0**, Java **27.0.1.1**. Зависимый tracked `libs/gcs/src/gcs.clj` не входит в 11 проверяемых файлов, его SHA сохранён. Upstream namespaces не загружались, build/server/DB/GCS не запускались, секреты не использовались. Checker и контракты не менялись, commit/push не делались.
+
+Запуск из корня: `JAVA_HOME=/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home examples/fhir-registry-check/run.sh`; ожидаемый exit **1** из-за диагностик. Ошибки: `diff.clj:148` — неизвестный `fhir.registry/context`; `gcs.clj:49` — checker не находит `build` у `ServiceOptions$Builder`. Это ещё не разбор причин и не доказанные runtime-дефекты. Подробные команды, границы покрытия и provenance — в [README.md](README.md).

@@ -1,0 +1,7 @@
+{:paths ["."]
+ :deps {org.clojure/clojure {:mvn/version "1.12.4"}
+        local/typespec {:local/root "../.."}
+        ;; Select upstream root gitlink over conflicting transitive git coordinates.
+        context/system {:local/root "../../.hyper/tmp/ceya/upstream/libs/system"}
+        fhir-clj/fhir-package-registry {:local/root "../../.hyper/tmp/ceya/upstream"}}
+ :aliases {:check {:main-opts ["check.clj"]}}}

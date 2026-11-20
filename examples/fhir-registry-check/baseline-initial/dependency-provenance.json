@@ -1,0 +1,20 @@
+{
+  "root": "ea79b6a18d9ae759593c3824f502bc1200209e22",
+  "sha256": {
+    "deps.edn": "c6fee37781c3378dbec0f98f9520b316b2ed1cf4e11dc44c6c18aa73eb39e864",
+    ".gitmodules": "eb4b97a2d2c6a2fffa611e2fa222d4a235737d319953f1188d042c1ce0174ed5",
+    "libs/gcs/deps.edn": "5545beaaca7298467444b75a2beda26b610f5b52017893a2f1c856eee1ccddad",
+    "libs/gcs/src/gcs.clj": "84bd7f214e604d96889dc676f4b1505570fe77ae59702ca879966de84972d282",
+    "libs/http/deps.edn": "16a62788234c5a3edc2ee0db67679709e60c9a26a4b113176d1fc08def33f984",
+    "libs/pg/deps.edn": "b119d0e4182ebb4811ff84d61e1441a2b3a3018e1e2ec6c62bfa0549f8bb6d49",
+    "libs/system/deps.edn": "7983aef86d68f831f1cff478fc78cc8766bd28b8ba9f5e804189560c3a3f79f8",
+    "libs/fhir-schema/deps.edn": "8d424b414d09401f99ed7279df6d482e1eb23d38bd9c52b1f40132f7b94dadec"
+  },
+  "submodules": [
+    " 929b01a05f06f05f287610766ed3a72b82507405 libs/fhir-schema (929b01a)",
+    " af7e22dec39b2f261de9a7c2959a7eed1d06ce82 libs/http (af7e22d)",
+    " 6be838f56a258ef70c86a7c2cc78123d6171ed94 libs/pg (6be838f)",
+    " b94d9ae289abd7551a8d360db10946249df4df75 libs/system (remotes/origin/extend-field-config-type-11-gb94d9ae)"
+  ],
+  "selection": "context/system selected at top level from root gitlink b94d9ae, overriding conflicting transitive git refs d178613/e61f3e7; no source edits"
+}

@@ -248,6 +248,6 @@
 (defn apply-summary [env {:keys [mode plan domain target]} input]
   (if (or (= t/unknown domain) (proves? env input domain))
     (if (= :trusted mode)
-      [(if (proves? env input target) input target) input]
+      [(if (proves? env input target) input (t/with-assumption target :trusted-guard)) input]
       (split env plan input))
     [input input]))

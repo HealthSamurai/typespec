@@ -1,8 +1,18 @@
 (ns todo.unit-test
-  (:require [clojure.test :refer :all] [pg] [todo.repo :as repo]
-            [todo.handler :as handler]))
+  (:require [clojure.test :refer :all]
+            [http] [pg]
+            [todo.app :as app] [todo.repo :as repo] [todo.handler :as handler]))
 (def ctx {:system (atom {})})
 (def row {:id 1 :title "learn context" :done false})
+
+(deftest routes-reach-runtime-registration
+  (let [registered (atom [])]
+    (with-redefs [pg/execute! (fn [_ _] [])
+                  http/-register-endpoint (fn [_ route] (swap! registered conj route))]
+      (app/start {:system (atom {})} nil)
+      (is (= [{:method :get :path "/todos" :public true :fn #'handler/list-handler}
+              {:method :post :path "/todos" :public true :fn #'handler/create-handler}]
+             @registered)))))
 
 (deftest queries-are-parameterized
   (let [calls (atom []) title "'); DROP TABLE context_example_todos; --"]

@@ -17,6 +17,7 @@
     typespec.generic-integration-test
     typespec.contextual-callback-test
     typespec.function-composition-test
+    typespec.literal-contract-test
     typespec.generic-extern-test
     typespec.generic-maps-test
     typespec.macro-contracts-test

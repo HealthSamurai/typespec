@@ -4,6 +4,7 @@
             [clojure.walk :as walk]
             [typespec.parse :as parse]
             [typespec.types :as t]
+            [typespec.literals :as literals]
             [typespec.type-operators :as operators]
             [typespec.solver :as solver]
             [typespec.env :as env]
@@ -85,7 +86,7 @@
                 :prim (if (= :map (:name m)) loose [:not-map nil])
                 [:not-map nil]))
         rs (map one ms)
-        ty-of #(apply t/union (keep second rs))]
+        ty-of #(t/with-assumption (apply t/union (keep second rs)) (t/assumption ty))]
     (cond (empty? ms) {:status :nil :type t/nil-t}
           (some #(= :not-map (first %)) rs) {:status :not-map}
           (some #(= :missing (first %)) rs) {:status :missing}
@@ -154,15 +155,15 @@
                      result (when exp (t/sub-result env v exp))]
                :when (and exp (not= :proved (:status result)))]
            (if (= :inconclusive (:status result))
-             (incomplete-problem ctx v exp result)
-             ["TSP2322" (str "value of " k ": " (t/show v) " is not assignable to " (show-ref ctx exp))]))
+             (conj (incomplete-problem ctx v exp result) [:value k])
+             ["TSP2322" (str "value of " k ": " (t/show v) " is not assignable to " (show-ref ctx exp)) nil [:value k]]))
          (for [k (keys (:req actual))
                :when (and (not (some #{k} known))
                           (not (and (qualified-keyword? k) (get-in env [:specs k])))
                           ;; a qualified key with no spec is already reported as TSP2304
                           (not (and (qualified-keyword? k) (contains? (:key-nss env) (namespace k))))
                           (or (qualified-keyword? k) (similar k known)))]
-           ["TSP2353" (str "unknown key " k " in a literal of " (t/show expected) (hint-suffix k known))]))))))
+           ["TSP2353" (str "unknown key " k " in a literal of " (t/show expected) (hint-suffix k known)) nil [:key k]]))))))
 
 (defn- missing-req
   "[key optional-there?] when `actual` is a map type that lacks a required key of `expected`."
@@ -653,7 +654,8 @@
     ctx))
 
 (defn- elem-type [ctx ty]
-  (apply t/union
+  (t/with-assumption
+   (apply t/union
          (for [m (t/members (:env ctx) ty)]
            (case (:t m)
              :coll (:of m)
@@ -661,7 +663,8 @@
              :map-of (t/prim :vector)
              (:prim :lit) (if (or (= :string (:name m)) (string? (:val m)))
                             (t/class-type "java.lang.Character") t/unknown)
-             t/unknown))))
+             t/unknown)))
+   (t/assumption ty)))
 
 (defn- indexed
   "Element access is not checked for emptiness (as in TypeScript by default); :strict-nil makes it T | nil."
@@ -1012,7 +1015,7 @@
 
 (defn- widen [ty]
   (case (:t ty)
-    :lit (t/lit-prim (:val ty))
+    :lit (t/with-assumption (t/lit-prim (:val ty)) (t/assumption ty))
     :union (apply t/union (map widen (:types ty)))
     ty))
 
@@ -1466,8 +1469,15 @@
 (defmethod special ::none [_ _ _] ::none)
 
 (doseq [h '[ns comment declare require import in-ns defmacro defprotocol defrecord deftype defmulti
-            definterface set! var clojure.spec.alpha/def clojure.spec.alpha/fdef]]
+            definterface set! clojure.spec.alpha/def clojure.spec.alpha/fdef]]
   (defmethod special h [_ _ _] t/unknown))
+
+(defmethod special 'var [ctx node _]
+  (let [[target] (args-of node)]
+    (if (and (= :sym (:op target)) (= 2 (count (:children node))))
+      (do (resolve-var ctx (:val target) target)
+          (t/class-type "clojure.lang.Var"))
+      t/unknown)))
 
 (defmethod special 'quote [_ node _]
   (let [x (second (:children node))]
@@ -2275,6 +2285,53 @@
   (let [form (parse/node->data (second (:children d)))]
     (t/parse-type (env/type-ctx (:file ctx) (fn [f] (report! ctx d "TSP9001" (str "not a type: " (pr-str f))))) form)))
 
+(defn- directive-head [directive]
+  (:val (first (:children directive))))
+
+(def ^:private literal-directive? (comp '#{t/const t/satisfies} directive-head))
+
+(defn- literal-directives [ctx node]
+  (when-let [directives (seq (filter literal-directive? (:directives node)))]
+    (let [groups (group-by directive-head directives)
+          conflict (or (some #(#{'t/cast 't/any} (directive-head %)) (:directives node))
+                       (env/tag-node node))]
+      (into {}
+            (keep (fn [d]
+                    (let [h (directive-head d)]
+                      (if-let [message (cond
+                                         (:missing-directive-target node) "missing expression"
+                                         (next (groups h)) "duplicate directive on one expression"
+                                         conflict "cannot combine with t/cast, t/any or a type hint on the same expression"
+                                         (not= (count (:children d)) (if (= h 't/const) 1 2))
+                                         (if (= h 't/const) "expects no arguments" "expects exactly one type"))]
+                        (do (report! ctx d "TSP280-02" (str h ": " message)) nil)
+                        [h d]))))
+            directives))))
+
+(defn- check-satisfies! [ctx node directive actual before-trust]
+  (let [annotation (second (:children directive))
+        env (:env ctx)
+        {:keys [type reason]} (literals/parse-contract env (:file ctx) (parse/node->data annotation true))
+        escape (some #(when (> (get @*trust* % 0) (get before-trust % 0)) %) [:cast :any])]
+    (if reason
+      (report! ctx annotation "TSP280-01" (str "t/satisfies cannot check " (parse/unparse annotation)
+                                             " (" (name reason) ")")
+               :reasons #{reason})
+      (if-let [issue (or escape (literals/evidence-issue env actual))]
+        (report! ctx node "TSP280-01" (str "t/satisfies cannot establish " (show-ref ctx type)
+                                         " (" (name issue) ")")
+                 :reasons #{issue})
+        (let [actual (if (:strict-nil (:opts ctx))
+                       (walk/postwalk #(if (and (map? %) (:platform %)) (eff ctx %) %) actual)
+                       actual)
+              fields (when (= :map (:op node))
+                       (into {} (map (fn [[k v]] [(:val k) {:key k :value v}]))
+                             (partition 2 (:children node))))]
+          (binding [t/*strict-shapes* true]
+            (doseq [[code message details [role field]] (problems ctx node actual type)]
+              (apply report! ctx (or (get-in fields [field role]) node) code message
+                     (mapcat identity (cond-> details (= "TSP210-01" code) (assoc :severity :error)))))))))))
+
 (defn- check-macro-body [ctx node contract]
   (if-not (macros/valid-bindings? node contract)
     (report! ctx node "TSP7032"
@@ -2293,6 +2350,9 @@
   (let [h (first (:children node))
         args (args-of node)
         file (:file ctx)]
+    (when (and (#{:sym :kw} (:op h))
+               (some literal-directive? (:directives h)))
+      (infer ctx h))
     (cond
       (nil? h) {:t :coll :kind :seq :of t/never}
       (= :kw (:op h)) (let [[m default] args
@@ -2352,6 +2412,13 @@
               (call-fn ctx node (str sym) type args)
               (do (run! #(infer ctx %) args) t/unknown))))))))
 
+(defn- literal-elements [ctx node]
+  (apply t/union
+         (map (fn [child]
+                (let [ty (cond-> (infer ctx child) (= :vector (:op node)) (dissoc :fresh))]
+                  (if (:preserve-literals? ctx) ty (widen ty))))
+              (:children node))))
+
 (defn- infer* [ctx node]
   (case (:op node)
     :str (t/lit (:val node))
@@ -2367,14 +2434,19 @@
                  (and (nil? (namespace s)) (not (t/primitives (name s)))
                       (t/resolve-class (:imports (:file ctx)) s)) t/unknown
                  :else (or (:type (resolve-var ctx s node)) t/unknown)))
-    :vector {:t :coll :kind :vector :of (apply t/union (map #(widen (dissoc (infer ctx %) :fresh)) (:children node)))}
-    :set {:t :coll :kind :set :of (apply t/union (map #(widen (infer ctx %)) (:children node)))}
-    :map (let [pairs (partition 2 (:children node))]
+    :vector {:t :coll :kind :vector :of (literal-elements ctx node)}
+    :set {:t :coll :kind :set :of (literal-elements ctx node)}
+    :map (let [children (:children node)
+               pairs (partition 2 children)]
+           (when (:missing-directive-target (peek children))
+             (literal-directives ctx (peek children)))
            (if (every? #(= :kw (:op (first %))) pairs)
              {:t :map :fresh true :inferred true :opt {}
               :req (into (array-map)
                          (for [[k v] pairs]
-                           (let [vty (infer ctx v) kk (:val k)]
+                           (let [_ (when (some literal-directive? (:directives k)) (infer ctx k))
+                                 vty (infer ctx v)
+                                 kk (:val k)]
                              (check-key-value! ctx kk v vty)
                              (when (and (qualified-keyword? kk) (not (get-in (:env ctx) [:specs kk]))
                                         (contains? (:key-nss (:env ctx)) (namespace kk))
@@ -2395,8 +2467,14 @@
   ([ctx node] (infer ctx node nil))
   ([ctx node callback-arity]
    (let [dirs (:directives node)
-         dhead (fn [d] (:val (first (:children d))))
-         find-d (fn [h] (first (filter #(= h (dhead %)) dirs)))
+         find-d (fn [h] (first (filter #(= h (directive-head %)) dirs)))
+         literal-dirs (literal-directives ctx node)
+         satisfies (get literal-dirs 't/satisfies)
+         before-trust (when satisfies @*trust*)
+         ctx (if (and (#{:map :vector :set} (:op node))
+                      (or (:preserve-literals? ctx) (get literal-dirs 't/const)))
+               (assoc ctx :preserve-literals? true)
+               (dissoc ctx :preserve-literals?))
          ty (if-let [callback (deferred-callback ctx node)]
               (force-callback ctx callback callback-arity)
               (if callback-arity (infer-callback ctx node callback-arity) (infer* ctx node)))
@@ -2407,15 +2485,17 @@
                     h))
               ty)
          ty (cond
-              (find-d 't/cast) (do (swap! *trust* update :cast inc) (parse-directive-type ctx (find-d 't/cast)))
-              (find-d 't/any) (do (swap! *trust* update :any inc) t/any)
+              (find-d 't/cast) (do (swap! *trust* update :cast inc)
+                                   (t/with-assumption (parse-directive-type ctx (find-d 't/cast)) :cast))
+              (find-d 't/any) (do (swap! *trust* update :any inc) (t/with-assumption t/any :any))
               :else ty)]
+     (when satisfies (check-satisfies! ctx node satisfies ty before-trust))
      (record! ctx node ty))))
 
 ;; ---- entry points ----
 
 (def ^:private known-diagnostic-codes
-  #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03"
+  #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03" "TSP280-01" "TSP280-02"
     "TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
     "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032"

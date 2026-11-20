@@ -10,6 +10,10 @@
 (defn prim [n] {:t :prim :name n})
 (defn lit [v] {:t :lit :val v})
 (defn ref-t [k] {:t :ref :name k})
+(defn assumption [ty] (::assumption (meta ty)))
+(defn with-assumption [ty reason]
+  (if reason (vary-meta ty assoc ::assumption reason) ty))
+
 ;; :generic-failure is a checker note on a result, not part of the type's identity.
 (defn strip [t] (dissoc t :platform :as :generic-failure))
 
@@ -25,11 +29,15 @@
                                                  (if (:generic-failure x) out
                                                    (mapv #(if (= (strip %) (strip x)) (dissoc % :generic-failure) %) out)))
                          :else (recur more (conj seen (strip x)) (conj out x))))))]
-    (cond (empty? flat) never
-          (some #(= :any (:t %)) flat) any
-          (some #(= :unknown (:t %)) flat) unknown
-          (= 1 (count flat)) (first flat)
-          :else {:t :union :types flat})))
+    (cond-> (with-assumption
+              (cond (empty? flat) never
+                    (some #(= :any (:t %)) flat) any
+                    (some #(= :unknown (:t %)) flat) unknown
+                    (= 1 (count flat)) (first flat)
+                    :else {:t :union :types flat})
+              (some assumption ts))
+      (some #(-> % meta ::unchecked-contract) ts)
+      (vary-meta assoc ::unchecked-contract true))))
 
 (defn lit-prim [v]
   (prim (cond (string? v) :string (keyword? v) :keyword (integer? v) :int
@@ -492,10 +500,14 @@
       (keyword? form) (if (namespace form) (ref-t form) (fail))
       (symbol? form) (let [nm (if (= "clojure.core" (namespace form)) (symbol (name form)) form)]
                        (cond (get (:type-vars ctx) nm) (get (:type-vars ctx) nm)
-                             (pred-prims nm) (prim (pred-prims nm))
-                             (#{'any? 'some?} nm) any
+                             (pred-prims nm) (cond-> (prim (pred-prims nm))
+                                               (#{'pos-int? 'nat-int? 'neg-int? 'pos?
+                                                  'simple-keyword? 'qualified-keyword? 'list? 'sequential? 'fn?} nm)
+                                               (with-meta {::unchecked-contract true}))
+                             (= 'any? nm) any
+                             (= 'some? nm) (with-meta any {::unchecked-contract true})
                              (= 'nil? nm) nil-t
-                             (#{'true? 'false?} nm) (prim :boolean)
+                             (#{'true? 'false?} nm) (with-meta (prim :boolean) {::unchecked-contract true})
                              (= 't/unknown nm) unknown
                              (= 't/never nm) never
                              (:inside-all ctx) (fail)
@@ -511,15 +523,20 @@
         :s/nilable (vary-meta (union (p (second form)) nil-t) assoc ::shape-form 's/nilable)
         :s/or (vary-meta (apply union (map p (take-nth 2 (drop 2 form)))) assoc ::shape-form 's/or)
         :t/or (vary-meta (apply union (map p (rest form))) assoc ::shape-form 't/or)
-        (:s/and :t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form))
+        (:s/and :t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
         :s/spec (p (second form))
         :s/keys (if (even? (count (rest form))) (parse-keys (rest form)) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
-        (:s/coll-of :s/every) (let [[_ inner & {:keys [kind]}] form]
-                                {:t :coll :of (p inner)
-                                 :kind (get '{vector? :vector set? :set list? :seq seq? :seq} kind)})
+        (:s/coll-of :s/every) (let [[_ inner & {:keys [kind] :as opts}] form
+                                    kinds '{vector? :vector set? :set list? :seq seq? :seq}]
+                                (cond-> {:t :coll :of (p inner) :kind (get kinds kind)}
+                                  (or (some #(not= :kind %) (keys opts))
+                                      (and (contains? opts :kind) (not (contains? (dissoc kinds 'list?) kind)))
+                                      (= :s/every (op ctx (first form))))
+                                  (with-meta {::unchecked-contract true})))
         :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
-        :s/tuple {:t :coll :kind :vector :of (apply union (map p (rest form)))}
+        :s/tuple (with-meta {:t :coll :kind :vector :of (apply union (map p (rest form)))}
+                   {::unchecked-contract true})
         :s/fspec (if (:inside-all ctx) (fail) (let [{:keys [args ret]} (apply hash-map (rest form))
                        r (if ret (p ret) unknown)]
                    {:t :fn :arities (some-> (cat-items ctx args) (cat->arities r)) :ret r}))

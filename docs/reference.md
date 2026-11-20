@@ -155,7 +155,7 @@ The table is validated with a **differential test**: a generator builds random f
   ```
   Immutable collections are covariant; `atom`, `volatile`, arrays, and channels are invariant.
 - **Function composition.** `comp` checks each unary link from right to left and preserves the rightmost input arities. `partial` checks the captured arguments and retains the remaining positional arities. [Supported signatures and examples](../features/F233-function-composition.md)
-- **Literals**: `1` in `let` widens to `int?`; in a literal-union position, it remains a literal; `#_(t/const) {...}` is analogous to `as const`.
+- **Literals.** `let` preserves existing literal types. `#_(t/const)` preserves the literal element types of nested map, vector and set literals. `#_(t/satisfies T)` checks the inferred type against `T` and keeps the inferred type. [Supported contracts and examples](../features/F280-literal-preservation.md)
 - **Narrowing** after `if`/`when`/`cond`/`case`/`when-let`, `some?`/`nil?`/type predicates/`instance?`/`=` with a literal/`contains?` on a map. For a function with one positional parameter, the checker can infer independent truthy and falsy facts from its body. An explicit `{:t/guard '{:type ::patient :mode :checked}}` requires a truthy proof. Add `:two-sided true` to require a falsy proof. The trusted form `{:t/guard '::patient}` supplies a truthy fact and is counted once per declaration in the trust budget. `filter`, `filterv` and `take-while` narrow elements using the truthy fact. `remove` uses the falsy fact.
 - **Exhaustiveness**: `case` over literal unions, `cond`/`condp` using `=` on a single variable, and `defmulti` with closed dispatch (`{:t/closed true}`). A `cond` without `:else` yields `T | nil`; this is not an error.
 - **nil-punning**: `(first nil)` → `nil`, `(seq x)` narrows to a non-empty collection, `(:k x)` on `t/unknown` produces a “narrow first” error.
@@ -265,10 +265,13 @@ Every escape hatch is a `#_` directive placed before the expression. Clojure dis
 #_(t/ignore "AIDBOX-123: legacy") (legacy-call x)   ; silence errors in the next form
 #_(t/cast ::patient) row                            ; trust me: row is ::patient
 #_(t/any "dynamic plugin api") (load-plugin id)     ; opt out, with a reason
-#_(t/const) {:status "active"}                      ; keep literal types
 ```
 
 A reason string is required for `ignore` and `any`. An unused `ignore` produces a warning (like `@ts-expect-error`).
+
+`#_(t/const) [:active :pending]` preserves literal element types.
+`#_(t/satisfies ::patient) patient` checks compatibility and preserves the
+type of `patient`. These directives add no trust entries.
 
 **Trust budget.** CI fails if a PR increases the number of `any`, `cast`, `ignore`, trusted guards or platform types, or weakens a type. Weakening means adding `nilable`, removing a `:req`, changing `:keys!` → `:keys`, or replacing a signature with `any?`.
 
@@ -404,6 +407,8 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP270-01` | invalid map type operator arity or nonliteral key |
 | `TSP270-02` | key is absent from the declared map shape |
 | `TSP270-03` | unsupported map shape, conflicting fields, unresolved or cyclic map reference, or resolution limit |
+| `TSP280-01` | unsupported or unproven `t/satisfies` contract |
+| `TSP280-02` | malformed or conflicting literal directive |
 | `TSP2791` | `types.edn` entry is not a subtype of the `s/def` |
 | `TSP7010` | strict mode: a public function has no signature |
 | `TSP7020`–`TSP7026` | hints and interop (section 4.2) |

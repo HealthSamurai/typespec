@@ -10,7 +10,7 @@
   (let [m (meta x)]
     {:row (:row m) :col (:col m) :end-row (:end-row m) :end-col (:end-col m)}))
 
-(def directive-heads '#{t/ignore t/cast t/any t/const})
+(def directive-heads '#{t/ignore t/cast t/any t/const t/satisfies})
 
 (defn- directive? [d]
   (and (= :list (:op d))

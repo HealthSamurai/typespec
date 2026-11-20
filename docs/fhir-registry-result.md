@@ -48,6 +48,16 @@ namespace и с нулевыми счётчиками `cast`, `any` и `ignore`.
 и `sh examples/fhir-registry-check/run.sh contracts` после `prepare.sh`.
 [Карточка F721](../features/F721-var-initialization.md)
 
+## Перепроверка после F611 и F312
+
+На всех 11 файлах того же pin получено 0 ошибок и 124 предупреждения
+без контрактов, 0 ошибок и 137 предупреждений с semver/IO-контрактами.
+В обоих прогонах добавился один `TSP210-01` в
+`src/fhir/registry.clj:494:68`. Чекер дошёл до `str/replace` внутри
+шага `cond->`. Тип `q` из query-параметров остаётся неизвестным.
+Остальные диагностики совпали с прогоном после F721.
+[Условные шаги](../features/F611-conditional-threading.md)
+
 ## Баг сравнения версий
 
 Реальная логическая ошибка compare-pre-release: alpha.1 и alpha.2, а также alpha и alpha.1 сравниваются как равные. В loop отсутствует переход к следующему identifier после равенства. Подтверждено на настоящем pure semver namespace через clojure-repl plugin, без запуска приложения. Это находка чтения/REPL, не статического Typespec. Repro и ограничения: fhir-registry-semver-bug.md. Исправлять upstream и отправлять PR в этой работе не стали.

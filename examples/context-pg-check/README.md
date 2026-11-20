@@ -54,9 +54,10 @@ Single-file regression on JDK 27, using the contracts mode:
 - `pg` absent before and after checking; trust counters `cast/any/ignore = 0/0/0`.
 
 The production-tree check verifies all nine hashes and **351 top-level forms**.
-It checks that both errors remain at the same locations and pins the warning
-counts by diagnostic code (**92 total**). The upstream namespaces remain unloaded
-and the trust counters stay at zero in both checks.
+It checks that both errors remain at the same locations, pins the warning
+counts by diagnostic code (**90 total**), and verifies the warning inside
+the conditional step in `mk-table-constraint`. The upstream namespaces
+remain unloaded and the trust counters stay at zero in both checks.
 
 Historical captured outputs in baseline.txt/contracts.txt: baseline **1 error / 10 warnings**, contracts **2 errors / 16 warnings**. These snapshots precede the precision pass and are not current expected-output tests.
 Both historical runs covered 451 source lines and 54 top-level forms. The

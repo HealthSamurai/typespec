@@ -55,13 +55,16 @@
       (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
       (expect! "whole-tree diagnostic counts"
                {[:error "TSP2322"] 1 [:error "TSP2345"] 1
-                [:warning "TSP210-01"] 78 [:warning "TSP7020"] 10
+                [:warning "TSP210-01"] 76 [:warning "TSP7020"] 10
                 [:warning "TSP7023"] 1 [:warning "TSP7031"] 3}
                (:codes coverage))
       (expect! "whole-tree error locations"
                (frequencies (filter #(= :error (first %)) expected))
                (frequencies (map location (filter #(= :error (:severity %)) (:diagnostics tree)))))
-      (println "PASS: all 9 pinned pg production sources (351 forms, 2 expected errors, 92 warnings).")))
+      (expect! "checked conditional step in mk-table-constraint" true
+               (contains? (set (map location (:diagnostics tree)))
+                          [:warning "TSP210-01" "upstream/src/dsql/pg.clj" 1196 77]))
+      (println "PASS: all 9 pinned pg production sources (351 forms, 2 expected errors, 90 warnings).")))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

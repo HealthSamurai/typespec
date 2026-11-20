@@ -68,7 +68,7 @@
 (defn- map-members [ctx ty]
   (filter #(= :map (:t %)) (t/members (:env ctx) ty)))
 
-(defn- lookup-key [ctx ty k]
+(defn- lookup-key [ctx ty k & [path?]]
   (let [env (:env ctx)
         ms (remove #(= :nil (:t %)) (t/members env ty))
         spec (when (and (qualified-keyword? k) (get-in env [:specs k])) (t/ref-t k))
@@ -77,18 +77,26 @@
               (case (:t m)
                 :map (cond (contains? (:req m) k) [:req (get (:req m) k)]
                            (contains? (:opt m) k) [:opt (get (:opt m) k)]
+                           (:complete-keys? m) [:absent nil]
                            spec [:opt spec]
                            ;; a map whose type was inferred (a literal, a pattern) may hold more keys than we saw
                            (:inferred m) loose
                            :else [:missing nil])
                 :map-of [:opt (:v m)]
-                (:unknown :any :class) loose
-                :prim (if (= :map (:name m)) loose [:not-map nil])
+                :coll (cond (and path? (= :set (:kind m))) [:opt (t/lit k)]
+                            (and path? (nil? (:kind m))) loose
+                            :else [:not-map nil])
+                (:unknown :any :class :var :rigid :ivar) loose
+                :prim (if (or (= :map (:name m)) (and path? (= :coll (:name m))))
+                        loose
+                        (if (and path? (= :set (:name m))) [:opt (t/lit k)] [:not-map nil]))
                 [:not-map nil]))
         rs (map one ms)
         ty-of #(t/with-assumption (apply t/union (keep second rs)) (t/assumption ty))]
-    (cond (empty? ms) {:status :nil :type t/nil-t}
-          (some #(= :not-map (first %)) rs) {:status :not-map}
+    (cond (empty? ms) (if path? {:status :absent} {:status :nil :type t/nil-t})
+          (or (every? #(= :absent (first %)) rs)
+              (and path? (every? #(#{:absent :not-map} (first %)) rs))) {:status :absent}
+          (and (not path?) (some #(= :not-map (first %)) rs)) {:status :not-map}
           (some #(= :missing (first %)) rs) {:status :missing}
           (every? #(= :req (first %)) rs) {:status :req :type (ty-of)}
           (every? #(= :unknown (first %)) rs) {:status :unknown :type (ty-of)}
@@ -96,21 +104,22 @@
 
 (defn- key-info
   "{:type :optional? :declared?} for reading key k from a value of type ty; reports unknown keys at node."
-  [ctx ty k node]
+  [ctx ty k node & [path?]]
   (let [env (:env ctx)
-        {:keys [status type]} (lookup-key ctx ty k)
+        {:keys [status type]} (lookup-key ctx ty k path?)
         spec-keys (keys (:specs env))]
     (case status
       :req {:type type :optional? (t/nilable? env ty) :declared? true :status :req}
       :opt {:type type :optional? true :declared? true}
       :nil {:type t/nil-t :optional? true :declared? true}
+      :absent {:type t/never :optional? true :declared? true}
       :unknown (do (when (and (qualified-keyword? k) (not (get-in env [:specs k]))
                               (contains? (:key-nss env) (namespace k))
                               (or (:strict (:opts ctx)) (similar k spec-keys)))
                      (report! ctx node "TSP2304" (str "no spec for " k (hint-suffix k spec-keys))))
                    ;; nothing is known about the map: nil is not checked, as for other platform types
                    {:type (if (#{:unknown :any} (:t type)) type (assoc type :platform true))
-                    :optional? false :declared? false})
+                    :optional? (boolean path?) :declared? false})
       :missing (do (report! ctx node "TSP2339"
                             (str k " is not a key of " (t/show (t/remove-nil env ty))
                                  (hint-suffix k (concat (mapcat #(concat (keys (:req %)) (keys (:opt %))) (map-members ctx ty))
@@ -1773,6 +1782,20 @@
                        cn (t/resolve-class (:imports (:file ctx)) (:val cls))]]
              (infer-body (bind ctx (:val sym) (if cn (t/class-type cn) t/unknown) :hinted true) cbody)))))
 
+(defn- threaded-step [ctx step first? previous display input hinted?]
+  (let [names (into (set (keys (:locals ctx)))
+                    (keep #(when (= :sym (:op %)) (:val %)))
+                    (tree-seq (comp seq :children) :children step))
+        sym (if (contains? names '__threaded)
+              (first (remove names (map #(symbol (str "__threaded_" %)) (range))))
+              '__threaded)
+        acc {:op :sym :val sym :pos (:pos previous) :synthetic true :display display}
+        call (if (= :list (:op step))
+               (let [[h & args] (:children step)]
+                 (assoc step :children (vec (if first? (concat [h acc] args) (concat [h] args [acc])))))
+               {:op :list :pos (:pos step) :children [step acc]})]
+    (infer (bind ctx sym input :why (why-of ctx previous input) :hinted hinted?) call)))
+
 (defn- thread [ctx node first? some?]
   (let [[x & steps] (args-of node) env (:env ctx)]
     (loop [ty (infer ctx x) prev x steps steps maybe-nil? false shown (parse/unparse x) n 0]
@@ -1780,16 +1803,10 @@
         (if (and some? maybe-nil?) (t/union ty t/nil-t) ty)
         (let [step (first steps)
               arrow (parse/unparse (first (:children node)))
-              acc {:op :sym :val '__threaded :pos (:pos prev) :synthetic true
-                   :display (if (zero? n) shown (str "(" arrow " " shown ")"))}
-              call (if (= :list (:op step))
-                     (let [[h & as] (:children step)]
-                       (assoc step :children (vec (if first? (concat [h acc] as) (concat [h] as [acc])))))
-                     {:op :list :pos (:pos step) :children [step acc]})
-              in (if some? (t/remove-nil env ty) ty)
-              ctx' (cond-> (bind ctx '__threaded in :why (why-of ctx prev ty))
-                     (compiler-knows? ctx prev) (update :hinted (fnil conj #{}) '__threaded))]
-          (recur (infer ctx' call) step (rest steps) (or maybe-nil? (t/nilable? env ty))
+              display (if (zero? n) shown (str "(" arrow " " shown ")"))
+              in (if some? (t/remove-nil env ty) ty)]
+          (recur (threaded-step ctx step first? prev display in (compiler-knows? ctx prev))
+                 step (rest steps) (or maybe-nil? (t/nilable? env ty))
                  (str shown " " (parse/unparse step)) (inc n)))))))
 
 (defmethod special '-> [ctx node _] (thread ctx node true false))
@@ -1841,17 +1858,30 @@
   (let [[x nm & forms] (args-of node)]
     (reduce (fn [ty f] (infer (bind ctx (:val nm) (dissoc ty :fresh)) f)) (infer ctx x) forms)))
 
-(doseq [h '[cond-> cond->>]]
-  (defmethod special h [ctx node _]
-    (let [[x & clauses] (args-of node)
-          ty (infer ctx x)]
-      ;; tests are checked; the threaded forms are not (the result may change shape in every step)
-      (run! #(infer ctx (first %)) (partition 2 clauses))
-      (if (every? (fn [[_ f]] (and (= :list (:op f)) (#{'assoc 'dissoc 'update 'merge} (env/head (:file ctx) f))
-                                   (= 'cond-> h)))
-                  (partition 2 clauses))
-        t/unknown
-        t/unknown))))
+(defn- conditional-thread [ctx node first?]
+  (let [[x & clauses] (args-of node)
+        source-local (plain-local ctx x)
+        initial (infer ctx x)]
+    (if (or (nil? x) (odd? (count clauses)))
+      (do (report! ctx node "TSP2554" "conditional threading requires a value followed by test/step pairs")
+          t/unknown)
+      (loop [ty initial, previous x, hinted? (compiler-knows? ctx x), pairs (seq (partition 2 clauses))]
+        (if (and pairs (not= t/never ty))
+          (let [[[test step] & more] pairs
+                [on off] (condition-contexts ctx test)
+                ;; Before any step can run, the accumulator still aliases the original local.
+                input (fn [branch] (or (when (identical? previous x) (get-in branch [:locals source-local])) ty))
+                executed (if on (threaded-step on step first? previous (parse/unparse previous) (input on) hinted?) t/never)
+                joined (t/union executed (if off (input off) t/never))]
+            ;; Bound the number of shapes produced by independent optional steps.
+            (recur (if (> (count (:types joined)) 32) t/unknown joined)
+                   (if on step previous)
+                   (if on (and (not off) (compiler-knows? on step)) hinted?)
+                   (seq more)))
+          ty)))))
+
+(defmethod special 'cond-> [ctx node _] (conditional-thread ctx node true))
+(defmethod special 'cond->> [ctx node _] (conditional-thread ctx node false))
 
 ;; maps
 
@@ -1864,17 +1894,143 @@
         (read-key ctx mty (:val k) k))
       (do (infer ctx k) (some->> default (infer ctx)) t/unknown))))
 
+(defn- numeric-path-value [ctx ty index]
+  (let [env (:env ctx)
+        vector-type (t/prim :vector)]
+    (apply t/union
+           (for [member (t/members env ty)]
+             (case (:t member)
+               :coll (case (:kind member)
+                       :vector (if (<= 0 index Integer/MAX_VALUE) (:of member) t/never)
+                       :set (:of member)
+                       ;; A kindless coll-of can be a map whose entries fit the
+                       ;; element spec. get returns the value of an entry there.
+                       nil (if (some #(or (t/sub? env % vector-type)
+                                         (not= :mismatch (:status (t/sub-result env vector-type %))))
+                                     (t/members env (:of member)))
+                             t/unknown (:of member))
+                       t/never)
+               :map (if (:complete-keys? member) t/never t/unknown)
+               :map-of (:v member)
+               :lit (if (and (string? (:val member)) (<= 0 index (dec (count (:val member)))))
+                      (t/class-type "java.lang.Character") t/never)
+               :prim (case (:name member)
+                       :string (if (<= 0 index Integer/MAX_VALUE) (t/class-type "java.lang.Character") t/never)
+                       (:map :vector :set :coll) t/unknown
+                       t/never)
+               :any t/any
+               (:class :unknown :var :rigid :ivar) t/unknown
+               t/never)))))
+
+(defn- path-value [ctx ty keys not-found]
+  (loop [ty ty, keys (seq keys), missing? false]
+    (if (and keys (not= :never (:t ty)))
+      (let [[key & more] keys
+            current (eff ctx ty)
+            {:keys [type optional?]} (if (= :num (:op key))
+                                       {:type (numeric-path-value ctx current (:val key)) :optional? true}
+                                       (key-info ctx current (:val key) key true))]
+        (recur type more (or missing? optional?)))
+      (if missing? (t/union ty not-found) ty))))
+
 (defmethod special 'get-in [ctx node _]
-  (let [[m path default] (args-of node)
-        mty (infer ctx m)]
-    (some->> default (infer ctx))
-    (if (and (= :vector (:op path)) (every? #(#{:kw :num} (:op %)) (:children path)))
-      (reduce (fn [ty p]
-                (if (= :kw (:op p))
-                  (read-key ctx ty (:val p) p)
-                  (indexed (elem-type ctx ty))))
-              mty (:children path))
-      (do (infer ctx path) t/unknown))))
+  (let [[m path default & extra :as arguments] (args-of node)
+        mty (infer ctx m)
+        keys (:children path)]
+    (cond
+      (or (nil? path) (seq extra))
+      (do (run! #(infer ctx %) (rest arguments))
+          (report! ctx node "TSP2554" (str "get-in is called with " (count arguments) " argument(s)"))
+          t/unknown)
+
+      (and (#{:vector :nil} (:op path)) (empty? (:directives path)) (not (env/tag-node path))
+           (every? #(and (literal-node? %) (or (#{:kw :str} (:op %)) (integer? (:val %)))) keys))
+      (path-value ctx mty keys (if default (infer ctx default) t/nil-t))
+
+      :else (do (infer ctx path) (some->> default (infer ctx)) t/unknown))))
+
+(defn- assoc-map-key [m k ty]
+  (-> m (dissoc :fresh) (assoc-in [:req k] ty) (update :opt dissoc k)))
+
+(def ^:private empty-map-shape {:t :map :req {} :opt {} :inferred true :complete-keys? true})
+
+(defn- assoc-key-type [ctx ty k value]
+  (let [members (t/members (:env ctx) ty)]
+    (if (every? #(#{:map :nil} (:t %)) members)
+      (apply t/union (map #(assoc-map-key (if (= :nil (:t %)) empty-map-shape %) k value) members))
+      ty)))
+
+(defn- forget-map-keys [ctx ty]
+  (apply t/union (map #(if (= :map (:t %)) (t/prim :map) %) (t/members (:env ctx) ty))))
+
+(defn- path-writes
+  "Find the previous leaf and rebuild each possible root after a keyword-path write."
+  [ctx root keys]
+  (let [env (:env ctx)
+        budget (volatile! 256)
+        unchecked [t/unknown (constantly t/unknown)]]
+    (letfn [(walk [ty [key & more]]
+              (let [k (:val key)
+                    members (vec (take (inc @budget) (t/members env (eff ctx ty))))]
+                (if (neg? (vswap! budget - (count members)))
+                  [unchecked]
+                  (into []
+                        (mapcat
+                         (fn [member]
+                           (case (:t member)
+                             (:map :nil)
+                             (let [m (if (= :nil (:t member)) empty-map-shape member)
+                                   previous (cond
+                                              (contains? (:req m) k) (get (:req m) k)
+                                              (contains? (:opt m) k) (t/union (get (:opt m) k) t/nil-t)
+                                              (:complete-keys? m) t/nil-t
+                                              (get-in env [:specs k]) (t/union (t/ref-t k) t/nil-t)
+                                              :else t/unknown)]
+                               (if (seq more)
+                                 (for [[leaf rebuild] (walk previous more)]
+                                   [leaf (fn [value]
+                                           (let [child (rebuild value)]
+                                             (when-not (= :unknown (:t child)) (check-key-value! ctx k key child))
+                                             (assoc-map-key m k child)))])
+                                 [[previous #(assoc-map-key m k %)]]))
+                             :never []
+                             (:any :unknown :map-of :class :var :rigid :ivar) [unchecked]
+                             (if (and (= :prim (:t member)) (= :map (:name member)))
+                               [unchecked]
+                               (do (report! ctx key "TSP2339" (str "cannot write " k " into " (t/show member)))
+                                   []))))
+                        members)))))]
+      (walk root keys))))
+
+(defn- write-path [ctx node update?]
+  (let [[m path value & args :as arguments] (args-of node)
+        mty (infer ctx m)
+        keys (:children path)]
+    (cond
+      (or (nil? value) (and (not update?) (seq args)))
+      (do (run! #(infer ctx %) (rest arguments))
+          (report! ctx node "TSP2554" (str (if update? "update-in" "assoc-in") " is called with " (count arguments) " argument(s)"))
+          t/unknown)
+
+      (and (= :vector (:op path)) (empty? (:directives path)) (not (env/tag-node path)) (seq keys)
+           (every? #(and (= :kw (:op %)) (literal-node? %)) keys))
+      (let [writes (path-writes ctx mty keys)
+            vty (if (and update? (seq writes))
+                  (apply-fn-node ctx value (into [(apply t/union (map first writes))] (map #(infer ctx %) args)))
+                  (do (run! #(infer ctx %) args) (infer ctx value)))
+            k (:val (last keys))
+            spec (when (get-in (:env ctx) [:specs k]) (t/ref-t k))
+            stored (if (and spec (not (t/sub? (:env ctx) (eff ctx vty) spec)))
+                     spec
+                     (widen (dissoc vty :fresh)))]
+        (when (seq writes) (check-key-value! ctx k value vty))
+        (if (= t/never vty) t/never (apply t/union (map #((second %) stored) writes))))
+
+      :else
+      (do (run! #(infer ctx %) (rest arguments)) t/unknown))))
+
+(defmethod special 'assoc-in [ctx node _] (write-path ctx node false))
+(defmethod special 'update-in [ctx node _] (write-path ctx node true))
 
 (defmethod special 'assoc [ctx node _]
   (let [[m & kvs] (args-of node)
@@ -1883,18 +2039,22 @@
               (let [vty (infer ctx v)]
                 (if (= :kw (:op k))
                   (do (check-key-value! ctx (:val k) v vty)
-                      (if-let [mm (single-map ctx ty)]
-                        (-> mm (dissoc :fresh) (assoc-in [:req (:val k)] (key-type ctx (:val k) vty)) (update :opt dissoc (:val k)))
-                        ty))
-                  (do (infer ctx k) ty))))
+                      (assoc-key-type ctx ty (:val k) (key-type ctx (:val k) vty)))
+                  (do (infer ctx k) (forget-map-keys ctx ty)))))
             mty (partition 2 kvs))))
 
 (defmethod special 'dissoc [ctx node _]
   (let [[m & ks] (args-of node)
-        mty (infer ctx m)]
-    (if-let [mm (and (every? #(= :kw (:op %)) ks) (single-map ctx mty))]
-      (reduce #(-> %1 (update :req dissoc (:val %2)) (update :opt dissoc (:val %2))) (dissoc mm :fresh) ks)
-      mty)))
+        mty (infer ctx m)
+        members (t/members (:env ctx) mty)]
+    (if (and (every? #(= :kw (:op %)) ks) (every? #(#{:map :nil} (:t %)) members))
+      (apply t/union
+             (for [member members]
+               (if (= :map (:t member))
+                 (reduce #(-> %1 (update :req dissoc (:val %2)) (update :opt dissoc (:val %2)))
+                         (dissoc member :fresh) ks)
+                 member)))
+      (do (run! #(infer ctx %) ks) (forget-map-keys ctx mty)))))
 
 (defmethod special 'update [ctx node _]
   (let [[m k f & args] (args-of node)
@@ -1904,8 +2064,8 @@
       (let [cur (read-key ctx mty (:val k) k)
             ret (apply-fn-node ctx f (into [cur] arg-types))]
         (check-key-value! ctx (:val k) f ret)
-        mty)
-      (do (infer ctx k) (infer ctx f) mty))))
+        (assoc-key-type ctx mty (:val k) (key-type ctx (:val k) ret)))
+      (do (infer ctx k) (infer ctx f) (forget-map-keys ctx mty)))))
 
 (defmethod special 'merge [ctx node _]
   (let [tys (map #(infer ctx %) (args-of node))
@@ -2491,7 +2651,7 @@
            (when (:missing-directive-target (peek children))
              (literal-directives ctx (peek children)))
            (if (every? #(= :kw (:op (first %))) pairs)
-             {:t :map :fresh true :inferred true :opt {}
+             {:t :map :fresh true :inferred true :complete-keys? true :opt {}
               :req (into (array-map)
                          (for [[k v] pairs]
                            (let [_ (when (some literal-directive? (:directives k)) (infer ctx k))

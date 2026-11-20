@@ -1,0 +1,49 @@
+---
+id: F312
+title: Литеральные пути мап
+status: implemented
+decision: accepted
+implementation: implemented
+area: data
+origin: Clojure
+---
+
+# F312 · `get-in`, `assoc-in` и `update-in`
+
+`get-in` добавляет default к типу результата только при возможном
+отсутствии пути. `nil` в найденном последнем поле остаётся частью
+типа результата. Промежуточный `nil` прерывает путь и даёт default.
+
+```clojure example
+(ns example (:require [clojure.spec.alpha :as s]))
+
+(s/def ::count int?)
+(s/def ::stats (s/keys :req [::count]))
+(s/def ::state (s/keys :req [::stats]))
+
+(s/fdef incremented :args (s/cat :state ::state) :ret int?)
+(defn incremented [state]
+  (-> state
+      (update-in [::stats ::count] inc)
+      (get-in [::stats ::count])))
+
+(get-in (assoc-in {} [:stats :note] nil) [:stats :note] "absent")
+```
+
+```text output
+(no diagnostics)
+```
+
+`assoc-in` и `update-in` восстанавливают форму вдоль непустого пути
+из ключевых слов. Типы берутся из `s/keys` и выведенных форм мап.
+Записанные ключи становятся обязательными. Для отсутствующего или
+равного `nil` контейнера создаётся промежуточная мапа. Колбэк `update-in`
+получает старое значение с учётом `nil` при отсутствии поля. Остальные
+ключи сохраняются. Запись через заведомо скалярный контейнер даёт
+`TSP2339` в позиции ключа.
+
+Путь чтения может включать строки и целые индексы. Для индексов
+учитывается возможный выход за границы. Вычисляемые пути и запись
+по индексам возвращают `t/unknown`.
+
+[Мапы и деструктуризация](F310-maps-and-destructuring.md) · [Регрессии](../test/typespec/maps_regression_test.clj)

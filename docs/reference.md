@@ -148,7 +148,7 @@ The table is validated with a **differential test**: a generator builds random f
 - **Maps are structural.** `(s/keys :req [:a])` accepts a map with any additional keys. **Reading** a key absent from both the type and the declared key types is an error (`TSP2339`). Reading from `nil` yields `T | nil`.
 - A **fresh literal** `{...}` in a call is checked for extra keys **only against the declared type**. An extra qualified key without a declared type is an error; a key that looks like a typo produces an error with Did you mean.
 - **`t/exact`** forbids extra keys everywhere.
-- **Map operations** are typed precisely: `assoc`, `dissoc`, `update`, `merge`, `select-keys`, `get-in`/`assoc-in`/`update-in` with literal paths, and keywords used as functions in `map`/`filter`.
+- **Map operations.** `get-in` uses the default when a literal path may be absent and preserves `nil` stored at the final key. `assoc-in` and `update-in` track keyword paths and keep sibling fields. [Supported paths](../features/F312-literal-map-paths.md)
 - **Generics** with explicit binders and constraints:
   ```clojure
   {:t/sig '(t/all [a (r :< :fhir/resource)] [(s/coll-of r) (t/fn [r :-> a]) :-> (s/coll-of a)])}
@@ -184,6 +184,8 @@ Typespec does not run project code, so a macro has to be known to it in one of f
 | `:t/macro` in externs | the macro behaves like a typed function |
 
 Existing `clj-kondo` configuration (`:lint-as`, hooks, `clj-kondo.exports/` in jars) is reused as is. An unknown macro gives `TSP7031`; its body is not checked and its value is `t/unknown`. With `:macros {:expand true}` unknown macros are expanded in a separate worker process without network access, and the expansion is checked; macro code is then trusted code.
+
+`cond->` and `cond->>` check each reachable step and combine the accumulator types from executed and skipped steps. [Examples](../features/F611-conditional-threading.md)
 
 ---
 

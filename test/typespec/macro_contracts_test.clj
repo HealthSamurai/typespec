@@ -1,6 +1,7 @@
 (ns typespec.macro-contracts-test
   (:require [clojure.test :refer :all]
             [typespec.check :as check]
+            [typespec.main :as main]
             [typespec.parse :as parse]))
 
 (def contract '{:shape :binding-body :bindings [:app/context map?] :ret (t/or map? nil?)})
@@ -17,6 +18,33 @@
    (check/check-files [(parse/parse-string "app.clj" (str prelude body))]
                       {:macro-contracts cs})))
 (defn codes [r] (set (map :code (:diagnostics r))))
+
+(deftest conditional-steps-check-reachable-calls-in-source-order
+  (let [r (checked "\n(cond-> 1 true (+ \"bad\"))
+                       (cond->> \"bad\" true (+ 1))
+                       (cond-> 1 false (+ \"skipped\") true inc)
+                       (cond-> 1 true inc (inc \"bad test\") inc)
+                       (let [__threaded \"bad\"] (cond-> 1 true (+ __threaded)))")
+        ds (:diagnostics r)]
+    (is (= (repeat 4 "TSP2345") (mapv :code ds)) (pr-str ds))
+    (is (= [5 6 8 9] (mapv (comp :row :pos) ds)))
+    (is (= 19 (get-in ds [0 :pos :col]))))
+  (is (= #{"TSP2554"} (codes (checked "(cond-> 0 true)")))))
+
+(deftest conditional-thread-joins-shapes-and-uses-branch-narrowing
+  (let [r (checked "\n(defn thread-value {:t/sig '[(t/or nil? string?) :-> (t/or nil? int?)]}
+                          [s] (cond-> s (some? s) count))
+                       (defn options {:t/sig '[boolean? :-> map?]}
+                          [flag] (cond-> {} flag (assoc :added 1) true (assoc :required \"yes\")))
+                       (defn join-types {:t/sig '[boolean? :-> (t/or string? int?)]}
+                          [flag] (cond->> 1 flag str))
+                       (cond-> :identity)")]
+    (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))
+    (is (= "(s/nilable int?)" (main/type-at r "app.clj" 6 31)))
+    (is (= "(t/or (s/keys :req [:added :required]) (s/keys :req [:required]))"
+           (main/type-at r "app.clj" 8 34)))
+    (is (= "(t/or string? 1)" (main/type-at r "app.clj" 10 34)))
+    (is (= ":identity" (main/type-at r "app.clj" 11 24)))))
 
 (deftest qualified-aliased-and-referred-bodies
   (doseq [head '[system/defstart sys/defstart defstart]]

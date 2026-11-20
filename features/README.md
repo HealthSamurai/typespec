@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 7 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 9 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
@@ -60,6 +60,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F295](F295-recursive-types.md) | Рекурсивные типы | `designed` | `partial` | types | Clojure |
 | [F310](F310-maps-and-destructuring.md) | Мапы, пути и деструктуризация | `designed` | `partial` | core | Typespec |
 | [F311](F311-row-polymorphism.md) | Row polymorphism — сохранение остатка мапы | `proposed` | `not-implemented` | data | TypeScript and research |
+| [F312](F312-literal-map-paths.md) | Литеральные пути мап | `implemented` | `implemented` | data | Clojure |
 | [F320](F320-nil-and-platform.md) | Nil, коллекции и платформенные типы | `designed` | `partial` | core | Typespec |
 | [F330](F330-tuples-and-nonempty.md) | Tuples, длина и непустые коллекции | `designed` | `partial` | data | Clojure |
 | [F340](F340-mutation-and-variance.md) | Изменяемые значения и variance | `designed` | `not-implemented` | core | Typespec |
@@ -73,6 +74,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F520](F520-java-overloads.md) | Java-вызовы и перегрузки | `designed` | `partial` | java | Clojure |
 | [F530](F530-java-generics-nullability.md) | Java generics и nullability | `designed` | `partial` | java | Clojure |
 | [F610](F610-macro-contracts.md) | Макросы и границы проверяемого кода | `designed` | `partial` | core | Typespec |
+| [F611](F611-conditional-threading.md) | Условные шаги cond-> и cond->> | `implemented` | `implemented` | core | Clojure |
 | [F710](F710-externs-and-exports.md) | Контракты библиотек и экспорт интерфейсов | `designed` | `partial` | core | Typespec |
 | [F711](F711-external-declarations.md) | Внешние декларации для библиотек и core | `designed` | `partial` | modules | TypeScript |
 | [F720](F720-module-interfaces.md) | Интерфейсы ns и инкрементальная проверка | `designed` | `partial` | core | Typespec |

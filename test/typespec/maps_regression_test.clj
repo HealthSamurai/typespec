@@ -1,6 +1,7 @@
 (ns typespec.maps-regression-test
   (:require [clojure.test :refer [deftest is testing]]
             [typespec.check :as check]
+            [typespec.main :as main]
             [typespec.parse :as parse]
             [typespec.types :as t]))
 
@@ -27,6 +28,63 @@
              (alternatives (infer-type source {'m (t/union t/nil-t (map-type {:x t/nil-t} {}))}))))))
   (is (= t/nil-t (infer-type "(get {:x nil} :x 42)")))
   (is (= t/nil-t (infer-type "(:x {:x nil} 42)"))))
+
+(deftest get-in-default-tracks-absence-across-the-entire-path
+  (doseq [[source expected]
+          [["(get-in {:a {:b nil}} [:a :b] :missing)" t/nil-t]
+           ["(get-in {:a nil} [:a :b] :missing)" (t/lit :missing)]
+           ["(get-in {:a {}} [:a :b] :missing)" (t/lit :missing)]
+           ["(let [m {}] (get-in m [:a :b] :missing))" (t/lit :missing)]
+           ["(get-in {:a 1} [:a :b] :missing)" (t/lit :missing)]
+           ["(get-in {:a {}} [:a :b])" t/nil-t]
+           ["(get-in nil [] :missing)" t/nil-t]
+           ["(get-in :root nil :missing)" (t/lit :root)]
+           ["(get-in {:a [nil]} [:a 0] :missing)" (t/union t/nil-t (t/lit :missing))]]]
+    (is (= (alternatives expected) (alternatives (infer-type source))) source))
+  (let [m (map-type {} {:a (t/union t/nil-t (map-type {} {:b (t/union t/nil-t (t/prim :int))}))})]
+    (is (= #{t/nil-t (t/prim :int) (t/lit :missing)}
+           (alternatives (infer-type "(get-in m [:a :b] :missing)" {'m m})))))
+  (let [entries {:t :coll :kind nil :of (t/prim :vector)}
+        by-name {:t :map-of :k (t/prim :string) :v (t/prim :int)}]
+    (is (= t/unknown (infer-type "(get-in m [0] :missing)" {'m entries})))
+    (is (= #{(t/prim :int) (t/lit :missing)}
+           (alternatives (infer-type "(get-in m [\"name\"] :missing)" {'m by-name}))))))
+
+(deftest literal-key-path-writes-rebuild-the-map
+  (is (= (t/prim :string)
+         (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))
+  (is (= (t/lit :sibling)
+         (infer-type "(get-in (assoc-in {:a {:c :sibling}} [:a :b] 2) [:a :c])")))
+  (is (= t/nil-t
+         (infer-type "(get-in (assoc-in {:a nil} [:a :b] nil) [:a :b] :missing)")))
+  (is (= (t/prim :int)
+         (infer-type "(get-in (update-in {} [:a :b] (fn [old n] (if (nil? old) n (inc old))) 7) [:a :b])")))
+  (is (= (t/prim :string)
+         (infer-type "(let [{:keys [a]} (update-in {:a {:b 1}} [:a :b] str) {:keys [b]} a] b)")))
+  (is (= (t/union (t/prim :int) t/nil-t)
+         (infer-type "(:k (cond-> {} flag (assoc :k 1)))" {'flag (t/prim :boolean)})))
+  (is (= t/unknown (infer-type "(get-in (assoc {} k 1) [:a] :missing)" {'k t/unknown})))
+  (is (= t/unknown (infer-type "(assoc-in {} [:a 0] 1)")))
+  (is (= t/unknown (infer-type "(update-in {} ks identity)"))))
+
+(deftest literal-key-path-writes-check-types-from-spec
+  (let [file (parse/parse-string "nested.clj"
+                                "(ns nested (:require [clojure.spec.alpha :as s]))
+                                 (s/def ::n int?)
+                                 (s/def ::inner (s/keys :req [::n]))
+                                 (s/def ::m (s/keys :req [::inner]))
+                                 (s/fdef grow :args (s/cat :m ::m) :ret int?)
+                                 (defn grow [m] (get-in (update-in m [::inner ::n] inc) [::inner ::n]))
+                                 (assoc-in {} [::inner ::n] \"bad\")
+                                 (update-in {:a {}} [:a :b] inc)
+                                 (assoc-in {:a 1} [:a :b] true)
+                                 (update-in {:a {:b \"text\"}} [:a :b] inc)
+                                 (assoc-in {} [::n :child] true)")
+        result (check/check-files [file] {})
+        ds (:diagnostics result)]
+    (is (= [[7 "TSP2322"] [8 "TSP2531"] [9 "TSP2339"] [10 "TSP2345"] [11 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) ds)) (pr-str ds))
+    (is (= "int?" (main/type-at result "nested.clj" 6 49)))))
 
 (deftest merge-required-left-optional-right
   (let [a (map-type {:x (t/prim :string)} {:z (t/prim :string)})

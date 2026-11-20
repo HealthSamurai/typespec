@@ -26,7 +26,7 @@
 | Общий тип доменного ключа | Обычно поле объявляется в каждом интерфейсе или через переиспользуемый тип | Qualified key получает тип из s/def; это не доказывает присутствие/валидность в неизвестной мапе | [F120](../features/F120-key-is-type.md) |
 | Exact object | Нет общего exact-object режима; есть excess-property check свежих литералов | t/exact в дизайне; не считать проверку опечаток полной exactness | [F310](../features/F310-maps-and-destructuring.md) |
 | Деструктуризация | Перенос типов полей/позиций, defaults | Частично; :strs/:syms, defaults и новые директивы имеют ограничения | [F113](../features/F113-destructuring.md) |
-| Pick/Omit/Partial/keyof/indexed access | Поддержаны | В дизайне; общий механизм ещё не реализован | [F270](../features/F270-type-operators.md) |
+| Pick/Omit/Partial/keyof/indexed access | Поддержаны | Пять операторов работают для одной объявленной формы `s/keys` в `:t/sig` и EDN | [F270](../features/F270-type-operators.md) |
 | Conditional/mapped/template-literal types | Поддержаны | Не реализованы; не обязательны для первого выпуска | [Исследование](../features/TS-FLOW-RESEARCH.md) |
 | as const / satisfies | Сохранение литералов; проверка совместимости без обычной замены типа аннотацией | Литералы частично; const/satisfies не реализованы | [F280](../features/F280-literal-preservation.md) |
 | Рекурсивные типы | Recursive aliases с ограничениями | Ссылки есть, полноценной проверки нет; depth cutoff способен дать ложный успех | [F295](../features/F295-recursive-types.md) |

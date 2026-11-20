@@ -142,16 +142,19 @@
       "…")))
 
 (defn node->data
-  "Plain Clojure data for a node; used to read type forms."
-  [n]
-  (case (:op n)
-    (:sym :kw :str :num :bool :char) (:val n)
-    :nil nil
-    :list (apply list (map node->data (:children n)))
-    :vector (mapv node->data (:children n))
-    :map (let [kids (map node->data (:children n))]
-           (if (even? (count kids)) (apply array-map kids) ::opaque))
-    :set (set (map node->data (:children n)))
-    :quote (list 'quote (node->data (first (:children n))))
-    :fn-lit (list 'fn* '[%] (apply list (map node->data (:children n))))
-    ::opaque))
+  "Plain Clojure data for a node. Type signatures can retain list positions as metadata."
+  ([n] (node->data n false))
+  ([n positions?]
+   (let [read-child #(node->data % positions?)]
+     (case (:op n)
+       (:sym :kw :str :num :bool :char) (:val n)
+       :nil nil
+       :list (let [form (apply list (map read-child (:children n)))]
+               (if positions? (with-meta form {:typespec/pos (:pos n)}) form))
+       :vector (mapv read-child (:children n))
+       :map (let [kids (map read-child (:children n))]
+              (if (even? (count kids)) (apply array-map kids) ::opaque))
+       :set (set (map read-child (:children n)))
+       :quote (list 'quote (read-child (first (:children n))))
+       :fn-lit (list 'fn* '[%] (apply list (map read-child (:children n))))
+       ::opaque))))

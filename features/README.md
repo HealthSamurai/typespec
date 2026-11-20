@@ -23,9 +23,9 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 1 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 2 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
-| `designed` | 39 | accepted design; implementation status is separate |
+| `designed` | 38 | accepted design; implementation status is separate |
 | `proposed` | 9 | an idea under discussion, not yet accepted into the design |
 
 This file is generated from the card headers by `clojure -M:test --update`.
@@ -50,7 +50,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F250](F250-checked-guards.md) | Проверяемые guard-функции | `designed` | `not-implemented` | narrowing | Flow |
 | [F251](F251-refinement-evidence.md) | Область действия и инвалидация фактов о типах | `proposed` | `not-implemented` | types | Research |
 | [F260](F260-opaque-refinements.md) | Уточнения spec как номинальные свидетельства | `designed` | `not-implemented` | types | Flow |
-| [F270](F270-type-operators.md) | Операторы над типами мап | `designed` | `not-implemented` | core | Typespec |
+| [F270](F270-type-operators.md) | Операторы над типами мап | `implemented` | `implemented` | core | Typespec |
 | [F271](F271-mapped-types.md) | Mapped types: преобразование полей типа | `proposed` | `not-implemented` | types | TypeScript |
 | [F272](F272-conditional-types.md) | Условные типы и извлечение компонентов | `proposed` | `not-implemented` | types | TypeScript |
 | [F273](F273-template-literal-types.md) | Типы строковых шаблонов | `proposed` | `not-implemented` | types | TypeScript |

@@ -37,6 +37,8 @@ This is the **whole** grammar. Tool output (errors, `sig`, `type-at`, JSON) uses
 
 **Where each form may appear.** Plain spec forms can go in `s/def` and `s/fdef` (real spec, works without Typespec). `t/` forms are type-only, so they appear only where nothing is evaluated: in a quoted `{:t/sig '...}`, in `typespec/types.edn`, and in externs.
 
+**Map type operators.** `t/pick` and `t/omit` select or drop declared fields and preserve their types and requiredness. `t/partial` makes top-level fields optional and preserves the type of each present value. `t/keys-of` returns the union of declared required and optional keys, or `t/never` for an empty shape. `t/get` gives the type of reading a declared field, adding `nil` for an optional key. The input of each operator must resolve to a single declared `s/keys` shape. The resulting maps remain open. These operators are supported in `:t/sig` and external EDN declarations.
+
 Rules the type checker makes explicit:
 
 - `s/and` yields the type of its first component. Other predicates are **refinements**, meaning documentation (`pos?`, regexes), and are not checked statically.
@@ -395,6 +397,9 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP2678` | a `case` clause that can never match |
 | `TSP2741` | required key is missing |
 | `TSP2790` | two declarations of one signature disagree (`t/sig`, `s/fdef`, sidecar, hints) |
+| `TSP270-01` | invalid map type operator arity or nonliteral key |
+| `TSP270-02` | key is absent from the declared map shape |
+| `TSP270-03` | unsupported map shape, conflicting fields, unresolved or cyclic map reference, or resolution limit |
 | `TSP2791` | `types.edn` entry is not a subtype of the `s/def` |
 | `TSP7010` | strict mode: a public function has no signature |
 | `TSP7020`–`TSP7026` | hints and interop (section 4.2) |

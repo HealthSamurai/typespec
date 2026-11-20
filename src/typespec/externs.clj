@@ -6,6 +6,7 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [typespec.types :as t]
+            [typespec.type-operators :as operators]
             [typespec.core-types :as core]))
 
 (def position {:row 1 :col 1 :end-row 1 :end-col 1})
@@ -93,6 +94,7 @@
                       (when-not (or (qualified-symbol? k) (keyword? k))
                         (throw (ex-info "extern key must be a qualified symbol or keyword" {})))
                       (let [ctx {:aliases {} :imports {}
+                                 :operator-error (fn [code _ message] (throw (ex-info message {:code code})))
                                  :fail (fn [bad] (throw (ex-info (str "not a type: " (pr-str bad)) {})))}
                             ty (if (and (symbol? k) (seq? form) (every? vector? form))
                                  (t/parse-sig ctx form)
@@ -112,7 +114,9 @@
                                                    :file (str f) :pos position :complete? true}
                                             resource? (assoc :extern/resource name)))))
                       (catch Exception e
-                        (error! f (str "invalid extern " (pr-str k) ": " (.getMessage e))) acc)))
+                        (swap! diags conj (diagnostic f (get (ex-data e) :code "TSP9003")
+                                                       (str "invalid extern " (pr-str k) ": " (.getMessage e))))
+                        acc)))
                   acc (sort-by (comp pr-str key) (if resource? (read-resource name) (read-map f))))
                  (catch Exception e (error! f (str "cannot read extern: " (.getMessage e))) acc))))
            {:vars {} :specs {}} (concat (map #(vector :file %) paths)
@@ -125,11 +129,34 @@
               {:vars {} :specs {}}))]
     (assoc result :diagnostics @diags)))
 
+(defn normalize-contracts
+  "Normalize operator references using both source and external spec declarations."
+  [source-specs contracts]
+  (if (::normalized contracts)
+    contracts
+    (let [diags (atom (vec (:diagnostics contracts)))
+          normalize (fn [env entries]
+                      (into {}
+                            (for [[k entry] (sort-by (comp pr-str key) entries)]
+                              [k (update entry :type
+                                         #(operators/normalize env %
+                                            (fn [code _ message]
+                                              (swap! diags conj (diagnostic (:file entry) code
+                                                                             (str "invalid extern " k ": " message))))))])))
+          scope (fn [specs] {:specs (merge specs source-specs)})
+          specs (normalize (scope (:specs contracts)) (:specs contracts))
+          vars (normalize (scope specs) (:vars contracts))]
+      (assoc contracts :specs specs :vars vars :diagnostics @diags ::normalized true))))
+
 (defn merge-contracts
   "Merges externs with source declarations. Source contracts win conflicts.
   An unannotated source function keeps its body and receives the extern signature."
   [env externs]
-  (let [diags (atom (vec (:diagnostics externs)))
+  (let [drop-invalid #(into {} (remove (comp operators/invalid? :type val)) %)
+        externs (-> (normalize-contracts (:specs env) externs)
+                    (update :specs drop-invalid)
+                    (update :vars drop-invalid))
+        diags (atom (vec (:diagnostics externs)))
         merged (reduce
                 (fn [env bucket]
                   (reduce-kv

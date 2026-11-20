@@ -2,6 +2,7 @@
   "Collects declarations from source text: s/def, s/fdef, {:t/sig ...}, type hints. No code is loaded."
   (:require [typespec.parse :as parse]
             [typespec.types :as t]
+            [typespec.type-operators :as operators]
             [typespec.externs :as externs]))
 
 (defn resolve-sym
@@ -118,6 +119,10 @@
 (defn- note [diags file node code msg]
   (swap! diags conj {:code code :file (:file file) :pos (:pos node) :message msg}))
 
+(defn- operator-errors [diags file pos]
+  (fn [code form message]
+    (note diags file {:pos (or (:typespec/pos (meta form)) pos)} code message)))
+
 (defn- collect-file [acc file diags]
   (reduce
    (fn [acc form]
@@ -151,8 +156,11 @@
                sig-node (some-> (:attr parts) (attr-get :t/sig))]
            (assoc-in acc [:defns (qualify (:val (:name parts)))]
                      {:file file :parts parts :pos (:pos (:name parts))
+                      :sig-pos (:pos sig-node)
                       :sig (when sig-node
-                             (t/parse-type (type-ctx file (fail sig-node)) (parse/node->data sig-node)))}))
+                             (t/parse-type (assoc (type-ctx file (fail sig-node))
+                                                  :operator-error (operator-errors diags file (:pos sig-node)))
+                                           (parse/node->data sig-node true)))}))
 
          (= 'defmacro h)
          (update acc :macros conj (qualify (:val (second (:children form)))))
@@ -166,23 +174,30 @@
   ([files contracts]
   (let [diags (atom [])
         acc (reduce #(collect-file %1 %2 diags) {:specs {} :fdefs {} :defns {} :macros #{}} files)
+        contracts (externs/normalize-contracts (:specs acc) contracts)
+        operator-env {:specs (merge (:specs contracts) (:specs acc))}
         env {:specs (:specs acc) :macros (:macros acc)
              :key-nss (set (keep namespace (keys (:specs acc))))}
         vars (into {}
                    (for [[sym d] (:defns acc)
                          :let [fd (get-in acc [:fdefs sym])
-                               declared (or (:sig d) (:type fd))]]
+                               sig (when (:sig d)
+                                     (operators/normalize operator-env (:sig d)
+                                                          (operator-errors diags (:file d) (:sig-pos d))))
+                               declared (or sig (:type fd))
+                               invalid? (operators/invalid? sig)]]
                      (do
-                       (when (and (:sig d) fd (not (t/alpha-equivalent? (:sig d) (:type fd))))
+                       (when (and sig fd (not invalid?) (not (t/alpha-equivalent? sig (:type fd))))
                          (note diags (:file d) (:name (:parts d)) "TSP2790"
                                (str "t/sig and s/fdef of " (name sym) " disagree: "
-                                    (t/show (:sig d)) " vs " (t/show (:type fd)))))
+                                    (t/show sig) " vs " (t/show (:type fd)))))
                        [sym {:parts (:parts d) :pfile (:file d)
                              :type (or declared (hints-sig env (:file d) (:parts d)))
-                             :source (cond (:sig d) :sig fd :fdef :else :hints)
+                             :source (cond sig :sig fd :fdef :else :hints)
                              :tagged? (boolean (or (some #(tag-node (:params %)) (:arities (:parts d)))
                                                    (tag-node (:name (:parts d)))))
-                             :complete? (or (some? declared)
+                             :complete? (if declared
+                                          (not invalid?)
                                             (every? (fn [a] (and (not= :unknown (:t (:ret a)))
                                                                  (not-any? #(= :unknown (:t %)) (:params a))))
                                                     (:arities (hints-sig env (:file d) (:parts d)))))

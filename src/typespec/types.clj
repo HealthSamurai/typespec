@@ -283,8 +283,8 @@
 (defn show
   "Prints a type in the type language, so it can be pasted back into code."
   [t]
-  (if (:as t)
-    (:as t)
+  (or (:as t)
+      (some-> t meta ::operator-form pr-str)
     (case (:t t)
       :any "any?" :unknown "t/unknown" :never "t/never" :nil "nil?"
       (:var :ivar :rigid) (str (:name t))
@@ -346,13 +346,42 @@
 
 (defn- parse-keys [args]
   (let [{:keys [req opt req-un opt-un]} (apply hash-map args)
-        un (fn [ks] (into (array-map) (map (fn [k] [(keyword (name k)) (ref-t k)])) ks))
-        q (fn [ks] (into (array-map) (map (fn [k] [k (ref-t k)])) ks))
+        un (fn [ks] (map (fn [k] [(keyword (name k)) (ref-t k)]) ks))
+        q (fn [ks] (map (fn [k] [k (ref-t k)]) ks))
         plain #(filter keyword? %)
-        grouped #(mapcat flat-keys (filter seq? %))]
-    {:t :map
-     :req (merge (q (plain req)) (un (plain req-un)))
-     :opt (merge (q (concat opt (grouped req))) (un (concat opt-un (grouped req-un))))}))
+        grouped #(mapcat flat-keys (filter seq? %))
+        required (concat (q (plain req)) (un (plain req-un)))
+        optional (concat (q (concat opt (grouped req))) (un (concat opt-un (grouped req-un))))
+        req-map (into (array-map) required)
+        opt-map (into (array-map) optional)
+        conflicts (into (set (filter req-map (keys opt-map)))
+                        (keep (fn [[k entries]] (when (next (distinct entries)) k)))
+                        (group-by first (concat required optional)))]
+    (with-meta {:t :map :req req-map :opt opt-map}
+      (cond-> {}
+        (seq conflicts) (assoc ::shape-conflicts (sort-by pr-str conflicts))
+        (some seq? (concat req req-un)) (assoc ::shape-form 's/keys)))))
+
+(defn- parse-operator [ctx operator form]
+  (let [[_ source & keys] form
+        argc (dec (count form))
+        valid-arity? (case operator
+                       (t/pick t/omit) (pos? argc)
+                       (t/partial t/keys-of) (= 1 argc)
+                       t/get (= 2 argc))]
+    (if (and valid-arity? (every? keyword? keys))
+      (let [failed? (volatile! false)
+            input (parse-type (assoc ctx :fail (fn [bad] (vreset! failed? true) ((:fail ctx) bad))) source)]
+        (if @failed?
+          (with-meta unknown {::invalid-operator true})
+          (with-meta {:t :operator :operator operator :input input :keys (vec (sort-by pr-str (distinct keys)))}
+            {::operator-form form})))
+      (do ((:operator-error ctx) "TSP270-01" form
+           (str operator " expects " (case operator
+                                        (t/pick t/omit) "a map type followed by zero or more keyword literals"
+                                        t/get "a map type and one keyword literal"
+                                        "one map type")))
+          (with-meta unknown {::invalid-operator true})))))
 
 (defn cat-items
   "Items of (s/cat :a A :b (s/? B) :c (s/* C)), or nil when the form is not an s/cat."
@@ -451,10 +480,11 @@
       (case (op ctx (first form))
         :t/all (parse-all ctx form)
         :quote (p (second form))
-        :s/nilable (union (p (second form)) nil-t)
-        :s/or (apply union (map p (take-nth 2 (drop 2 form))))
-        :t/or (apply union (map p (rest form)))
-        (:s/and :t/and :s/spec :t/exact) (p (second form))
+        :s/nilable (vary-meta (union (p (second form)) nil-t) assoc ::shape-form 's/nilable)
+        :s/or (vary-meta (apply union (map p (take-nth 2 (drop 2 form)))) assoc ::shape-form 's/or)
+        :t/or (vary-meta (apply union (map p (rest form))) assoc ::shape-form 't/or)
+        (:s/and :t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form))
+        :s/spec (p (second form))
         :s/keys (if (even? (count (rest form))) (parse-keys (rest form)) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
         (:s/coll-of :s/every) (let [[_ inner & {:keys [kind]}] form]
@@ -478,5 +508,7 @@
                    (class-type c)
                    (fail))
         :t/class (if-let [c (resolve-class (:imports ctx) (second form))] (class-type c) (fail))
+        (:t/pick :t/omit :t/partial :t/keys-of :t/get)
+        (if (:operator-error ctx) (parse-operator ctx (first form) form) (fail))
         (fail))
       :else (fail))))

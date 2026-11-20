@@ -63,6 +63,7 @@ trap - EXIT
 * `http/register-endpoint` — macro. Runtime `s/conform` проверяет map endpoint/`ifn?`, но не сигнатуру callback. `system/defstart`, `defstop`, `defmanifest` тоже macros. Они не объявлены притворными обычными extern functions. Для defstart/defstop в typespec.edn явно заданы доверенные binding-body контракты: checker проверяет тело, но не разворачивает макрос и не доказывает lifecycle библиотеки. defmanifest и register-endpoint остаются отдельными границами.
 * `response` выводит тип `:body` из spec ответа через `t/get` (F270). Тип включает Todo, вектор Todo и мапу ошибки. В `list-handler` тип строк из `repo/list-todos` передаётся параметру callback через `with-result` (F220).
 * `create-handler` разбирает два варианта spec результата через `case`. В каждой ветке доступны поля соответствующего варианта (F240). Тип `:title` при построении успешного результата выводится из тела `valid-title?` (F250).
+* В успешной ветке `partial` фиксирует контекст базы и HTTP-статус. `comp` передаёт созданную запись из `repo/create-todo` в `response` (F233).
 * Literal map types вроде `{:system Atom}` не являются языком типов этого прототипа. Первоначальный запуск это выявил; корректные контракты записаны через `s/keys`. Generic envelope с literal map return также не поддержан, поэтому используется обычный spec response.
 * `pos-int?`/`s/valid?` и SQL CHECK обеспечивают runtime ограничения; отсутствие static ошибки не заменяет их.
 * Handler имеет 400 для неправильного/пустого/длинного title и некорректного JSON. DB ошибки не превращаются в ложный 200. Нет pagination, auth, полноценного migrations runner, transactions между несколькими запросами, production error middleware.
@@ -80,4 +81,4 @@ SHA получены через `curl https://api.github.com/repos/context-clj/<
 
 Текущая статическая проверка четырёх файлов приложения даёт 0 ошибок и 0 предупреждений. [Тест в общем suite Typespec](../../test/typespec/context_web_pg_test.clj) запускает проверку приложения и отрицательных fixtures. История запусков и ограничений описана в [verification.md](verification.md).
 
-`clojure -M:check src negative` завершится с кодом 1 и пятью ошибками. Проверяются пропущенный вариант `case` (TSP8001), отсутствующее поле для `t/get` (TSP270-02), строковая операция над вектором Todo внутри callback (TSP2345) и два вызова с числовым title (TSP2345).
+`clojure -M:check src negative` завершится с кодом 1 и шестью ошибками. Проверяются пропущенный вариант `case` (TSP8001), отсутствующее поле для `t/get` (TSP270-02), строковые операции над вектором Todo в callback и над записью Todo в `comp` (TSP2345), а также два вызова с числовым title (TSP2345).

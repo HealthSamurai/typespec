@@ -1,6 +1,6 @@
 {:review
- "After the initial replace audit, F220 adds three unproven reduce accumulators and one newly reachable routing argument warning.",
- :counts {:warning 48},
+ "F220 adds four warnings in reduce and routing. F233 reports an unchecked comp with first and verifies the byte/int composition.",
+ :counts {:warning 49},
  :coverage
  [{:file "src/http.clj",
    :opaque-nodes 5,
@@ -246,6 +246,13 @@
    "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
    #{:unknown}
    "720d519d7101c64f4450f1da184b89d5"]
+  ["src/http/formats.clj"
+   {:row 239, :col 70, :end-row 239, :end-col 75}
+   :warning
+   "TSP210-01"
+   "comp: function signature not checked (unknown)"
+   #{:unknown}
+   "fbe01d7736dbf3812fde34b01a683763"]
   ["src/http/formats.clj"
    {:row 309, :col 13, :end-row 309, :end-col 61}
    :warning

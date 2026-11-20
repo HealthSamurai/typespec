@@ -17,6 +17,7 @@
     (is (= [["negative/bad-types.clj" 10 :error "TSP8001"]
             ["negative/bad-types.clj" 13 :error "TSP270-02"]
             ["negative/bad-types.clj" 20 :error "TSP2345"]
+            ["negative/bad-types.clj" 25 :error "TSP2345"]
             ["negative/bad_lifecycle.clj" 7 :error "TSP2345"]
             ["negative/bad_title.clj" 4 :error "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :severity :code) diagnostics))

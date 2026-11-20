@@ -48,5 +48,6 @@
   [ctx request]
   (let [result (parse-title request)]
     (case (:kind result)
-      :valid (response 201 (repo/create-todo ctx (:title result)))
+      :valid (let [create (comp (partial response 201) (partial repo/create-todo ctx))]
+               (create (:title result)))
       :invalid (response 400 (select-keys result [:error])))))

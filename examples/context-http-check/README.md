@@ -119,7 +119,15 @@ coverage. The three new `:accumulator` warnings are at `http.clj:286` and
 `-match` return. The reducer in `match-fn-params` now infers a possible result
 from `conj`, so the matching branch is checked and reports the unknown `wgt`
 passed to `+` at `http/routing.clj:56`. These are unchecked contracts. All
-44 diagnostic tuples from the replace audit are present in the new snapshot.
+44 diagnostic tuples from the replace audit are present in the F220 snapshot.
+
+F233 keeps all 48 F220 diagnostics and adds one unchecked composition
+warning at `http/formats.clj:239:70`. In `(comp #{:json :charset} first)`,
+`first` has no function signature as a value. The composition
+`(comp byte int)` at line 305 has a checked signature and accepts the
+`Character` values produced by walking the string. Acceptance also asserts
+the inferred signature at that source position. The current snapshot
+records **0 errors and 49 warnings**.
 
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,

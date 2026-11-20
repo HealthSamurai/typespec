@@ -69,6 +69,9 @@
               "Per-file coverage/forms/positions changed")
       (assert (= (:counts expected) (:counts summary)) "Diagnostic severity counts changed")
       (assert (= (:diagnostic-tuples expected) (tuples ds)) "Exact diagnostic tuples changed")
+      (assert (= "[(t/or number? java.lang.Character) :-> int?]"
+                 (main/type-at result "src/http/formats.clj" 305 67))
+              "Expected a checked signature for (comp byte int)")
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))

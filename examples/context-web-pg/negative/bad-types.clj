@@ -18,3 +18,8 @@
   {:t/sig '[:context/context :-> string?]}
   [ctx]
   (handler/with-result (repo/list-todos ctx) (fn [rows] (str/upper-case rows))))
+
+(defn wrong-create-wrapper
+  {:t/sig '[:context/context :-> any?]}
+  [ctx]
+  (comp str/upper-case (partial repo/create-todo ctx)))

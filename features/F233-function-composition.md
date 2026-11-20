@@ -1,0 +1,60 @@
+---
+id: F233
+title: Композиция функций и частичное применение
+status: implemented
+decision: accepted
+implementation: implemented
+area: core
+origin: Clojure
+flags: strict strict-nil
+---
+
+# F233 · `comp` и `partial`
+
+Чекер строит тип функции из сигнатур компонентов. Сигнатуры берутся из
+обычных spec, type hints, `:t/sig` или EDN-деклараций. Получившуюся функцию
+можно вызвать сразу, сохранить в `let` или передать как callback.
+
+```clojure example
+(ns example
+  (:require [clojure.string :as str]))
+
+(defn label-suffix
+  {:t/sig '[int? :-> string?]}
+  [index]
+  ((partial subs "record") index))
+
+(defn normalized-size
+  {:t/sig '[string? :-> int?]}
+  [value]
+  ((comp inc count str/trim) value))
+
+(mapv (partial subs "record") [0 1 2])
+(mapv (comp byte int) "ABC")
+```
+
+```text output
+(no diagnostics)
+```
+
+- `comp` проверяет стыки справа налево. Крайняя правая функция принимает
+  аргументы вызова. Остальные должны принимать её результат или результат
+  ближайшей функции справа как единственный аргумент. `(comp inc str)`
+  даёт `TSP2345` на `inc`. Если промежуточная функция требует два
+  аргумента, возникает `TSP2554`. При нескольких возможных результатах
+  перегрузок сохраняется их объединение.
+- `partial` проверяет захваченные аргументы и сохраняет подходящие остаточные
+  арности, включая нулевую и однородный `& rest`. У `(partial subs "record")`
+  остаются арности с одним и двумя индексами.
+- `(comp)` возвращает типизированную функцию identity. `(comp f)` и
+  `(partial f)` сохраняют тип `f`. Известные выходные типы передаются
+  непосредственным callbacks внутри `comp`. Известные параметры
+  передаются callbacks, захваченным через `partial`.
+- При неизвестной сигнатуре, полиморфном компоненте или неподдержанном
+  переключении между фиксированной и variadic арностью чекер сообщает
+  `TSP210-01`. Поддержка трансдьюсеров и динамического
+  `(apply comp middleware)` остаётся в [F230](F230-generics-and-hof.md).
+
+Пример приложения собирает функцию создания Todo из запроса к PostgreSQL
+и формирования HTTP-ответа. Приёмочный прогон HTTP проверяет композицию
+`(comp byte int)` при обходе строки. [Приложение](../examples/context-web-pg/README.md)

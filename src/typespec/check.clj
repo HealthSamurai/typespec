@@ -655,7 +655,13 @@
 (defn- elem-type [ctx ty]
   (apply t/union
          (for [m (t/members (:env ctx) ty)]
-           (case (:t m) :coll (:of m) :nil t/never :map-of (t/prim :vector) t/unknown))))
+           (case (:t m)
+             :coll (:of m)
+             :nil t/never
+             :map-of (t/prim :vector)
+             (:prim :lit) (if (or (= :string (:name m)) (string? (:val m)))
+                            (t/class-type "java.lang.Character") t/unknown)
+             t/unknown))))
 
 (defn- indexed
   "Element access is not checked for emptiness (as in TypeScript by default); :strict-nil makes it T | nil."
@@ -1227,6 +1233,120 @@
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)]
       (apply-type ctx ty arg-types fnode (parse/unparse fnode)))))
 
+(defn- function-shape [ctx ty]
+  (let [ty (t/resolve-t (:env ctx) (eff ctx ty))]
+    (when (and (= :fn (:t ty)) (seq (:arities ty)) (not-any? :kwargs (:arities ty)))
+      ty)))
+
+(defn- unchecked-hof! [ctx node label reason]
+  (report! ctx node "TSP210-01" (str label " (" (name reason) ")")
+           :severity (if (:strict (:opts ctx)) :error :warning)
+           :reasons #{reason}))
+
+(defn- check-composable! [ctx node ty label]
+  (let [ty (t/resolve-t (:env ctx) ty)]
+    (if (or (= :nil (:t ty))
+            (#{:string :int :double :number :boolean} (:name (if (= :lit (:t ty)) (t/lit-prim (:val ty)) ty))))
+      (report! ctx node "TSP2345" (str label " expects a function, got " (t/show ty)))
+      (unchecked-hof! ctx node (str label ": function signature not checked")
+                      (if (= :unknown (:t ty)) :unknown :unsupported-function)))))
+
+(defn- disjoint-scalars? [env a b]
+  (let [scalar (fn [ty]
+                 (case (:t ty)
+                   :nil :nil
+                   :lit (:name (t/lit-prim (:val ty)))
+                   :prim (:name ty)
+                   nil))
+        domains #{:nil :string :keyword :symbol :boolean :number :int :double}
+        numeric #{:number :int :double}]
+    (every? (fn [b]
+              (let [left (scalar a) right (scalar b)]
+                (or (and (= :lit (:t a) (:t b)) (not= (:val a) (:val b)))
+                    (and (domains left) (domains right) (not= left right)
+                         (not (and (numeric left) (numeric right)))))))
+            (t/members env b))))
+
+(defn- comp-member [ctx fits input]
+  ;; Earlier overloads may apply to part of a broad input. Keep their results
+  ;; until an overload covers the entire input, without assuming disjoint maps.
+  (let [env (:env ctx)
+        param #(or (first (:params %)) (:rest %))]
+    (loop [[a & more] fits returns [] unchecked #{}]
+      (cond
+        (= :never (:t input)) {:type t/never}
+        (nil? a) {:reasons unchecked}
+        :else
+        (let [expected (param a)
+              result (t/sub-result env input expected)]
+          (if (= :proved (:status result))
+            {:type (apply t/union (if (= :any (:t input)) (map :ret fits) (conj returns (:ret a))))}
+            (recur more
+                   (cond-> returns (not (disjoint-scalars? env input expected)) (conj (:ret a)))
+                   (into unchecked (:reasons result)))))))))
+
+(defn- comp-link [ctx stage ftype input]
+  (if-let [fits (seq (matching-arities ftype 1))]
+    (let [input (eff ctx input)
+          parts (mapv #(comp-member ctx fits %) (t/members (:env ctx) input))]
+      (if-let [failure (first (remove :type parts))]
+        (if-let [reason (first (sort (:reasons failure)))]
+          (unchecked-hof! ctx stage "comp: input compatibility not checked" reason)
+          (report! ctx stage "TSP2345"
+                   (str "comp: " (show-ref ctx input) " is not accepted by " (t/show ftype))))
+        (apply t/union (map :type parts))))
+    (report! ctx stage "TSP2554" "comp: every function except the rightmost must accept one argument")))
+
+(defn- compose-functions [ctx nodes]
+  (let [[right & stages] (rseq nodes)
+        ty (infer ctx right)
+        shape (or (function-shape ctx ty) (check-composable! ctx right ty "comp"))]
+    (reduce (fn [inner stage]
+              (let [expected (when (and inner (callback-node? ctx stage))
+                               {:t :fn :arities [{:params [(apply t/union (map (comp #(eff ctx %) :ret) (:arities inner)))]
+                                                  :ret t/unknown}]})
+                    ty (if expected (infer ctx stage expected) (infer ctx stage))]
+                (when inner
+                  (if-let [outer (function-shape ctx ty)]
+                    (let [arities (mapv (fn [arity]
+                                          (when-let [ret (comp-link ctx stage outer (:ret arity))]
+                                            (assoc arity :ret ret)))
+                                        (:arities inner))]
+                      (when (every? some? arities) (assoc inner :arities arities)))
+                    (check-composable! ctx stage ty "comp")))))
+            shape stages)))
+
+(defn- partial-function [ctx node f args]
+  (let [ty (infer ctx f)
+        n (count args)]
+    (if-let [shape (function-shape ctx ty)]
+      (let [fits (filterv #(or (:rest %) (<= n (count (:params %)))) (:arities shape))
+            inputs (infer-call-arguments ctx node args fits)
+            candidates (mapv (fn [arity]
+                               [arity (vec (arg-problems ctx arity args inputs node))])
+                             fits)
+            valid (filterv (comp empty? second) candidates)
+            incomplete (some (fn [[_ ps]] (when (and (seq ps) (every? #(= "TSP210-01" (first (second %))) ps)) ps))
+                             candidates)
+            rest-minimum (when (::t/dispatch (meta shape))
+                           (some (fn [[a _]] (when (:rest a) (count (:params a)))) valid))]
+        (cond
+          (empty? fits) (report! ctx node "TSP2554" (str "partial: no arity accepts " n " captured argument(s)"))
+          (or incomplete (empty? valid))
+          (doseq [[at [code message extra]] (or incomplete (second (apply min-key (comp count second) candidates)))]
+            (apply report! ctx at code message (mapcat identity extra)))
+          ;; Removing a fixed branch can expose a rest branch that runtime dispatch
+          ;; would never select at that original arity.
+          (and rest-minimum
+               (some (fn [[a ps]]
+                       (and (seq ps) (not (:rest a)) (<= rest-minimum (count (:params a)))))
+                     candidates))
+          (unchecked-hof! ctx node "partial: residual dispatch not checked" :unsupported-function)
+          :else
+          (assoc shape :arities (mapv #(update (first %) :params (fn [params] (vec (drop n params)))) valid))))
+      (do (run! #(infer ctx %) args)
+          (check-composable! ctx f ty "partial")))))
+
 (defn- single-map [ctx ty]
   (let [ms (t/members (:env ctx) ty)]
     (when (and (= 1 (count ms)) (= :map (:t (first ms)))) (first ms))))
@@ -1792,6 +1912,24 @@
       (infer ctx n)
       (coll-of :seq (elem-type ctx (infer ctx c))))))
 
+(def ^:private comp-identity
+  (t/parse-type {:fail #(throw (ex-info "Invalid comp identity signature" {:form %}))}
+                '(t/all [a] [a :-> a])))
+
+(defmethod special 'comp [ctx node _]
+  (let [stages (args-of node)]
+    (case (count stages)
+      0 comp-identity
+      1 (infer ctx (first stages))
+      (or (compose-functions ctx stages) t/unknown))))
+
+(defmethod special 'partial [ctx node _]
+  (let [[f & args] (args-of node)]
+    (cond
+      (nil? f) (do (report! ctx node "TSP2554" "partial expects at least one argument") t/unknown)
+      (empty? args) (infer ctx f)
+      :else (or (partial-function ctx node f args) t/unknown))))
+
 (doseq [h '[map mapv keep mapcat pmap]]
   (defmethod special h [ctx node _]
     (let [[f & colls] (args-of node)
@@ -2162,7 +2300,11 @@
                         (if default
                           (read-key-default ctx ty (:val h) h (infer ctx default))
                           (read-key ctx ty (:val h) h)))
-      (not= :sym (:op h)) (do (infer ctx h) (run! #(infer ctx %) args) t/unknown)
+      (not= :sym (:op h))
+      (let [ft (t/resolve-t (:env ctx) (eff ctx (infer ctx h)))]
+        (if (#{:fn :all} (:t ft))
+          (call-fn ctx node (parse/unparse h) ft args)
+          (do (run! #(infer ctx %) args) t/unknown)))
       (contains? (:locals ctx) (:val h))
       (if-let [callback (deferred-callback ctx h)]
         (let [types (mapv #(infer ctx %) args)
@@ -2176,7 +2318,8 @@
             (do (run! #(infer ctx %) args) t/unknown))))
       :else
       (let [sym (:val h) n (name sym) head (env/head file node)
-            own? (and (nil? (namespace head)) (contains? (get-in (:env ctx) [:ns-defs (:ns file)]) head))
+            own? (and (nil? (namespace (env/resolve-sym file sym)))
+                      (contains? (get-in (:env ctx) [:ns-defs (:ns file)]) head))
             core-sym (if (namespace head) head (symbol "clojure.core" (name head)))
             extern? (= :extern (get-in ctx [:env :vars core-sym :source]))
             has-rule? (and (not own?) (not extern?) (not= (get-method special head) (get-method special ::none)))
@@ -2221,7 +2364,8 @@
     :sym (let [s (:val node)]
            (cond (contains? (:locals ctx) s) (get-in ctx [:locals s])
                  (java-static? ctx s) t/unknown
-                 (and (nil? (namespace s)) (t/resolve-class (:imports (:file ctx)) s)) t/unknown
+                 (and (nil? (namespace s)) (not (t/primitives (name s)))
+                      (t/resolve-class (:imports (:file ctx)) s)) t/unknown
                  :else (or (:type (resolve-var ctx s node)) t/unknown)))
     :vector {:t :coll :kind :vector :of (apply t/union (map #(widen (dissoc (infer ctx %) :fresh)) (:children node)))}
     :set {:t :coll :kind :set :of (apply t/union (map #(widen (infer ctx %)) (:children node)))}

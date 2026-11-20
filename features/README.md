@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 4 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 5 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 9 | an idea under discussion, not yet accepted into the design |
@@ -46,6 +46,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F230](F230-generics-and-hof.md) | Generics и функции высшего порядка | `designed` | `partial` | core | Typespec |
 | [F231](F231-generic-obligations.md) | Ограничения generics и проверка обязательств | `proposed` | `not-implemented` | types | Rust |
 | [F232](F232-associated-types.md) | Связанные типы контрактов | `proposed` | `not-implemented` | types | Rust |
+| [F233](F233-function-composition.md) | Композиция функций и частичное применение | `implemented` | `implemented` | core | Clojure |
 | [F240](F240-narrowing-and-exhaustiveness.md) | Сужение, tagged unions и полнота веток | `implemented` | `implemented` | core | Typespec |
 | [F250](F250-checked-guards.md) | Проверяемые guard-функции | `implemented` | `implemented` | narrowing | Flow |
 | [F251](F251-refinement-evidence.md) | Область действия и инвалидация фактов о типах | `proposed` | `not-implemented` | types | Research |

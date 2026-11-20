@@ -4,6 +4,8 @@
 ;; format as project extern files. Every key must belong to clojure.core.
 
 {clojure.core/str        [& any? :-> string?]
+ clojure.core/int        [(t/or number? java.lang.Character) :-> int?]
+ clojure.core/byte       [(t/or number? java.lang.Character) :-> int?]
  clojure.core/inc        ([int? :-> int?] [number? :-> number?])
  clojure.core/dec        ([int? :-> int?] [number? :-> number?])
  ;; Clojure 1.11+: Numbers/abs preserves integer inputs; ratios stay numeric.

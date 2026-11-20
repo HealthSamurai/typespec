@@ -154,6 +154,7 @@ The table is validated with a **differential test**: a generator builds random f
   {:t/sig '(t/all [a (r :< :fhir/resource)] [(s/coll-of r) (t/fn [r :-> a]) :-> (s/coll-of a)])}
   ```
   Immutable collections are covariant; `atom`, `volatile`, arrays, and channels are invariant.
+- **Function composition.** `comp` checks each unary link from right to left and preserves the rightmost input arities. `partial` checks the captured arguments and retains the remaining positional arities. [Supported signatures and examples](../features/F233-function-composition.md)
 - **Literals**: `1` in `let` widens to `int?`; in a literal-union position, it remains a literal; `#_(t/const) {...}` is analogous to `as const`.
 - **Narrowing** after `if`/`when`/`cond`/`case`/`when-let`, `some?`/`nil?`/type predicates/`instance?`/`=` with a literal/`contains?` on a map. For a function with one positional parameter, the checker can infer independent truthy and falsy facts from its body. An explicit `{:t/guard '{:type ::patient :mode :checked}}` requires a truthy proof. Add `:two-sided true` to require a falsy proof. The trusted form `{:t/guard '::patient}` supplies a truthy fact and is counted once per declaration in the trust budget. `filter`, `filterv` and `take-while` narrow elements using the truthy fact. `remove` uses the falsy fact.
 - **Exhaustiveness**: `case` over literal unions, `cond`/`condp` using `=` on a single variable, and `defmulti` with closed dispatch (`{:t/closed true}`). A `cond` without `:else` yields `T | nil`; this is not an error.

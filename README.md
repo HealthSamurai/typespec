@@ -102,7 +102,14 @@ The [demo](demo/README.md) lists every mistake, what it does at run time today, 
 
 **Type declarations:** the 64 built-in signatures now live in `resources/typespec/types/clojure/core.edn` (51) and `string.edn` (13). `core_types.clj` loads them strictly through the classpath; there is no second signature table. Users can supply the same EDN format through `:externs ["types/vendor.edn"]`. Explicit user declarations from JAR resources are planned, not implemented. See [declaration files and distribution](docs/type-declarations.md) and the [clojure.string audit](docs/clojure-string-audit.md).
 
-**Verified baseline:** `clojure -M:test` runs 102 tests / 660 assertions plus golden and CLI checks. Resource tests cover JAR loading outside the repository and malformed/missing/duplicate resources. String tests include actual Clojure 1.12.4 runtime probes.
+**Regression checks.** `clojure -M:test` runs the checker suites, golden files, CLI checks, and the positive and negative static checks for [context-web-pg](examples/context-web-pg/README.md). With `JAVA_HOME` set to a JDK 25 or newer, run the acceptance checks on pinned upstream sources:
+
+```sh
+sh examples/context-pg-check/acceptance.sh
+sh examples/context-http-check/run.sh --accept
+```
+
+These check all nine production source files in `pg` and all eight in `http`. The `pg` check preserves two known error locations, and the `http` check compares exact diagnostics with a reviewed snapshot. [pg results](docs/context-pg-check.md) · [http results](docs/context-http-check.md)
 
 **What does not work yet:** higher-rank generics and general generic overload inference, `reify`/`proxy`/protocols/multimethods, arbitrary project macro expansion, automatic declaration discovery and library-version matching, per-namespace caching and the daemon, `fix` and `annotate`, the trust budget in CI. Undescribed project macros remain incomplete; configured macro contracts are trusted assumptions, not verification of the macro implementation. Java classes are read by reflection, not from bytecode. JVM arrays in `join` and regex-group-specific callback inference remain outside the string contracts' supported scope.
 

@@ -1,5 +1,17 @@
 # Проверки
 
+## Регрессия F240, F270 и F220
+
+Проверка всех четырёх файлов приложения дала 0 ошибок и 0 предупреждений.
+`clojure -M:check src negative` завершился с кодом 1 и пятью ожидаемыми
+диагностиками. `TSP8001` приходится на пропущенный вариант `case`,
+`TSP270-02` — на неизвестное поле spec ответа, `TSP2345` — на
+неверный тип параметра callback и два вызова с числовым title.
+Оба статических прогона входят в `clojure -M:test` Typespec.
+
+Unit-тесты приложения на закреплённых зависимостях прошли (3 теста,
+22 проверки). В этом прогоне HTTP и PostgreSQL не поднимались.
+
 ## Обновление после независимого review
 
 Контракт `system/defstart` уточнён: config — `(t/or map? nil?)`. Проверено запуском закреплённого `context/system` без БД и HTTP: модуль, чей манифест не объявляет `:config`, получает `nil` (так устроен и `todo.app`). Статический повтор на исправленном checker: `clojure -M:check` — 0 errors / 0 warnings, exit 0; `clojure -M:check src negative` — exit 1, два TSP2345. Общий suite Typespec: 88 тестов / 471 assertions, golden/CLI PASS. Runtime-тесты с PostgreSQL и HTTP после этого изменения не перезапускались: `typespec.edn` читает только checker. Находки и исправления: `docs/review-fable-5.2.md`.

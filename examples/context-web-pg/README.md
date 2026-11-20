@@ -61,7 +61,8 @@ trap - EXIT
 * Context — **map с `:system` atom**, не сам atom. Extern объявляет обязательный ключ через `s/keys`; остальные поля context открыты.
 * `pg/execute!` принимает SQL vector; тип допускает различные JDBC параметры, поэтому элементы `any?`. Выход — коллекция map, **не автоматически Todo**. `checked-todo` проверяет id/title/done через `s/valid?`, иначе бросает исключение. SQL и его схема статически не доказаны.
 * `http/register-endpoint` — macro. Runtime `s/conform` проверяет map endpoint/`ifn?`, но не сигнатуру callback. `system/defstart`, `defstop`, `defmanifest` тоже macros. Они не объявлены притворными обычными extern functions. Для defstart/defstop в typespec.edn явно заданы доверенные binding-body контракты: checker проверяет тело, но не разворачивает макрос и не доказывает lifecycle библиотеки. defmanifest и register-endpoint остаются отдельными границами.
-* `response` принимает явный union: Todo, vector Todo или error map. `with-result` проверяется solver с поддержкой именованных refs и `s/keys`; cast/ignore не добавлены. SQL параметры и доверенные extern-границы по-прежнему не доказывают схему базы.
+* `response` выводит тип `:body` из spec ответа через `t/get` (F270). Тип включает Todo, вектор Todo и мапу ошибки. В `list-handler` тип строк из `repo/list-todos` передаётся параметру callback через `with-result` (F220).
+* `create-handler` разбирает два варианта spec результата через `case`. В каждой ветке доступны поля соответствующего варианта (F240). Тип `:title` при построении успешного результата выводится из тела `valid-title?` (F250).
 * Literal map types вроде `{:system Atom}` не являются языком типов этого прототипа. Первоначальный запуск это выявил; корректные контракты записаны через `s/keys`. Generic envelope с literal map return также не поддержан, поэтому используется обычный spec response.
 * `pos-int?`/`s/valid?` и SQL CHECK обеспечивают runtime ограничения; отсутствие static ошибки не заменяет их.
 * Handler имеет 400 для неправильного/пустого/длинного title и некорректного JSON. DB ошибки не превращаются в ложный 200. Нет pagination, auth, полноценного migrations runner, transactions между несколькими запросами, production error middleware.
@@ -77,6 +78,6 @@ SHA получены через `curl https://api.github.com/repos/context-clj/<
 * [system source, 818ff24fed230cc75119f5ca66088b32d99af581](https://github.com/context-clj/system/blob/818ff24fed230cc75119f5ca66088b32d99af581/src/system.clj): context shape, state, lifecycle.
 * [sample, daab6ca45f2e49a7fbc08731b04d4873aac1835d](https://github.com/context-clj/sample/blob/daab6ca45f2e49a7fbc08731b04d4873aac1835d/src/mysystem.clj): реальные patterns, а не единственный источник API.
 
-Текущая статическая проверка: 0 errors / 0 warnings. Отрицательные fixtures проверяют неправильный title как в обычном вызове, так и внутри defstart. Результаты запусков и история ограничений: см. `verification.md`.
+Текущая статическая проверка четырёх файлов приложения даёт 0 ошибок и 0 предупреждений. [Тест в общем suite Typespec](../../test/typespec/context_web_pg_test.clj) запускает проверку приложения и отрицательных fixtures. История запусков и ограничений описана в [verification.md](verification.md).
 
-Отрицательная проверка: `clojure -M:check src negative` должна завершиться exit 1 с `TSP2345` для числового title. Fixture не входит в обычный `:paths` и не должен исполняться.
+`clojure -M:check src negative` завершится с кодом 1 и пятью ошибками. Проверяются пропущенный вариант `case` (TSP8001), отсутствующее поле для `t/get` (TSP270-02), строковая операция над вектором Todo внутри callback (TSP2345) и два вызова с числовым title (TSP2345).

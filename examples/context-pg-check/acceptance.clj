@@ -8,6 +8,9 @@
     (throw (ex-info (str "Acceptance mismatch: " label)
                     {:expected expected :actual actual}))))
 
+(defn location [d]
+  [(:severity d) (:code d) (:file d) (get-in d [:pos :row]) (get-in d [:pos :col])])
+
 (try
   (when (< (.feature (Runtime/version)) 25)
     (throw (ex-info "Acceptance requires Java >=25" {:java (System/getProperty "java.version")})))
@@ -15,8 +18,7 @@
            (get-in (edn/read-string (slurp "deps.edn")) [:deps 'context/pg :git/sha]))
   (expect! "pg absent before checking" nil (find-ns 'pg))
   (let [{:keys [summary diagnostics]} (fixture/run-check "contracts")
-        locations (mapv (fn [d] [(:severity d) (:code d) (:file d)
-                                 (get-in d [:pos :row]) (get-in d [:pos :col])]) diagnostics)
+        locations (mapv location diagnostics)
         expected (mapv (fn [[severity code row col]]
                          [severity code "upstream/src/pg.clj" row col])
                        [[:warning "TSP210-01" 30 44]
@@ -44,7 +46,22 @@
     (expect! "exact diagnostic codes, files and positions" (frequencies expected) (frequencies locations))
     (expect! "pg not loaded" false (:pg-loaded? summary))
     (expect! "trust counters" {:cast 0 :any 0 :ignore 0} (:trust summary))
-    (println "PASS: pinned whole-file pg acceptance (2 expected errors, 8 warnings)."))
+    (println "PASS: pinned whole-file pg acceptance (2 expected errors, 8 warnings).")
+    (let [tree (fixture/run-tree-check)
+          coverage (:summary tree)]
+      (prn coverage)
+      (expect! "production source coverage" {:files 9 :forms 351} (select-keys coverage [:files :forms]))
+      (expect! "all production namespaces remain unloaded" [] (:upstream-loaded coverage))
+      (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
+      (expect! "whole-tree diagnostic counts"
+               {[:error "TSP2322"] 1 [:error "TSP2345"] 1
+                [:warning "TSP210-01"] 78 [:warning "TSP7020"] 10
+                [:warning "TSP7023"] 1 [:warning "TSP7031"] 3}
+               (:codes coverage))
+      (expect! "whole-tree error locations"
+               (frequencies (filter #(= :error (first %)) expected))
+               (frequencies (map location (filter #(= :error (:severity %)) (:diagnostics tree)))))
+      (println "PASS: all 9 pinned pg production sources (351 forms, 2 expected errors, 92 warnings).")))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

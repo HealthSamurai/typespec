@@ -11,7 +11,7 @@
 (s/def ::response (s/keys :req-un [::status ::body]))
 
 (defn response
-  {:t/sig '[int? ::body :-> ::response]}
+  {:t/sig '[int? (t/get ::response :body) :-> ::response]}
   [status body]
   {:status status :body body})
 
@@ -26,11 +26,27 @@
   [ctx _request]
   (with-result (repo/list-todos ctx) (fn [todos] (response 200 todos))))
 
+(s/def :todo.handler.valid/kind #{:valid})
+(s/def :todo.handler.invalid/kind #{:invalid})
+(s/def ::valid-title (s/keys :req-un [:todo.handler.valid/kind :todo.repo/title]))
+(s/def ::invalid-title (s/keys :req-un [:todo.handler.invalid/kind ::error]))
+(s/def ::title-result (s/or :valid ::valid-title :invalid ::invalid-title))
+
+(defn- valid-title? [title]
+  (and (string? title) (not (str/blank? title)) (<= (count title) 200)))
+
+(s/fdef parse-title :args (s/cat :request map?) :ret ::title-result)
+(defn- parse-title [request]
+  (let [title (:title (try (http/parse-body (:body request))
+                           (catch com.fasterxml.jackson.core.JsonParseException _ nil)))]
+    (if (valid-title? title)
+      {:kind :valid :title title}
+      {:kind :invalid :error "title must be a nonblank string of at most 200 characters"})))
+
 (defn create-handler
   {:t/sig '[:context/context map? :-> ::response]}
   [ctx request]
-  (let [title (:title (try (http/parse-body (:body request))
-                           (catch com.fasterxml.jackson.core.JsonParseException _ nil)))]
-    (if (and (string? title) (not (str/blank? title)) (<= (count title) 200))
-      (response 201 (repo/create-todo ctx title))
-      (response 400 {:error "title must be a nonblank string of at most 200 characters"}))))
+  (let [result (parse-title request)]
+    (case (:kind result)
+      :valid (response 201 (repo/create-todo ctx (:title result)))
+      :invalid (response 400 (select-keys result [:error])))))

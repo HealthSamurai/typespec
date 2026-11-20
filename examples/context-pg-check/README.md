@@ -1,7 +1,7 @@
-# Whole pinned context-clj/pg check
+# Pinned context-clj/pg source check
 
-Static analysis of **the original complete `src/pg.clj`**, not copied functions.
-No `require pg`, macro execution, datasource creation, SQL or services.
+Static analysis of the original complete `src/pg.clj` and, in acceptance,
+all nine production source files. The checker reads source as text.
 
 From the repository root, using an installed JDK 25:
 
@@ -19,8 +19,9 @@ from this directory: `JAVA_CMD="$JAVA_HOME/bin/java" clojure -M:check baseline`.
 
 - `deps.edn`: pinned pg/system, JDBC/Hikari transitively; checker from `../..`.
 - `fixture.clj`: inert shared fixture; resolves `pg.clj` as a classpath resource,
-  asserts SHA-256, parses all source forms, calls `check-files` once on that entire
-  parsed namespace. Loading the fixture alone does not run analysis.
+  checks SHA-256 and submits whole files to `check-files`.
+- `manifest.edn`: the exact set of nine source files under the pinned `src/`
+  tree and their SHA-256 values.
 - `check.clj`: original diagnostic CLI, still restricted to Java 25.
 - `typespec.edn`, `externs.edn`: contracts mode only; one datasource contract
   and two explicit lifecycle macro body contracts, with source provenance.
@@ -36,14 +37,11 @@ sh examples/context-pg-check/acceptance.sh
 # macOS with the installed JDK: JAVA_HOME="$(/usr/libexec/java_home)" sh examples/context-pg-check/acceptance.sh
 ```
 
-This separate command exits **0** when all expectations hold, **1** on mismatch
-or analysis failure. It does not treat the diagnostic CLI's expected exit 1 as
-an acceptance failure: both commands call the same static fixture directly.
-The actual Java version is printed in the summary. `run.sh` and its Java-25-only
-check remain unchanged in policy; no Java 25 run is claimed for this acceptance.
+This command exits **0** when both static checks match their expectations
+and **1** on any mismatch or analysis failure. It prints the actual Java version
+and runs the single-file regression before checking all production sources together.
 
-Verified at checker revision `a2a86a22a479aed2d15d96e38b81ff375ec64b5c`
-with Java **27.0.1.1**: contracts **2 errors / 8 warnings**. Acceptance asserts:
+Single-file regression on JDK 27, using the contracts mode:
 
 - Upstream pin `aa8ea0eb565e7f70f80f3248e6a83198628e1047` and complete source
   SHA-256 `dca4826d414a66c22dc10ebb2a01e1d8dccaf5cf64cdfe9b8bb952987d023db5`.
@@ -55,15 +53,15 @@ with Java **27.0.1.1**: contracts **2 errors / 8 warnings**. Acceptance asserts:
   Codes, severities, filenames and positions are compared as a multiset.
 - `pg` absent before and after checking; trust counters `cast/any/ignore = 0/0/0`.
 
-No `pg` require, database connection, SQL or production service is used.
-The complete-file hash and coverage checks do not imply support for every
-Clojure construct (see limitations below).
+The production-tree check verifies all nine hashes and **351 top-level forms**.
+It checks that both errors remain at the same locations and pins the warning
+counts by diagnostic code (**92 total**). The upstream namespaces remain unloaded
+and the trust counters stay at zero in both checks.
 
 Historical captured outputs in baseline.txt/contracts.txt: baseline **1 error / 10 warnings**, contracts **2 errors / 16 warnings**. These snapshots precede the precision pass and are not current expected-output tests.
-Both: 451 source lines, 54 top-level parsed forms, `pg-loaded? false`, zero
-casts/any/ignores. Whole-file input does not mean every Clojure feature is
-supported: `comment`/`defmacro` bodies and discarded forms are not checked.
-Dependencies' namespaces are on the classpath but not recursively analyzed.
+Both historical runs covered 451 source lines and 54 top-level forms. The
+checker skips `comment`/`defmacro` bodies and discarded forms. Dependencies
+outside the pinned `src/` tree are available on the classpath.
 
 Detailed findings, contract assumptions and limitations:
 [`../../docs/context-pg-check.md`](../../docs/context-pg-check.md).

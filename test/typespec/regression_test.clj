@@ -29,6 +29,7 @@
     typespec.pg-boundary-contract-test
     typespec.metadata-autoload-test
     typespec.metadata-determinism-test
+    typespec.context-web-pg-test
     typespec.http-replace-regression-test])
 
 (defn run-suites []

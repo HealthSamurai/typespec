@@ -1,19 +1,15 @@
 {:review
- "F220 adds four warnings in reduce and routing. F233 reports an unchecked comp with first and verifies the byte/int composition.",
+ "F220 adds four warnings in reduce and routing. F233 checks comp. F721 recognizes ten Var literals without changing diagnostics.",
  :counts {:warning 49},
  :coverage
  [{:file "src/http.clj",
-   :opaque-nodes 5,
+   :opaque-nodes 1,
    :lines 491,
    :parse-error nil,
    :sha256
    "4402d0cb056194bb4af678117139cf707d0031d54dba16f6d4d152186a19ed3e",
    :opaque-positions
-   [{:row 149, :col 3, :end-row 153, :end-col 49}
-    {:row 432, :col 44, :end-row 432, :end-col 54}
-    {:row 463, :col 64, :end-row 463, :end-col 74}
-    {:row 465, :col 70, :end-row 465, :end-col 80}
-    {:row 488, :col 46, :end-row 488, :end-col 63}],
+   [{:row 149, :col 3, :end-row 153, :end-col 49}],
    :namespace http,
    :last-position {:row 441, :col 1, :end-row 491, :end-col 4},
    :forms 75}
@@ -38,12 +34,12 @@
    :last-position {:row 129, :col 1, :end-row 137, :end-col 4},
    :forms 22}
   {:file "src/http/openapi.clj",
-   :opaque-nodes 1,
+   :opaque-nodes 0,
    :lines 14,
    :parse-error nil,
    :sha256
    "03993bd11a670c0366e7ae378bf2e7d078027515d413ef94bae35c52d2ee24f7",
-   :opaque-positions [{:row 10, :col 68, :end-row 10, :end-col 82}],
+   :opaque-positions [],
    :namespace http.openapi,
    :last-position {:row 13, :col 1, :end-row 14, :end-col 44},
    :forms 4}
@@ -58,16 +54,12 @@
    :last-position {:row 160, :col 1, :end-row 164, :end-col 41},
    :forms 16}
   {:file "src/uui.clj",
-   :opaque-nodes 4,
+   :opaque-nodes 0,
    :lines 154,
    :parse-error nil,
    :sha256
    "8ff43db21d27045d3827a7ef0152d07bbaaa233435636bcae6181b104e8b1920",
-   :opaque-positions
-   [{:row 45, :col 72, :end-row 45, :end-col 80}
-    {:row 46, :col 73, :end-row 46, :end-col 81}
-    {:row 47, :col 75, :end-row 47, :end-col 83}
-    {:row 48, :col 72, :end-row 48, :end-col 80}],
+   :opaque-positions [],
    :namespace uui,
    :last-position {:row 151, :col 1, :end-row 154, :end-col 4},
    :forms 26}
@@ -82,12 +74,12 @@
    :last-position {:row 355, :col 1, :end-row 430, :end-col 4},
    :forms 331}
   {:file "src/uui/menu.clj",
-   :opaque-nodes 1,
+   :opaque-nodes 0,
    :lines 43,
    :parse-error nil,
    :sha256
    "64959c97408a69bb0c6d22e23966cc996c0d6605689dbc540184020fe828ffc1",
-   :opaque-positions [{:row 17, :col 53, :end-row 17, :end-col 66}],
+   :opaque-positions [],
    :namespace uui.menu,
    :last-position {:row 38, :col 1, :end-row 43, :end-col 38},
    :forms 7}],

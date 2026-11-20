@@ -129,6 +129,10 @@ warning at `http/formats.clj:239:70`. In `(comp #{:json :charset} first)`,
 the inferred signature at that source position. The current snapshot
 records **0 errors and 49 warnings**.
 
+F721 recognizes ten `#'var` forms in the parsed source. The reviewed
+coverage snapshot records their AST positions as recognized Var references
+and retains all 49 diagnostic tuples.
+
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,
 then deliberately edit the expected file in a separate review step. There

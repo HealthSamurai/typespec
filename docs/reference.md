@@ -413,6 +413,7 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP7010` | strict mode: a public function has no signature |
 | `TSP7020`–`TSP7026` | hints and interop (section 4.2) |
 | `TSP7031` | unknown macro: describe it with `:lint-as`, a hook or `:t/macro` |
+| `TSP721-01` | the root of a declared Var may be unbound at this read |
 | `TSP8001` | `case`/`cond`/multimethod is not exhaustive |
 | `TSP9001` | form is not a type |
 | `TSP9002` | warning: a spec the checker cannot read (a custom predicate), treated as `t/unknown` |

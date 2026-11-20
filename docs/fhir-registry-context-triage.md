@@ -1,6 +1,10 @@
 # Registry context: nested def и unbound Var
 
-На pin ea79b6a18d9ae759593c3824f502bc1200209e22 checker сообщает TSP2305 в src/fhir/registry/diff.clj:148:14: `fhir.registry has no var context`.
+В первичном прогоне на pin ea79b6a18d9ae759593c3824f502bc1200209e22
+чекер сообщил `TSP2305` в `src/fhir/registry/diff.clj:148:14`.
+После F721 этот Var разрешается. Чтение выдаёт `TSP721-01`, поскольку
+инициализация корня не доказана.
+[Повторный прогон](fhir-registry-result.md#перепроверка-после-f721)
 
 Исходник определяет context через nested def внутри -main (registry.clj:846) и start-dev (:855). Эти формы не внутри comment. diff.clj:148 читает Var на верхнем уровне, :150 передаёт его в register-ns-endpoints. Поэтому важно отличать существование Var от его инициализации.
 
@@ -29,7 +33,10 @@ Checker-only двухфайловый repro:
 (ns probe.b (:require [probe.a])) (def x probe.a/context)
 ```
 
-Даёт TSP2305 `probe.a has no var context`. При этом probe namespaces не исполнялись checker, fhir.registry в REPL остаётся незагруженным.
+Первоначально пример давал `TSP2305`. После исправления двухфайловый
+тест ожидает `TSP721-01` и тип `t/unknown` для чтения `probe.a/context`.
+Чекер статически разбирает оба namespace.
+[Регрессионные тесты](../test/typespec/var_initialization_test.clj)
 
 ## Классификация
 

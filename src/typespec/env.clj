@@ -47,6 +47,95 @@
   (let [[fixed more] (split-with #(not (and (= :sym (:op %)) (= '& (:val %)))) (:children params))]
     {:fixed (vec fixed) :rest (second more)}))
 
+(defn- var-name [file node]
+  (when (and (= :sym (:op node)) (simple-symbol? (:val node)))
+    (symbol (str (:ns file)) (name (:val node)))))
+
+(defn definition-initializer [form]
+  (last (drop 2 (:children form))))
+
+(defn initialized-var
+  "The name initialized by a direct def/defonce, including an explicit nil initializer."
+  [file form]
+  (let [[_ target] (:children form)]
+    (when (and (#{'def 'defonce} (head file form)) (definition-initializer form))
+      (var-name file target))))
+
+(defn- function-bodies [parts]
+  (let [parts (if (= :sym (:op (first parts))) (rest parts) parts)]
+    (if (= :vector (:op (first parts)))
+      (rest parts)
+      (mapcat (fn [arity]
+                (when (= :vector (:op (first (:children arity))))
+                  (rest (:children arity))))
+              parts))))
+
+(defn- binding-values [node]
+  (when (= :vector (:op node))
+    (take-nth 2 (rest (:children node)))))
+
+(defn- expression-children [form operator]
+  (let [[_ a & more] (:children form)]
+    (case (:op form)
+      (:vector :map :set) (:children form)
+      :fn-lit [(assoc form :op :list)]
+      :list
+      (case operator
+        (defn defn-) (mapcat :body (:arities (defn-parts form)))
+        defmethod (drop 2 more)
+        (fn fn*) (function-bodies (rest (:children form)))
+        (def defonce) (when-let [init (definition-initializer form)] [init])
+        (let let* loop loop* binding with-open if-let if-some when-let when-some)
+        (concat (binding-values a) more)
+        case (concat [a] (map second (partition 2 more))
+                     (when (odd? (count more)) [(last more)]))
+        (do if if-not when when-not and or cond condp try finally throw)
+        (rest (:children form))
+        catch (drop 3 (:children form))
+        nil)
+      nil)))
+
+(defn- var-declarations [files macros]
+  (letfn [(collect [by-name file form at-load?]
+            (let [[head-node target] (:children form)
+                  name (var-name file target)
+                  operator (when-not (contains? macros (var-name file head-node)) (head file form))
+                  data? (or (= 'def operator)
+                            (and (#{'defonce 'declare} operator)
+                                 (or at-load? (namespace (:val head-node)))))
+                  names (cond
+                          (and data? (= 'declare operator)) (keep #(var-name file %) (rest (:children form)))
+                          (and name (or data? (and at-load? (#{'defn 'defn-} operator)))) [name])
+                  init? (and at-load?
+                             (or (#{'defn 'defn-} operator) (initialized-var file form)))
+                  by-name (reduce (fn [acc sym]
+                                    (cond-> acc
+                                      data? (assoc-in [sym :tracks-root?] true)
+                                      init? (update-in [sym :initializers] (fnil conj [])
+                                                       {:file (:file file) :pos (:pos form)})))
+                                  by-name names)]
+              (reduce #(collect %1 file %2 (and at-load? (= 'do operator)))
+                      by-name (expression-children form operator))))]
+    (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files)))
+
+(defn namespace-vars
+  "Known names and Var initialization sites. Defs inside opaque macro bodies are excluded."
+  [files macros]
+  (let [declarations (var-declarations files macros)
+        top-level (reduce (fn [acc file]
+                            (update acc (:ns file) (fnil into #{})
+                                    (for [form (:forms file)
+                                          :when (= :list (:op form))
+                                          :let [[h nm] (:children form)]
+                                          :when (and (= :sym (:op h)) (= :sym (:op nm))
+                                                     (.startsWith (name (:val h)) "def"))]
+                                      (:val nm))))
+                          {} files)]
+    {:var-declarations declarations
+     :ns-defs (reduce (fn [acc sym]
+                       (update acc (symbol (namespace sym)) (fnil conj #{}) (symbol (name sym))))
+                     top-level (keys declarations))}))
+
 (defn attr-get [attr k]
   (some (fn [[kn vn]] (when (= k (:val kn)) vn)) (partition 2 (:children attr))))
 

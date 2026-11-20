@@ -982,7 +982,7 @@
   (or (contains? (:nss (:env ctx)) ns-sym) (some? (core/stdlib-publics ns-sym))))
 
 (defn- resolve-var
-  "{:sym full-name :type fn-type-or-nil :missing-in ns} for a symbol that is not a local."
+  "Resolve a Var name without reading its root."
   [ctx sym node]
   (let [file (:file ctx) env (:env ctx)
         r (env/resolve-sym file sym)]
@@ -993,10 +993,33 @@
           (report! ctx node "TSP2305" (str n " has no var " (name r) (hint-suffix (symbol (name r)) names))))
         {:sym r :type ty :known-ns? (boolean names)})
       (let [local (symbol (str (:ns file)) (name r))]
-        (if (or (get-in env [:vars local]) (contains? (:macros env) local))
+        (if (or (contains? (:var-declarations env) local) (get-in env [:vars local]) (contains? (:macros env) local))
           {:sym local :type (var-type ctx local)}
           (let [c (symbol "clojure.core" (name r))]
             {:sym c :type (or (var-type ctx c) (get core/table c))}))))))
+
+(defn- root-initialized? [ctx sym initializers at]
+  (or (contains? (:initialized-vars ctx) sym)
+      (if (and (:load-time? ctx) (= (namespace sym) (str (get-in ctx [:file :ns]))))
+        (some (fn [{:keys [file pos]}]
+                (let [end ((juxt :end-row :end-col) pos)
+                      start ((juxt :row :col) (:pos at))]
+                  (and (= file (get-in ctx [:file :file]))
+                       (every? number? (concat end start))
+                       (not (pos? (compare end start))))))
+              initializers)
+        (seq initializers))))
+
+(defn- read-var [ctx sym node]
+  (let [{full :sym :as resolved} (resolve-var ctx sym node)
+        {:keys [tracks-root? initializers]} (get-in ctx [:env :var-declarations full])]
+    (if (and tracks-root? (not (root-initialized? ctx full initializers node)))
+      (do (when-not (contains? (:possible-bindings ctx) sym)
+            (report! ctx node "TSP721-01" (str "Var " full " may be unbound at this read")
+                     :severity (if (:strict (:opts ctx)) :error :warning)
+                     :reasons #{:possibly-unbound-var}))
+          (assoc resolved :type t/unknown))
+      resolved)))
 
 (defn- java-static?
   "Class name when `Foo/bar` refers to a Java class and not to a Clojure namespace."
@@ -1113,8 +1136,19 @@
               (bind-pattern ctx p (elem-type ctx (infer ctx init)))))
           ctx (partition 2 (:children bindings))))
 
+(defn- body-initializers [ctx form]
+  (case (builtin-head ctx form)
+    (def defonce) (when-let [name (env/initialized-var (:file ctx) form)] [name])
+    do (mapcat #(body-initializers ctx %) (args-of form))
+    nil))
+
 (defn infer-body [ctx forms]
-  (reduce (fn [_ f] (infer ctx f)) t/nil-t forms))
+  (loop [[form & more] forms, ctx ctx, result t/nil-t]
+    (if form
+      (let [result (infer ctx form)
+            initialized (seq (body-initializers ctx form))]
+        (recur more (cond-> ctx initialized (update :initialized-vars (fnil into #{}) initialized)) result))
+      result)))
 
 (defn- fn-bodies [node]
   (if (= :fn-lit (:op node))
@@ -1175,7 +1209,7 @@
         plans (when positional? (mapv #(t/dispatch-plan shapes %) targets))
         contracts (group-by (comp :i first) (mapcat identity plans))
         name-node (second (:children node))
-        ctx (cond-> (dissoc ctx :recur-types)
+        ctx (cond-> (dissoc ctx :recur-types :load-time?)
               (and (= :list (:op node)) (= :sym (:op name-node)))
               (bind (:val name-node) (or expected {:t :fn :arities (mapv #(assoc % :ret t/unknown) shapes)})))
         ft (with-meta {:t :fn :arities (mapv (fn [i branch]
@@ -1472,12 +1506,14 @@
             definterface set! clojure.spec.alpha/def clojure.spec.alpha/fdef]]
   (defmethod special h [_ _ _] t/unknown))
 
+(defn- var-reference [ctx [target & more]]
+  (if (and (= :sym (:op target)) (empty? more))
+    (do (resolve-var ctx (:val target) target)
+        (t/class-type "clojure.lang.Var"))
+    t/unknown))
+
 (defmethod special 'var [ctx node _]
-  (let [[target] (args-of node)]
-    (if (and (= :sym (:op target)) (= 2 (count (:children node))))
-      (do (resolve-var ctx (:val target) target)
-          (t/class-type "clojure.lang.Var"))
-      t/unknown)))
+  (var-reference ctx (args-of node)))
 
 (defmethod special 'quote [_ node _]
   (let [x (second (:children node))]
@@ -1485,8 +1521,10 @@
 
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
-(defmethod special 'def [ctx node _] (some->> (last (args-of node)) (infer ctx)) t/unknown)
-(defmethod special 'defonce [ctx node _] (some->> (last (args-of node)) (infer ctx)) t/unknown)
+(doseq [h '[def defonce]]
+  (defmethod special h [ctx node _]
+    (some->> (env/definition-initializer node) (infer ctx))
+    t/unknown))
 
 (defmethod special 'let [ctx node _]
   (let [[bindings & body] (args-of node)
@@ -1779,7 +1817,7 @@
   (let [[_ _ & more] (args-of node)
         [params & body] (drop-while #(not= :vector (:op %)) more)]
     (when params
-      (infer-body (reduce #(bind-pattern %1 %2 (env/pattern-type (:env ctx) (:file ctx) %2)) ctx
+      (infer-body (reduce #(bind-pattern %1 %2 (env/pattern-type (:env ctx) (:file ctx) %2)) (dissoc ctx :load-time?)
                           (:fixed (env/split-params params)))
                   body))
     t/unknown))
@@ -2146,7 +2184,7 @@
                              (let [c' (bind-pattern c p ty)]
                                (record! ctx p ty)
                                (if (= :sym (:op p)) (update c' :params (fnil conj #{}) (:val p)) c')))
-                           (dissoc ctx :recur-types) (map vector fixed (:params declared)))
+                           (dissoc ctx :recur-types :load-time?) (map vector fixed (:params declared)))
               ctx' (cond (nil? rest) ctx'
                          (:kwargs declared) (bind-pattern ctx' rest (:kwargs declared))
                          (:rest declared) (bind-pattern ctx' rest (t/union {:t :coll :kind :seq :of (:rest declared)} t/nil-t))
@@ -2346,6 +2384,17 @@
   ;; A trusted body contract says nothing about the expansion's expression type.
   t/unknown)
 
+(defn- check-unknown-call [ctx args]
+  (let [binding-vector (first args)
+        bindings (:children binding-vector)
+        possible? (and (= :vector (:op binding-vector)) (seq bindings)
+                       (every? #(and (= :sym (:op %)) (simple-symbol? (:val %))) bindings))
+        ;; The call may be a foreign binding macro. Without a contract these
+        ;; names could be locals, so their uses cannot prove a read of a Var.
+        ctx (cond-> ctx possible? (update :possible-bindings (fnil into #{}) (map :val bindings)))]
+    (run! #(infer ctx %) args)
+    t/unknown))
+
 (defn- infer-list [ctx node]
   (let [h (first (:children node))
         args (args-of node)
@@ -2407,10 +2456,10 @@
           (do (report! ctx h "TSP7031" (str "macro " sym " is not described: its body is not checked") :severity :warning)
               t/unknown)
           :else
-          (let [{:keys [type] full :sym} (resolve-var ctx sym h)]
+          (let [{:keys [type]} (read-var ctx sym h)]
             (if type
               (call-fn ctx node (str sym) type args)
-              (do (run! #(infer ctx %) args) t/unknown))))))))
+              (check-unknown-call ctx args))))))))
 
 (defn- literal-elements [ctx node]
   (apply t/union
@@ -2427,13 +2476,14 @@
     :kw (t/lit (:val node))
     :bool (t/lit (:val node))
     :nil t/nil-t
+    :var (var-reference ctx (:children node))
     :regex (t/class-type "java.util.regex.Pattern")
     :sym (let [s (:val node)]
            (cond (contains? (:locals ctx) s) (get-in ctx [:locals s])
                  (java-static? ctx s) t/unknown
                  (and (nil? (namespace s)) (not (t/primitives (name s)))
                       (t/resolve-class (:imports (:file ctx)) s)) t/unknown
-                 :else (or (:type (resolve-var ctx s node)) t/unknown)))
+                 :else (or (:type (read-var ctx s node)) t/unknown)))
     :vector {:t :coll :kind :vector :of (literal-elements ctx node)}
     :set {:t :coll :kind :set :of (literal-elements ctx node)}
     :map (let [children (:children node)
@@ -2498,7 +2548,7 @@
   #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03" "TSP280-01" "TSP280-02"
     "TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
-    "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032"
+    "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032" "TSP721-01"
     "TSP8001" "TSP9001" "TSP9002" "TSP9003" "TSP9004" "TSP830-01" "TSP210-01"})
 
 (defn- directive-children
@@ -2506,7 +2556,7 @@
   Keep directives on the boundary form itself, but do not inspect its contents.
   Ordinary collection expressions and function binding forms remain traversable."
   [file node]
-  (when-not (or (= :quote (:op node))
+  (when-not (or (#{:quote :var} (:op node))
                 (and (= :list (:op node))
                      (contains? '#{quote ns comment declare require import in-ns defmacro
                                    defprotocol defrecord deftype defmulti definterface set! var
@@ -2568,15 +2618,10 @@
                   (get opts :macro-contracts {}) env0
                   #(not= (get-method special %) (get-method special ::none)))
         env-diags (concat env-diags (:diagnostics compiled))
-        guard-env (assoc env0 :macro-contracts (:contracts compiled)
-                   :nss (set (map :ns files))
-                   :ns-defs (into {} (for [f files]
-                                       [(:ns f) (set (for [form (:forms f)
-                                                           :when (= :list (:op form))
-                                                           :let [[h nm] (:children form)]
-                                                           :when (and (= :sym (:op h)) (= :sym (:op nm))
-                                                                      (str/starts-with? (name (:val h)) "def"))]
-                                                       (:val nm)))])))
+        guard-env (merge env0
+                         (env/namespace-vars files (:macros env0))
+                         {:macro-contracts (:contracts compiled)
+                          :nss (set (map :ns files))})
         guard-result (compile-guards guard-env opts)
         env (assoc guard-env :guards (:guards guard-result))
         guard-trust (count (filter #(= :trusted (:mode %)) (vals (:guards env))))]
@@ -2587,7 +2632,7 @@
               *rets* (atom {})]
       (doseq [f files]
         (binding [t/*cur-ns* (:ns f)]
-          (let [ctx {:env env :file f :opts opts :locals {}}]
+          (let [ctx {:env env :file f :opts opts :locals {} :load-time? true}]
             (doseq [form (:forms f)] (infer ctx form)))))
       (let [{:keys [valid invalid count]} (collect-ignores files)
             ;; Inner ranges win; equal ranges retain source directive order.

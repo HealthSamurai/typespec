@@ -23,7 +23,7 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 6 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 7 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
 | `designed` | 36 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
@@ -76,6 +76,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F710](F710-externs-and-exports.md) | Контракты библиотек и экспорт интерфейсов | `designed` | `partial` | core | Typespec |
 | [F711](F711-external-declarations.md) | Внешние декларации для библиотек и core | `designed` | `partial` | modules | TypeScript |
 | [F720](F720-module-interfaces.md) | Интерфейсы ns и инкрементальная проверка | `designed` | `partial` | core | Typespec |
+| [F721](F721-var-initialization.md) | Объявление и инициализация Var | `implemented` | `implemented` | modules | Clojure |
 | [F730](F730-strict-namespaces.md) | Строгий режим по namespace | `designed` | `not-implemented` | modules | Flow |
 | [F810](F810-type-coverage.md) | Покрытие типами | `designed` | `not-implemented` | diagnostics | Flow |
 | [F820](F820-suspicious-nil-lints.md) | Линты подозрительной обработки nil | `designed` | `not-implemented` | diagnostics | Flow |

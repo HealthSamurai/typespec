@@ -67,6 +67,7 @@
                            m (update m :pos merge (select-keys pos [:row :col]))] ; include the ^
                        (when t (update t :meta #(into [m] %))))
       :quote {:op :quote :children (convert-seq (n/children x) opts) :pos pos}
+      :var {:op :var :children (convert-seq (n/children x) opts) :pos pos}
       :fn {:op :fn-lit :children (convert-seq (n/children x) opts) :pos pos}
       :deref {:op :list :pos pos
               :children (into [{:op :sym :val 'clojure.core/deref :pos pos}] (convert-seq (n/children x) opts))}
@@ -138,6 +139,7 @@
       :map (str "{" (kids) "}")
       :set (str "#{" (kids) "}")
       :quote (str "'" (kids))
+      :var (str "#'" (kids))
       :fn-lit (str "#(" (kids) ")")
       "…")))
 
@@ -156,5 +158,6 @@
               (if (even? (count kids)) (apply array-map kids) ::opaque))
        :set (set (map read-child (:children n)))
        :quote (list 'quote (read-child (first (:children n))))
+       :var (list 'var (read-child (first (:children n))))
        :fn-lit (list 'fn* '[%] (apply list (map read-child (:children n))))
        ::opaque))))

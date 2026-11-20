@@ -27,6 +27,27 @@ Checker не изменялся по просьбе пользователя; up
 
 [Проверка Java-результатов](../features/F530-java-generics-nullability.md)
 
+## Перепроверка после F721
+
+На том же pin проверены все 11 файлов и 2405 строк с полным
+закреплённым classpath. Без контрактов получено 0 ошибок и 123
+предупреждения, с semver/IO-контрактами — 0 ошибок и 136 предупреждений.
+
+- В `src/fhir/registry/diff.clj:148:14` вместо `TSP2305` появился
+  `TSP721-01`. Чекер видит объявленный Var `fhir.registry/context`
+  и предупреждает о чтении его корня на верхнем уровне до доказанной
+  инициализации.
+- Второй `TSP721-01` указывает на чтение того же Var в `stop-dev`,
+  `src/fhir/registry.clj:858:23`. Чекер не доказывает порядок
+  вызовов `start-dev` и `stop-dev`.
+
+Остальные диагностики совпали с прогоном после F530 по коду,
+позиции и сообщению. Оба прогона завершились без загрузки upstream
+namespace и с нулевыми счётчиками `cast`, `any` и `ignore`.
+Для повтора запустить `sh examples/fhir-registry-check/run.sh`
+и `sh examples/fhir-registry-check/run.sh contracts` после `prepare.sh`.
+[Карточка F721](../features/F721-var-initialization.md)
+
 ## Баг сравнения версий
 
 Реальная логическая ошибка compare-pre-release: alpha.1 и alpha.2, а также alpha и alpha.1 сравниваются как равные. В loop отсутствует переход к следующему identifier после равенства. Подтверждено на настоящем pure semver namespace через clojure-repl plugin, без запуска приложения. Это находка чтения/REPL, не статического Typespec. Repro и ограничения: fhir-registry-semver-bug.md. Исправлять upstream и отправлять PR в этой работе не стали.

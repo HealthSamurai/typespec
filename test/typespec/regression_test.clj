@@ -18,6 +18,7 @@
     typespec.project-contracts-test
     typespec.contract-diff-test
     typespec.protocol-contracts-test
+    typespec.multimethod-contracts-test
     typespec.case-narrowing-test
     typespec.checked-guards-test
     typespec.type-operators-test

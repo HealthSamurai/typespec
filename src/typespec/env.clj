@@ -30,17 +30,28 @@
     (when-let [c (t/resolve-class (:imports file) (:val tn))]
       (t/platform (t/class-type c) (str (:val tn))))))
 
+(defn- function-arities [forms]
+  (let [arity (fn [[params & body]] {:params params :body (vec body)})]
+    (if (= :vector (:op (first forms)))
+      [(arity forms)]
+      (vec (for [form forms
+                 :when (and (= :list (:op form)) (= :vector (:op (first (:children form)))))]
+             (arity (:children form)))))))
+
 (defn defn-parts [node]
   (let [[h nm & more] (:children node)
         [doc more] (if (= :str (:op (first more))) [(first more) (rest more)] [nil more])
-        [attr more] (if (= :map (:op (first more))) [(first more) (rest more)] [nil more])
-        arity (fn [[params & body]] {:params params :body (vec body)})]
+        [attr more] (if (= :map (:op (first more))) [(first more) (rest more)] [nil more])]
     {:name nm
      :private? (or (= 'defn- (:val h)) (boolean (some #(= :private (:val %)) (:meta nm))))
      :attr attr
-     :arities (cond (= :vector (:op (first more))) [(arity more)]
-                    :else (vec (for [l more :when (and (= :list (:op l)) (= :vector (:op (first (:children l)))))]
-                                 (arity (:children l)))))}))
+     :arities (function-arities more)}))
+
+(defn defmethod-parts [node]
+  (let [[_ target dispatch & forms] (:children node)
+        local-name (when (= :sym (:op (first forms))) (first forms))]
+    {:target target :dispatch dispatch :local-name local-name
+     :arities (function-arities (if local-name (rest forms) forms))}))
 
 (defn split-params
   "{:fixed [nodes] :rest node-or-nil} of a parameter vector."
@@ -83,7 +94,7 @@
       :list
       (case operator
         (defn defn-) (mapcat :body (:arities (defn-parts form)))
-        defmethod (drop 2 more)
+        defmethod (mapcat :body (:arities (defmethod-parts form)))
         (fn fn*) (function-bodies (rest (:children form)))
         (def defonce) (when-let [init (definition-initializer form)] [init])
         (let let* loop loop* binding with-open if-let if-some when-let when-some)

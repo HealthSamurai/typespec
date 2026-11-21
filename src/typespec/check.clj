@@ -2145,15 +2145,6 @@
     (infer-body (bind ctx (:val s) (t/prim :int)) body)
     t/nil-t))
 
-(defmethod special 'defmethod [ctx node _]
-  (let [[_ _ & more] (args-of node)
-        [params & body] (drop-while #(not= :vector (:op %)) more)]
-    (when params
-      (infer-body (reduce #(bind-pattern %1 %2 (env/pattern-type (:env ctx) (:file ctx) %2)) (dissoc ctx :load-time?)
-                          (:fixed (env/split-params params)))
-                  body))
-    t/unknown))
-
 (doseq [h '[with-open binding with-redefs with-local-vars]]
   (defmethod special h [ctx node _]
     (let [[bindings & body] (args-of node)]
@@ -2836,7 +2827,7 @@
 
 ;; ---- defn ----
 
-(defn- check-return! [ctx node actual expected]
+(defn- check-return! [ctx node actual expected & [implementation]]
   (when-not (or (:generic-failure actual) (#{:unknown :any} (:t expected)))
     (let [env (:env ctx) actual (eff ctx actual)
           result (t/sub-result env actual expected)
@@ -2844,30 +2835,33 @@
                          (or (nested-platform-problem ctx "TSP2322" actual expected result)
                              (nested-type-problem ctx "TSP2322" result)))
           collection-error (when (= :mismatch (:status result)) (collection-problem ctx actual expected))
-          emit (fn [[c m extra]] (apply report! ctx node c m (mapcat identity extra)))]
+          emit (fn [[c m extra]]
+                 (apply report! ctx node c (if implementation (str m " (" implementation ")") m)
+                        (mapcat identity extra)))]
       (cond
         (= :proved (:status result)) (run! emit (problems ctx node actual expected))
         nested-error (emit nested-error)
         (seq (fresh-problems ctx actual expected)) (run! emit (fresh-problems ctx actual expected))
         (= :inconclusive (:status result)) (emit (incomplete-problem ctx actual expected result))
         collection-error (let [[code message] collection-error]
-                      (report! ctx node (if (= "TSP330-01" code) code "TSP2322") message))
+                      (emit [(if (= "TSP330-01" code) code "TSP2322") message]))
         (and (t/nilable? env actual) (not (t/nilable? env expected)) (t/sub? env (t/remove-nil env actual) expected))
-        (report! ctx node "TSP2322"
-                 (str "may return nil, but the signature says " (show-ref ctx expected)
-                      (when-let [w (and (= :sym (:op node)) (get-in ctx [:why (:val node)]))] (str ": " w))))
+        (emit ["TSP2322" (str "may return nil, but the signature says " (show-ref ctx expected)
+                             (when-let [w (and (= :sym (:op node)) (get-in ctx [:why (:val node)]))]
+                               (str ": " w)))])
         :else (if-let [[k opt?] (missing-req ctx actual expected)]
-                (report! ctx node "TSP2741" (str "the returned map has no required key " k " of " (t/show expected)
-                                                 (when opt? " (it is optional in the returned map)")))
-                (report! ctx node "TSP2322" (str "returns " (show-ref ctx actual) ", but the signature says " (show-ref ctx expected))))))))
+                (emit ["TSP2741" (str "the returned map has no required key " k " of " (t/show expected)
+                                     (when opt? " (it is optional in the returned map)"))])
+                (emit ["TSP2322" (str "returns " (show-ref ctx actual) ", but the signature says "
+                                     (show-ref ctx expected))]))))))
 
-(defn- spec-implementation-plans [bodies contracts]
+(defn- spec-implementation-plans [bodies contracts coverage]
   (let [runtime (mapv (fn [{:keys [params]}]
                         (let [{:keys [fixed rest]} (env/split-params params)]
                           {:node params :params (vec (repeat (count fixed) t/unknown))
                            :rest (when rest t/unknown)}))
                       bodies)]
-    (mapv #(t/dispatch-plan runtime %) contracts)))
+    (mapv #(t/dispatch-plan runtime % coverage) contracts)))
 
 (defn- merge-implementation-contracts [n contracts]
   (when (seq contracts)
@@ -2893,7 +2887,7 @@
         bodies (:arities parts)
         plans (when (and (= :fdef (:source v))
                          (not-any? #(= :map (:op (:rest (env/split-params (:params %))))) bodies))
-                (spec-implementation-plans bodies (:arities ftype)))
+                (spec-implementation-plans bodies (:arities ftype) :total))
         body-contracts (group-by (comp :node first) (mapcat identity plans))]
     (when-let [tn (env/tag-node nm)]
       (when (t/primitives (str (:val tn)))
@@ -2939,6 +2933,42 @@
 (defmethod special 'defn [ctx node _] (check-defn ctx node))
 (defmethod special 'defn- [ctx node _] (check-defn ctx node))
 
+(defn- qualified-var [file sym]
+  (let [resolved (env/resolve-sym file sym)]
+    (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))))
+
+(defmethod special 'defmethod [ctx node _]
+  (let [{:keys [target dispatch local-name arities]} (env/defmethod-parts node)
+        {:keys [env file]} ctx
+        sym (when (and (= :sym (:op target)) (not (contains? (:locals ctx) (:val target))))
+              (qualified-var file (:val target)))
+        shared (get-in env [:vars sym])
+        contracts (when (= :fdef (:source shared)) (get-in shared [:type :arities]))
+        plans (spec-implementation-plans arities contracts :partial)
+        by-params (group-by (comp :node first) (mapcat identity plans))
+        description (when contracts (str "defmethod " sym " " (parse/unparse dispatch) ", s/fdef"))
+        ctx (cond-> (dissoc ctx :recur-types :load-time?)
+              local-name (bind (:val local-name) t/unknown))]
+    (when sym (record-var-use! ctx sym target :implementation))
+    (doseq [{:keys [params body]} arities
+            :let [{:keys [fixed rest]} (env/split-params params)
+                  expected (merge-implementation-contracts (count fixed) (map second (get by-params params)))
+                  types (or (:params expected) (mapv #(env/pattern-type env file %) fixed))
+                  method-ctx (reduce (fn [c [param type]]
+                                       (when expected (record! c param type))
+                                       (bind-pattern c param type))
+                                     ctx (map vector fixed types))
+                  method-ctx (if rest
+                               (bind-pattern method-ctx rest
+                                             (if (= :map (:op rest))
+                                               (env/pattern-type env file rest)
+                                               (or (:tail expected) t/unknown)))
+                               method-ctx)
+                  actual (infer-body method-ctx body)]
+            :when expected]
+      (check-return! method-ctx (or (last body) params) actual (:ret expected) description))
+    t/unknown))
+
 (defn- protocol-groups [forms]
   (reduce (fn [groups form]
             (case (:op form)
@@ -2946,10 +2976,6 @@
               :list (if (seq groups) (update-in groups [(dec (count groups)) :methods] conj form) groups)
               groups))
           [] forms))
-
-(defn- protocol-symbol [file sym]
-  (let [resolved (env/resolve-sym file sym)]
-    (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))))
 
 (defn- protocol-diagnostic! [ctx at code message]
   (report! ctx at code message :severity (if (:strict (:opts ctx)) :error :warning)))
@@ -2964,7 +2990,7 @@
       (check-return! method-ctx (or (last body) params method) actual (:ret expected)))))
 
 (defn- check-protocol-group [ctx {:keys [protocol methods]} receiver]
-  (let [full (protocol-symbol (:file ctx) (:val protocol))
+  (let [full (qualified-var (:file ctx) (:val protocol))
         declared (get-in ctx [:env :protocols full])]
     (when declared
       (let [covered (volatile! #{})]

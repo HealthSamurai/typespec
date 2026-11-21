@@ -76,7 +76,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F420](F420-control-flow.md) | Throw, assert и try | `designed` | `partial` | functions | Clojure |
 | [F430](F430-protocols.md) | Протоколы и reify | `designed` | `not-implemented` | functions | Clojure |
 | [F431](F431-protocol-method-specs.md) | Проверка reify и extend-type по s/fdef | `implemented` | `implemented` | functions | Clojure |
-| [F440](F440-multimethods.md) | Multimethod dispatch | `designed` | `not-implemented` | functions | Clojure |
+| [F440](F440-multimethods.md) | Multimethod dispatch | `designed` | `partial` | functions | Clojure |
 | [F450](F450-effects-and-purity.md) | Эффекты и проверяемая чистота | `proposed` | `not-implemented` | functions | Typespec |
 | [F510](F510-jvm-contracts.md) | Чтение контрактов JVM | `designed` | `partial` | java | Clojure |
 | [F520](F520-java-overloads.md) | Java-вызовы и перегрузки | `designed` | `partial` | java | Clojure |

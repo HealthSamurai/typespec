@@ -247,21 +247,26 @@
       (some #(when (and (:rest %) (arity-fits? % n)) %) arities)))
 
 (defn dispatch-plan
-  "Source branches and argument contracts needed to implement one expected arity."
-  [source target]
-  (let [minimum (arity-minimum target)]
-    (if-not (:rest target)
-      (when-let [a (dispatch-arity source minimum)] [[a target]])
-      (when-let [rest-arity (first (filter :rest source))]
-        (let [rest-minimum (arity-minimum rest-arity)
-              fixed (filter #(not (:rest %)) source)
-              fixed-counts (set (map #(count (:params %)) fixed))
-              params-at (fn [n] (into (:params target) (repeat (- n (count (:params target))) (:rest target))))]
-          (when (every? fixed-counts (range minimum rest-minimum))
-            (let [target (dissoc target :rest-min)]
-              (conj (vec (for [a fixed :let [n (count (:params a))] :when (<= minimum n)]
-                           [a (assoc target :params (params-at n) :rest nil)]))
-                    [rest-arity (assoc target :params (params-at (max rest-minimum minimum)))]))))))))
+  "Source branches and argument contracts needed to implement one expected arity.
+  With partial coverage, intersect the arities implemented by a single method."
+  ([source target] (dispatch-plan source target :total))
+  ([source target coverage]
+   (let [minimum (arity-minimum target)]
+     (if-not (:rest target)
+       (when-let [a (dispatch-arity source minimum)] [[a target]])
+       (let [rest-arity (first (filter :rest source))
+             fixed (remove :rest source)
+             fixed-counts (into #{} (map arity-minimum) fixed)
+             rest-minimum (when rest-arity
+                            (let [n (arity-minimum rest-arity)]
+                              (if (fixed-counts n) (inc n) n)))
+             params-at (fn [n] (into (:params target) (repeat (- n (count (:params target))) (:rest target))))]
+         (when (or (= :partial coverage)
+                   (and rest-minimum (every? fixed-counts (range minimum rest-minimum))))
+           (let [target (dissoc target :rest-min)]
+             (cond-> (vec (for [a fixed :let [n (arity-minimum a)] :when (<= minimum n)]
+                            [a (assoc target :params (params-at n) :rest nil)]))
+               rest-arity (conj [rest-arity (assoc target :params (params-at (max rest-minimum minimum)))])))))))))
 
 (defn- fn-sub?
   "Every target arity needs a source arity. Where overloads share a return type,

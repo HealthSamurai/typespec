@@ -8,16 +8,21 @@
 (import '[java.security MessageDigest] '[java.util HexFormat])
 (assert (>= (.feature (Runtime/version)) 25) "Use JDK >=25 (Java catalogue baseline)")
 
-(defn- check-endpoint-probe! [files]
-  (let [path "probe/endpoint.clj"
-        checked (check/check-files (conj files (parse/parse-file path)) {})
-        issues (filter #(= path (:file %)) (:diagnostics checked))]
-    (assert (= [[10 :error "TSP2322"] [11 :error "TSP2322"]]
-               (mapv (juxt (comp :row :pos) :severity :code) issues))
-            (str "Endpoint contract diagnostics changed: " (pr-str issues)))
-    (assert (str/includes? (:message (first issues)) "value of :method: :trace"))
-    (assert (str/includes? (:message (second issues)) "value of :middleware:"))
-    (println "ENDPOINT PASS: original HTTP Spec accepted list/vector middleware and rejected two invalid calls")))
+(defn- check-probes! [files]
+  (let [endpoint-path "probe/endpoint.clj"
+        response-path "probe/response.clj"
+        paths #{endpoint-path response-path}
+        checked (check/check-files (into files (map parse/parse-file) paths) {})
+        probes (filter #(paths (:file %)) (:diagnostics checked))]
+    (assert (= [[endpoint-path 10 :error "TSP2322"]
+                [endpoint-path 11 :error "TSP2322"]
+                [response-path 10 :error "TSP2345"]]
+               (mapv (juxt :file (comp :row :pos) :severity :code) probes))
+            (str "HTTP contract probe diagnostics changed: " (pr-str probes)))
+    (assert (str/includes? (:message (nth probes 0)) "value of :method: :trace"))
+    (assert (str/includes? (:message (nth probes 1)) "value of :middleware:"))
+    (println "ENDPOINT PASS: original HTTP Spec accepted list/vector middleware and rejected two invalid calls")
+    (println "RESPONSE PASS: a string content-type passed and an integer was rejected after assoc-in")))
 
 (let [pin "e158b6b244c2b8e053de2a097d1071d9419adef9"
       manifest (into (sorted-map) (edn/read-string (slurp "manifest.edn")))
@@ -88,7 +93,7 @@
               "Expected future in notify-on-request to have its built-in type")
       (assert (= "t/unknown" (main/type-at result "src/http.clj" 267 9))
               "Expected the subscriber call inside future to be analyzed")
-      (check-endpoint-probe! parsed)
+      (check-probes! parsed)
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))

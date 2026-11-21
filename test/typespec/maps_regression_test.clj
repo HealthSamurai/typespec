@@ -52,13 +52,13 @@
            (alternatives (infer-type "(get-in m [\"name\"] :missing)" {'m by-name}))))))
 
 (deftest literal-key-path-writes-rebuild-the-map
-  (is (= (t/prim :string)
+  (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))
   (is (= (t/lit :sibling)
          (infer-type "(get-in (assoc-in {:a {:c :sibling}} [:a :b] 2) [:a :c])")))
   (is (= t/nil-t
          (infer-type "(get-in (assoc-in {:a nil} [:a :b] nil) [:a :b] :missing)")))
-  (is (= (t/prim :int)
+  (is (= (t/lit 7)
          (infer-type "(get-in (update-in {} [:a :b] (fn [old n] (if (nil? old) n (inc old))) 7) [:a :b])")))
   (is (= (t/prim :string)
          (infer-type "(let [{:keys [a]} (update-in {:a {:b 1}} [:a :b] str) {:keys [b]} a] b)")))
@@ -86,6 +86,71 @@
     (is (= [[7 "TSP2322"] [8 "TSP2531"] [9 "TSP2339"] [10 "TSP2345"] [11 "TSP2322"]]
            (mapv (juxt (comp :row :pos) :code) ds)) (pr-str ds))
     (is (= "int?" (main/type-at result "nested.clj" 6 49)))))
+
+(deftest string-path-writes-preserve-siblings-and-stored-nil
+  (doseq [[source expected]
+          [["(get-in (assoc-in {:headers nil} [:headers \"content-type\"] \"json\") [:headers \"content-type\"] :missing)"
+            (t/lit "json")]
+           ["(get-in (assoc-in {:headers {\"vary\" \"Accept\"}} [:headers \"content-type\"] 42) [:headers \"vary\"])"
+            (t/lit "Accept")]
+           ["(get-in (assoc-in {} [\"outer\" :inner] nil) [\"outer\" :inner] :missing)"
+            t/nil-t]
+           ["(get-in (update-in {:headers {\"count\" 2}} [:headers \"count\"] inc) [:headers \"count\"])"
+            (t/prim :int)]
+           ["(get-in (update-in {:headers {}} [:headers \"count\"] (fn [old n] (if-some [x old] (+ x n) n)) 1) [:headers \"count\"])"
+            (t/lit 1)]]]
+    (is (= expected (infer-type source)) source)))
+
+(deftest select-keys-derives-presence-and-value-types-for-string-keys
+  (let [by-name {:t :map-of :k (t/prim :string) :v (t/prim :string)}
+        projected (infer-type "(select-keys m [\"url\" :other])" {'m by-name})
+        unknown (infer-type "(select-keys m [\"url\"])" {'m t/unknown})]
+    (is (= {"url" (t/prim :string)} (:opt projected)))
+    (is (empty? (:req projected)))
+    (is (true? (:complete-keys? projected)))
+    (is (= {"url" t/unknown} (:opt unknown)))
+    (is (empty? (:req unknown))))
+  (doseq [[source expected]
+          [["(get-in (select-keys {\"url\" nil :tag 1} [\"url\" :tag]) [\"url\"] :missing)" t/nil-t]
+           ["(get-in (select-keys {\"url\" 1 \"kind\" 2} [\"url\"]) [\"kind\"] :missing)" (t/lit :missing)]
+           ["(get-in (select-keys nil [\"url\"]) [\"url\"] :missing)" (t/lit :missing)]
+           ["(get-in (select-keys {\"url\" 1} []) [\"url\"] :missing)" (t/lit :missing)]
+           ["(get-in (select-keys (if flag {\"url\" 1} {}) [\"url\"]) [\"url\"] :missing)"
+            (t/union (t/lit 1) (t/lit :missing))]]]
+    (is (= (alternatives expected)
+           (alternatives (infer-type source {'flag (t/prim :boolean)}))) source)))
+
+(deftest string-map-operations-preserve-contract-checks-across-namespaces
+  (let [api (parse/parse-string "api.clj"
+                               "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::headers (s/map-of string? string?))
+(s/def ::response (s/keys :req-un [::headers]))
+(s/fdef send-response :args (s/cat :response ::response) :ret any?)
+(defn send-response [response] response)
+(s/fdef store-index :args (s/cat :row (s/map-of string? string?)) :ret any?)
+(defn store-index [row] row)")
+        client (parse/parse-string "client.clj"
+                                  "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(api/send-response (assoc-in {:headers {}} [:headers \"content-type\"] \"json\"))
+(api/send-response (assoc-in {:headers {}} [:headers \"content-type\"] 42))
+(api/store-index (select-keys {\"url\" \"urn:test\" \"ignored\" 42} [\"url\"]))
+(api/store-index (select-keys {\"url\" 42 \"ignored\" \"anything\"} [\"url\"]))
+(s/fdef good :args (s/cat :headers ::api/headers) :ret ::api/headers)
+(defn good [headers] (update-in headers [\"content-type\"] (fn [old] (or old \"json\"))))
+(s/fdef bad :args (s/cat :headers ::api/headers) :ret ::api/headers)
+(defn bad [headers] (assoc-in headers [\"content-type\"] 42))
+(s/fdef count-entry :args (s/cat :counts (s/map-of string? int?)) :ret any?)
+(defn count-entry [counts] (update-in counts [\"count\"] inc))
+(s/fdef modes :args (s/cat :m (s/map-of string? #{:enabled :disabled})) :ret (s/map-of string? #{:enabled :disabled}))
+(defn modes [m] (assoc-in m [\"mode\"] :enabled))
+(s/fdef literal-mode :args (s/cat) :ret (s/map-of string? #{\"json\" \"xml\"}))
+(defn literal-mode [] (assoc-in {} [\"mode\"] \"json\"))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"]
+            ["client.clj" 5 "TSP2345"]
+            ["client.clj" 9 "TSP2322"]
+            ["client.clj" 11 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues)) (pr-str issues))))
 
 (deftest merge-required-left-optional-right
   (let [a (map-type {:x (t/prim :string)} {:z (t/prim :string)})

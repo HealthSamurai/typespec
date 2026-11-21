@@ -141,6 +141,10 @@ request method at `http.clj:311:60`. Acceptance also checks
 sources. It expects both valid calls to pass and checks two type errors
 for deliberately invalid endpoint maps.
 
+Acceptance also checks [`probe/response.clj`](probe/response.clj).
+The response contract accepts a string `"content-type"` and rejects an
+integer stored by `assoc-in` at `[:headers "content-type"]`.
+
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,
 then deliberately edit the expected file in a separate review step. There

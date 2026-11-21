@@ -96,6 +96,10 @@
 (defn- map-members [ctx ty]
   (filter #(= :map (:t %)) (t/members (:env ctx) ty)))
 
+(defn- map-of-entry [env ty k]
+  (when-not (= :mismatch (:status (t/sub-result env (t/lit k) (:k ty))))
+    (:v ty)))
+
 (defn- lookup-key [ctx ty k & [path?]]
   (let [env (:env ctx)
         ms (remove #(= :nil (:t %)) (t/members env ty))
@@ -110,9 +114,7 @@
                            ;; a map whose type was inferred (a literal, a pattern) may hold more keys than we saw
                            (:inferred m) loose
                            :else [:missing nil])
-                :map-of (if (= :mismatch (:status (t/sub-result env (t/lit k) (:k m))))
-                          [:absent nil]
-                          [:opt (:v m)])
+                :map-of (if-let [value (map-of-entry env m k)] [:opt value] [:absent nil])
                 :coll (cond (and path? (= :set (:kind m))) [:opt (t/lit k)]
                             (and path? (nil? (:kind m))) loose
                             :else [:not-map nil])
@@ -2290,8 +2292,13 @@
                          (assoc (dissoc member :items :min-count :max-count) :of t/unknown)
                          :else member))))
 
+(defn- literal-map-keys [node]
+  (when (and (= :vector (:op node)) (empty? (:directives node)) (not (env/tag-node node))
+             (every? #(and (#{:kw :str} (:op %)) (literal-node? %)) (:children node)))
+    (:children node)))
+
 (defn- path-writes
-  "Find the previous leaf and rebuild each possible root after a keyword-path write."
+  "Find the previous leaf and rebuild each possible root after a literal map-path write."
   [ctx root keys]
   (let [env (:env ctx)
         budget (volatile! 256)
@@ -2305,23 +2312,30 @@
                         (mapcat
                          (fn [member]
                            (case (:t member)
-                             (:map :nil)
+                             (:map :nil :map-of)
                              (let [m (if (= :nil (:t member)) empty-map-shape member)
+                                   map-of? (= :map-of (:t m))
                                    previous (cond
+                                              map-of? (t/union (or (map-of-entry env m k) t/never) t/nil-t)
                                               (contains? (:req m) k) (get (:req m) k)
                                               (contains? (:opt m) k) (t/union (get (:opt m) k) t/nil-t)
                                               (:complete-keys? m) t/nil-t
                                               (get-in env [:specs k]) (t/union (t/ref-t k) t/nil-t)
-                                              :else t/unknown)]
+                                              :else t/unknown)
+                                   store (fn [value]
+                                           (if map-of?
+                                             (cond-> (update m :v t/union value)
+                                               (not (t/sub? env (t/lit k) (:k m))) (update :k t/union (t/lit k)))
+                                             (assoc-map-key m k value)))]
                                (if (seq more)
                                  (for [[leaf rebuild] (walk previous more)]
                                    [leaf (fn [value]
                                            (let [child (rebuild value)]
                                              (when-not (= :unknown (:t child)) (check-key-value! ctx k key child))
-                                             (assoc-map-key m k child)))])
-                                 [[previous #(assoc-map-key m k %)]]))
+                                             (store child)))])
+                                 [[previous store]]))
                              :never []
-                             (:any :unknown :map-of :class :var :rigid :ivar) [unchecked]
+                             (:any :unknown :class :var :rigid :ivar) [unchecked]
                              (if (and (= :prim (:t member)) (= :map (:name member)))
                                [unchecked]
                                (do (report! ctx key "TSP2339" (str "cannot write " k " into " (t/show member)))
@@ -2332,15 +2346,14 @@
 (defn- write-path [ctx node update?]
   (let [[m path value & args :as arguments] (args-of node)
         mty (infer ctx m)
-        keys (:children path)]
+        keys (literal-map-keys path)]
     (cond
       (or (nil? value) (and (not update?) (seq args)))
       (do (run! #(infer ctx %) (rest arguments))
           (report! ctx node "TSP2554" (str (if update? "update-in" "assoc-in") " is called with " (count arguments) " argument(s)"))
           t/unknown)
 
-      (and (= :vector (:op path)) (empty? (:directives path)) (not (env/tag-node path)) (seq keys)
-           (every? #(and (= :kw (:op %)) (literal-node? %)) keys))
+      (seq keys)
       (let [writes (path-writes ctx mty keys)
             vty (if (and update? (seq writes))
                   (apply-fn-node ctx value (into [(apply t/union (map first writes))] (map #(infer ctx %) args)))
@@ -2349,7 +2362,7 @@
             spec (when (get-in (:env ctx) [:specs k]) (t/ref-t k))
             stored (if (and spec (not (t/sub? (:env ctx) (eff ctx vty) spec)))
                      spec
-                     (widen (dissoc vty :fresh)))]
+                     (dissoc vty :fresh))]
         (when (seq writes) (check-key-value! ctx k value vty))
         (if (= t/never vty) t/never (apply t/union (map #((second %) stored) writes))))
 
@@ -2413,11 +2426,16 @@
 (defmethod special 'select-keys [ctx node _]
   (let [[m ks] (args-of node)
         mty (infer ctx m)]
-    (if (and (= :vector (:op ks)) (every? #(= :kw (:op %)) (:children ks)))
-      (let [infos (for [k (:children ks)] [(:val k) (key-info ctx mty (:val k) k)])]
-        {:t :map
-         :req (into (array-map) (for [[k i] infos :when (not (:optional? i))] [k (:type i)]))
-         :opt (into (array-map) (for [[k i] infos :when (:optional? i)] [k (:type i)]))})
+    (if-let [keys (literal-map-keys ks)]
+      (if (= t/never mty)
+        t/never
+        (reduce (fn [shape node]
+                  (let [k (:val node)
+                        {:keys [type optional? declared?]} (key-info ctx mty k node)]
+                    (if (= t/never type)
+                      shape
+                      (assoc-in shape [(if (or optional? (not declared?)) :opt :req) k] type))))
+                empty-map-shape keys))
       (do (infer ctx ks) t/unknown))))
 
 ;; collections

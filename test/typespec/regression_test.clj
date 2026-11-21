@@ -12,6 +12,7 @@
     typespec.spec-args-test
     typespec.spec-conform-test
     typespec.project-contracts-test
+    typespec.contract-diff-test
     typespec.protocol-contracts-test
     typespec.case-narrowing-test
     typespec.checked-guards-test

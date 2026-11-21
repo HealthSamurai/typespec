@@ -265,9 +265,13 @@
                ctx (type-ctx file (opaque form))
                r (if ret (t/parse-type ctx ret) t/unknown)
                ars (t/spec-args->arities ctx args r)]
-           (if (and (= :sym (:op nm)) ars)
-             (register-spec acc :fdefs (qualify (:val nm))
-                            {:type {:t :fn :arities ars} :file (:file file) :pos (:pos form)} diags)
+           (if (= :sym (:op nm))
+             (let [sym (qualify (:val nm))
+                   location {:file (:file file) :pos (:pos form)}]
+               (if ars
+                 (-> (update acc :opaque-fdefs dissoc sym)
+                     (register-spec :fdefs sym (assoc location :type {:t :fn :arities ars}) diags))
+                 (assoc-in acc [:opaque-fdefs sym] location)))
              acc))
 
          (= 'defprotocol h)
@@ -330,7 +334,8 @@
         acc (reduce #(collect-file %1 %2 diags) {:specs {} :fdefs {} :defns {} :macros #{} :protocols {}} files)
         contracts (externs/normalize-contracts (:specs acc) contracts)
         operator-env {:specs (merge (:specs contracts) (:specs acc))}
-        env {:specs (:specs acc) :macros (:macros acc) :root-definitions (:root-definitions acc)
+        env {:specs (:specs acc) :opaque-fdefs (:opaque-fdefs acc)
+             :macros (:macros acc) :root-definitions (:root-definitions acc)
              :protocols (:protocols acc)
              :key-nss (set (keep namespace (keys (:specs acc))))}
         vars (into {}

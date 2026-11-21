@@ -17,6 +17,7 @@
 (def ^:dynamic *diags* nil)
 (def ^:dynamic *types* nil)
 (def ^:dynamic *var-uses* nil)
+(def ^:dynamic *spec-uses* nil)
 (def ^:dynamic *ignores* nil)
 (def ^:dynamic *trust* nil)
 (def ^:dynamic *rets* nil)
@@ -1688,6 +1689,8 @@
                      (conform/tagged-result (:env ctx)
                                             (assoc (env/type-ctx (:file ctx) nil) :locals (:locals ctx))
                                             form))]
+        (when (and *spec-uses* (qualified-keyword? form) (not (:quiet ctx)) (not (:synthetic node)))
+          (swap! *spec-uses* conj {:spec form :kind :conform :file (get-in ctx [:file :file]) :pos (:pos spec)}))
         (when-not (and result (= :list (:op spec))) (infer ctx spec))
         (if (= t/never (infer ctx value)) t/never (or result t/unknown)))
       (do (run! #(infer ctx %) args)
@@ -3289,6 +3292,7 @@
     (binding [*diags* (atom (vec (map #(merge {:severity :error} %) (concat env-diags (:diagnostics guard-result)))))
               *types* (atom [])
               *var-uses* (when (:track-uses opts) (atom #{}))
+              *spec-uses* (when (:track-uses opts) (atom #{}))
               *ignores* (atom [])
               *trust* (atom (cond-> {:cast 0 :any 0 :ignore 0} (pos? guard-trust) (assoc :guard guard-trust)))
               *rets* (atom {})]
@@ -3316,5 +3320,6 @@
                     (sort-by (juxt :file #(:row (:pos %)) #(:col (:pos %)) :code)))]
         {:diagnostics (vec ds) :types @*types* :trust @*trust* :env env
          :uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :var :kind) (when *var-uses* @*var-uses*)))
+         :spec-uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :spec) (when *spec-uses* @*spec-uses*)))
          :sigs (into {} (for [[sym v] (:vars env)]
                           [sym (var-type {:env env :opts opts} sym)]))}))))

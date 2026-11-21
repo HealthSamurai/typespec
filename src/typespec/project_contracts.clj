@@ -7,13 +7,19 @@
   (into #{} (keep #(when (and (map? %) (= :ref (:t %))) (:name %)))
         (tree-seq coll? seq ty)))
 
-(defn- dependencies [specs ty]
-  (loop [pending (seq (references ty)) seen #{}]
-    (if-let [k (first pending)]
-      (if (contains? seen k)
-        (recur (next pending) seen)
-        (recur (concat (references (get-in specs [k :type])) (next pending)) (conj seen k)))
-      (sort seen))))
+(defn dependency-paths
+  "Shortest paths from a signature to each referenced spec."
+  [specs ty]
+  (loop [pending (into clojure.lang.PersistentQueue/EMPTY (map vector (sort (references ty))))
+         paths (sorted-map)]
+    (if-let [path (peek pending)]
+      (let [k (peek path)
+            pending (pop pending)]
+        (if (contains? paths k)
+          (recur pending paths)
+          (recur (into pending (map #(conj path %) (sort (references (get-in specs [k :type])))))
+                 (assoc paths k path))))
+      paths)))
 
 (defn- location [relative {:keys [file pos]}]
   (when file {:file (relative file) :pos pos}))
@@ -36,6 +42,6 @@
                                    (cond-> {:name (str key) :type (some-> spec :type t/show)
                                             :declaration (location relative spec)}
                                      output (assoc :conform (t/show output)))))
-                               (dependencies specs signature))
+                               (keys (dependency-paths specs signature)))
                   :uses (mapv #(assoc (location relative %) :kind (:kind %)) (get by-var sym))}
            protocol (assoc :protocol (str protocol))))))))

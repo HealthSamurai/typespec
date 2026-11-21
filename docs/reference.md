@@ -314,6 +314,7 @@ type of `patient`. These directives add no trust entries.
 ```bash
 typespec check src --json            # errors
 typespec contracts src --json        # public signatures, specs, and source uses
+typespec contracts-diff ../base src --json # check public contracts against a baseline checkout
 typespec sig app.patients            # inferred and declared ns signatures
 typespec type-at src/app/p.clj:14:9  # expression type (hover)
 typespec annotate app.patients       # draft t/sig and types.edn — data only, no behavior changes
@@ -321,6 +322,12 @@ typespec fix --risk safe             # safe autofixes only
 typespec coverage --trust            # proven types, gaps, budget
 typespec order                       # annotation order: bottom-up through the ns graph
 ```
+
+`contracts-diff` checks public callable contracts and named `s/or` tags
+between two source roots. A breaking change exits with status 1.
+Inconclusive comparisons are reported in `changes`. The report includes
+declarations, known uses, and paths through referenced specs.
+[Compatibility rules and exit statuses](../features/F723-public-contract-compatibility.md)
 
 ```json
 {"version": 1, "id": "e3f1…", "code": "TSP2339", "severity": "error",

@@ -158,6 +158,7 @@
   its elements: vector? to (s/coll-of string?) is inconclusive instead of proved.
   The solver binds it; ordinary gradual checks keep the lenient rule."
   false)
+(def ^:dynamic ^:private *contract-subtyping* false)
 
 (defn- inconclusive! [reason]
   (when *inconclusive* (swap! *inconclusive* conj reason))
@@ -169,8 +170,24 @@
                        :seq #{:coll} :map #{:coll} :keyword #{:fn}} a) b)))
 
 (defn- map-sub? [env s t]
-  (and (every? (fn [[k tv]] (when-let [sv (get (:req s) k)] (sub? env sv tv))) (:req t))
-       (every? (fn [[k tv]] (if-let [sv (or (get (:req s) k) (get (:opt s) k))] (sub? env sv tv) true)) (:opt t))))
+  (let [required (fn [[k tv]] (when-let [sv (get (:req s) k)] (sub? env sv tv)))
+        optional (fn [[k tv]]
+                   (if-let [sv (or (get (:req s) k) (get (:opt s) k))]
+                     (sub? env sv tv)
+                     (or (not *contract-subtyping*) (sub? env any tv))))]
+    (if *contract-subtyping*
+      ;; Isolate the reasons from each field. An incompatible field is decisive
+      ;; even if the shape also contains an opaque sibling.
+      (let [proof (fn [check field]
+                    (binding [*inconclusive* (atom #{})]
+                      (if (check field) #{} (not-empty @*inconclusive*))))
+            results (concat (map #(proof required %) (:req t))
+                            (map #(proof optional %) (:opt t)))]
+        (when (every? some? results)
+          (let [reasons (into #{} cat results)]
+            (run! inconclusive! reasons)
+            (empty? reasons))))
+      (and (every? required (:req t)) (every? optional (:opt t))))))
 
 (defn arity-minimum [arity]
   (+ (count (:params arity)) (get arity :rest-min 0)))
@@ -243,11 +260,15 @@
 (defn- sub1? [env s t]
   (let [st (:t s) tt (:t t)]
     (cond
-      ;; Reflexivity is valid even for opaque kwargs or unknown components:
-      ;; it establishes no conversion between different callable contracts.
-      (= (strip s) (strip t)) true
+      ;; In ordinary checking, equality can establish reflexivity even for
+      ;; opaque components. Comparing revisions must account for those gaps.
+      (and *contract-subtyping* (or (= :unknown st) (= :unknown tt)))
+      (inconclusive! (or (:contract-reason s) (:contract-reason t) :unknown))
+      (and (= (strip s) (strip t))
+           (or (not *contract-subtyping*) (not (#{:map :coll} st)))) true
       (#{:any :unknown} tt) true
-      (#{:any :never} st) true
+      (= :never st) true
+      (= :any st) (not *contract-subtyping*)
       (= :unknown st) (inconclusive! :unknown)
       (= :rigid tt) false
       ;; An arbitrary type parameter fits only itself and top (handled above):
@@ -321,7 +342,14 @@
     (inconclusive! :depth)
     (binding [*depth* (inc *depth*)]
       (let [tt (members env t)]
-        (every? (fn [s1] (some #(sub1? env s1 %) tt)) (members env s))))))
+        (every? (fn [s1]
+                  (or (some #(sub1? env s1 %) tt)
+                      ;; A structural value can be covered by several alternatives
+                      ;; even when it is not contained in any one of them.
+                      (when (and *contract-subtyping* (#{:map :coll} (:t s1))
+                                 (< 1 (count (filter #(= (:t s1) (:t %)) tt))))
+                        (inconclusive! :structural-union))))
+                (members env s))))))
 
 (defn sub-result
   "Companion to sub?: {:status :proved|:mismatch|:inconclusive :reasons #{...}}.
@@ -334,6 +362,13 @@
           reasons @*inconclusive*]
       {:status (cond proved? :proved (seq reasons) :inconclusive :else :mismatch)
        :reasons (if proved? #{} reasons)})))
+
+(defn contract-sub-result
+  "Directional containment for public contract shapes. any? admits every input,
+  and undeclared keys in an open map have no value constraint."
+  [source target]
+  (binding [*strict-shapes* true *contract-subtyping* true]
+    (sub-result {} source target)))
 
 ;; ---- printing ----
 

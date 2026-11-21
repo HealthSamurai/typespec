@@ -40,4 +40,4 @@ origin: Clojure
 дают `TSP722-01`. При полном прогоне изменения обязательных полей,
 типов полей и аргументов проверяются и в объявлении, и у потребителей.
 
-[Модульные интерфейсы](F720-module-interfaces.md) · [Трёхфайловый тест](../test/typespec/project_contracts_test.clj)
+[Модульные интерфейсы](F720-module-interfaces.md) · [Сравнение ревизий](F723-public-contract-compatibility.md) · [Трёхфайловый тест](../test/typespec/project_contracts_test.clj)

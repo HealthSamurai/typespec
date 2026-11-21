@@ -8,6 +8,7 @@
             [typespec.types :as t]
             [typespec.check :as check]
             [typespec.externs :as externs]
+            [typespec.contract-diff :as contract-diff]
             [typespec.project-contracts :as project-contracts]))
 
 (defn source-files [paths]
@@ -33,6 +34,7 @@
                 (update :diagnostics (fn [ds] (mapv #(update % :file rel) ds)))
                 (update :types (fn [ts] (mapv #(update % :file rel) ts)))
                 (update :uses (fn [uses] (mapv #(update % :file rel) uses)))
+                (update :spec-uses (fn [uses] (mapv #(update % :file rel) uses)))
                 (assoc :files (count files)))
       (:track-uses cfg) (assoc :contracts (project-contracts/index res rel)))))
 
@@ -72,6 +74,36 @@
         size (fn [{p :pos}] [(- (:end-row p) (:row p)) (- (:end-col p) (:col p))])]
     (when-let [h (first (sort-by size hits))]
       (binding [t/*cur-ns* (:ns h)] (t/show (:type h))))))
+
+(defn run-contract-diff [base-root root paths opts]
+  (let [snapshot (fn [path revision]
+                   (let [root (.getCanonicalPath (io/file path))
+                         result (run-check root paths (assoc opts :track-uses true))]
+                     (when (zero? (:files result))
+                       (throw (ex-info (str "no source files for " (name revision) " at " root) {})))
+                     (when (some #(= "TSP722-01" (:code %)) (:diagnostics result))
+                       (throw (ex-info (str "conflicting declarations in " (name revision) " at " root) {})))
+                     (assoc result :root root)))
+        before (snapshot base-root :baseline)
+        after (snapshot root :current)]
+    {:version 1
+     :changes (contract-diff/compare-projects before after)
+     :diagnostics {:before (:diagnostics before) :after (:diagnostics after)}}))
+
+(defn- contracts-diff-cli [base-root root paths opts]
+  (let [json? (:json opts)
+        report (try
+                 (when-not base-root
+                   (throw (ex-info "contracts-diff requires a baseline project root" {})))
+                 (run-contract-diff base-root root paths (select-keys opts [:strict :strict-nil]))
+                 (catch Exception e {:version 1 :error (or (.getMessage e) (.getSimpleName (class e)))}))]
+    (if json?
+      (println (json/write-str (cond-> report
+                                (:diagnostics report) (update :diagnostics #(update-vals % (fn [ds] (mapv diag->json ds)))))))
+      (prn report))
+    (cond (:error report) 2
+          (some #(= :breaking (:status %)) (:changes report)) 1
+          :else 0)))
 
 (defn- parse-args [args]
   (loop [args args opts {} rest-args []]
@@ -113,10 +145,15 @@
                       (prn out))
                     (shutdown-agents)
                     (System/exit (if (some #(= :error (:severity %)) ds) 1 0)))
+      "contracts-diff" (let [[base-root & paths] more
+                             status (contracts-diff-cli base-root root paths opts)]
+                         (shutdown-agents)
+                         (System/exit status))
       "type-at" (let [[file row col] (str/split (first more) #":")
                       res (run-check root nil copts)]
                   (println (or (type-at res file (parse-long row) (parse-long col)) "no expression here")))
       (do (println "usage: typespec check [paths] [--json] [--strict] [--strict-nil] [--root dir]")
           (println "       typespec contracts [paths] [--json] [--root dir]")
+          (println "       typespec contracts-diff <baseline-root> [paths] [--json] [--root current-root]")
           (println "       typespec sig <ns> [--root dir]")
           (println "       typespec type-at <file>:<line>:<col> [--root dir]")))))

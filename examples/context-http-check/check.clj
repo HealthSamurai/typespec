@@ -96,6 +96,8 @@
               "Expected future in notify-on-request to have its built-in type")
       (assert (= "t/unknown" (main/type-at result "src/http.clj" 267 9))
               "Expected the subscriber call inside future to be analyzed")
+      (assert (= "int?" (main/type-at result "src/uui.clj" 120 15))
+              "Expected an integer index in the breadcrumb map-indexed callback")
       (check-probes! parsed)
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))
   (prn summary)

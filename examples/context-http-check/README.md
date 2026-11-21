@@ -151,6 +151,10 @@ Acceptance also checks [`probe/response.clj`](probe/response.clj).
 The response contract accepts a string `"content-type"` and rejects an
 integer stored by `assoc-in` at `[:headers "content-type"]`.
 
+Acceptance asserts that `map-indexed` infers `int?` for the callback index
+at `uui.clj:120:15` in `breadcrumb`. All 43 diagnostic tuples still match
+the reviewed snapshot.
+
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,
 then deliberately edit the expected file in a separate review step. There

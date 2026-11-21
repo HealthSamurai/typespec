@@ -2660,6 +2660,26 @@
               ret (case h keep (t/remove-nil (:env ctx) ret) mapcat (elem-type ctx ret) ret)]
           (coll-of (if (= 'mapv h) :vector :seq) ret))))))
 
+(defmethod special 'map-indexed [ctx node _]
+  (let [[f coll :as args] (args-of node)]
+    (case (count args)
+      1 (do (infer ctx f) t/unknown)
+      2 (let [source (eff ctx (infer ctx coll))
+              invalid (unsupported-sequence-member ctx source)]
+          (cond
+            (= t/never source) (do (infer ctx f) t/never)
+            invalid (do (infer ctx f)
+                        (report! ctx coll "TSP2345" (str "map-indexed cannot sequence " (t/show invalid)))
+                        t/unknown)
+            :else (let [element (elem-type ctx source)
+                        result (apply-fn-node ctx f [(t/prim :int) element])]
+                    (if (= t/never element)
+                      (length/with-bounds (coll-of :seq t/never) 0 0)
+                      (coll-of :seq result)))))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "map-indexed expects 1 or 2 arguments")
+          t/unknown))))
+
 (defn- filter-types [ctx f el]
   (let [env (:env ctx)]
     (if-let [summary (get-in env [:guards (guard-symbol ctx f)])]

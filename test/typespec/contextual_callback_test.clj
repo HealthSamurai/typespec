@@ -211,6 +211,54 @@
   (is (= ["TSP2345"] (codes (check-source "(mapv #(+ %1 %2) [1 2] [\"a\" \"b\"])"))))
   (is (empty? (codes (check-source "(mapv #(+ %1 %2) [1 2] [3 4])")))))
 
+(deftest map-indexed-infers-the-callback-and-lazy-result
+  (let [result (check-source "(clojure.core/map-indexed #(str (inc %1) (str/upper-case %2)) [\"abc\"])
+(->> [\"abc\"] (map-indexed #(str %1 %2)) (into []))
+(map-indexed (fn [i x] (str i x)) nil)
+(map-indexed (fn [i x] (str i x)) [])
+(let [map-indexed str] (map-indexed :left :right))
+(first (map-indexed str []))
+(s/def ::entry (s/tuple string? int?))
+(s/fdef labels :args (s/cat :xs (s/coll-of ::entry)) :ret (s/coll-of string? :kind seq?))
+(defn labels [xs] (map-indexed (fn [i [label n]] (str (+ i n) (str/upper-case label))) xs))")]
+    (is (empty? (codes result)) (pr-str (:diagnostics result)))
+    (is (= ["(s/coll-of string? :kind seq?)"
+            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "string?"
+            "nil?"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) (range 5 11))))))
+
+(deftest map-indexed-checks-callbacks-and-arity
+  (let [result (check-source "(map-indexed (fn [i x] (subs i 1)) [\"abc\"])
+(map-indexed (fn [i x] (inc x)) [\"abc\"])
+(map-indexed (fn [i] i) [\"abc\"])
+(map-indexed (fn [i x] x) 42)
+(map-indexed)
+(map-indexed str [1] [2])
+(map-indexed (fn [i x] (str i x)))")]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"] [9 "TSP2554"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "t/unknown" (main/type-at result "callbacks.clj" 11 1)))))
+
+(deftest map-indexed-resolves-the-callback-spec-across-namespaces
+  (let [api (parse/parse-string "indexed/api.clj"
+                               "(ns indexed.api (:require [clojure.spec.alpha :as s]))
+                                (s/fdef label :args (s/cat :index int? :item string?) :ret string?)
+                                (defn label [i item] (str i item))")
+        caller (parse/parse-string "indexed/caller.clj"
+                                  "(ns indexed.caller (:require [clojure.spec.alpha :as s] [indexed.api :as api]))
+(s/fdef good :args (s/cat :xs (s/coll-of string?)) :ret (s/coll-of string? :kind seq?))
+(defn good [xs] (map-indexed api/label xs))
+(s/fdef bad :args (s/cat :xs (s/coll-of int?)) :ret (s/coll-of string? :kind seq?))
+(defn bad [xs] (map-indexed api/label xs))")
+        result (check/check-files [caller api] {})]
+    (is (= [["indexed/caller.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
 (deftest reduce-checks-cardinality-and-the-accumulator
   (doseq [source ["(defn f {:t/sig '[:-> int?]} [] (reduce (fn [a b] \"unused\") 0 []))"
                   "(defn f {:t/sig '[:-> int?]} [] (reduce (fn [a b] \"unused\") [1]))"

@@ -9,3 +9,8 @@
 (accept-endpoint {:path "/" :method :post :fn (fn [_] nil) :middleware '()})
 (accept-endpoint {:path "/" :method :trace :fn (fn [_] nil)})
 (accept-endpoint {:path "/" :method :get :fn (fn [_] nil) :middleware {:auth true}})
+
+(http/register-endpoint {} {:path "/" :method :get :fn (fn [_] nil) :middleware []})
+(http/register-endpoint {} {:path "/" :method :post :fn (fn [_] nil) :middleware '()})
+(http/register-endpoint {} {:path "/" :method :trace :fn (fn [_] nil)})
+(http/register-endpoint {} {:path "/" :method :get :fn (fn [_] nil) :middleware {:auth true}})

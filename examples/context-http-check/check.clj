@@ -16,12 +16,15 @@
         probes (filter #(paths (:file %)) (:diagnostics checked))]
     (assert (= [[endpoint-path 10 :error "TSP2322"]
                 [endpoint-path 11 :error "TSP2322"]
+                [endpoint-path 15 :error "TSP2322"]
+                [endpoint-path 16 :error "TSP2322"]
                 [response-path 10 :error "TSP2345"]]
                (mapv (juxt :file (comp :row :pos) :severity :code) probes))
             (str "HTTP contract probe diagnostics changed: " (pr-str probes)))
     (assert (str/includes? (:message (nth probes 0)) "value of :method: :trace"))
     (assert (str/includes? (:message (nth probes 1)) "value of :middleware:"))
-    (println "ENDPOINT PASS: original HTTP Spec accepted list/vector middleware and rejected two invalid calls")
+    (assert (= (mapv :message (take 2 probes)) (mapv :message (subvec (vec probes) 2 4))))
+    (println "ENDPOINT PASS: direct and macro calls use the original HTTP Spec")
     (println "RESPONSE PASS: a string content-type passed and an integer was rejected after assoc-in")))
 
 (let [pin "e158b6b244c2b8e053de2a097d1071d9419adef9"

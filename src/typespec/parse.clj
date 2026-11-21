@@ -49,6 +49,17 @@
       (= '?@ t) nil
       :else {:op :opaque :pos (npos x)})))
 
+(defn- template-node [node opts depth]
+  (let [tag (n/tag node)
+        pos (npos node)]
+    (cond
+      (#{:token :multi-line} tag) (convert node opts)
+      (and (pos? depth) (#{:list :vector :unquote} tag))
+      {:op tag :pos pos
+       :children (mapv #(template-node % opts (dec depth))
+                       (remove #(skip-tags (n/tag %)) (n/children node)))}
+      :else {:op :opaque :pos pos})))
+
 (defn convert [x opts]
   (let [tag (n/tag x) pos (npos x)]
     (case tag
@@ -67,6 +78,13 @@
                            m (update m :pos merge (select-keys pos [:row :col]))] ; include the ^
                        (when t (update t :meta #(into [m] %))))
       :quote {:op :quote :children (convert-seq (n/children x) opts) :pos pos}
+      :syntax-quote
+      (let [[body & more] (remove #(skip-tags (n/tag %)) (n/children x))]
+        ;; The ordinary AST walk treats this as opaque. Macro analysis can
+        ;; match the inert template without expanding it.
+        (cond-> {:op :opaque :pos pos}
+          (and body (empty? more) (= :list (n/tag body)))
+          (assoc :syntax-template (template-node body opts 8))))
       :var {:op :var :children (convert-seq (n/children x) opts) :pos pos}
       :fn {:op :fn-lit :children (convert-seq (n/children x) opts) :pos pos}
       :deref {:op :list :pos pos

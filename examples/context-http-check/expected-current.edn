@@ -1,6 +1,6 @@
 {:review
- "F112 checks both endpoint Spec predicates. The unknown request method in dispatch is reported as an incomplete compatibility check.",
- :counts {:warning 48},
+ "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check.",
+ :counts {:warning 43},
  :coverage
  [{:file "src/http.clj",
    :opaque-nodes 1,
@@ -99,12 +99,12 @@
    #{:unknown}
    "e635e760c59d075243d5f36a656c1570"]
   ["src/http.clj"
-   {:row 172, :col 6, :end-row 172, :end-col 28}
+   {:row 172, :col 37, :end-row 172, :end-col 45}
    :warning
-   "TSP7031"
-   "macro http/register-endpoint is not described: its body is not checked"
-   nil
-   "142ecaf1421c95557be60d3d4d7d388c"]
+   "TSP210-01"
+   "compatibility not checked: t/unknown to ::endpoint (unknown)"
+   #{:unknown}
+   "16a90827e1f765a6054d9b416a882d54"]
   ["src/http.clj"
    {:row 286, :col 16, :end-row 287, :end-col 43}
    :warning
@@ -259,13 +259,6 @@
    "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
    #{:unknown}
    "6bb153d00241586bab1419a68b406de1"]
-  ["src/http/openapi.clj"
-   {:row 10, :col 4, :end-row 10, :end-col 26}
-   :warning
-   "TSP7031"
-   "macro http/register-endpoint is not described: its body is not checked"
-   nil
-   "1052e62e2882ad0d5c786997eff84cee"]
   ["src/http/routing.clj"
    {:row 126, :col 46, :end-row 126, :end-col 55}
    :warning
@@ -378,34 +371,6 @@
    "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
    #{:unknown}
    "1cd393b452c15c55cee5d5c5cc8b0200"]
-  ["src/uui.clj"
-   {:row 45, :col 4, :end-row 45, :end-col 26}
-   :warning
-   "TSP7031"
-   "macro http/register-endpoint is not described: its body is not checked"
-   nil
-   "6f457632408ef3f2f4905f4c7dd64b06"]
-  ["src/uui.clj"
-   {:row 46, :col 4, :end-row 46, :end-col 26}
-   :warning
-   "TSP7031"
-   "macro http/register-endpoint is not described: its body is not checked"
-   nil
-   "d28302c007319badf9fc94174d95c9e6"]
-  ["src/uui.clj"
-   {:row 47, :col 4, :end-row 47, :end-col 26}
-   :warning
-   "TSP7031"
-   "macro http/register-endpoint is not described: its body is not checked"
-   nil
-   "d9062f7d88b26dbf826f716dfc619b15"]
-  ["src/uui.clj"
-   {:row 48, :col 4, :end-row 48, :end-col 26}
-   :warning
-   "TSP7031"
-   "macro http/register-endpoint is not described: its body is not checked"
-   nil
-   "3747784e32ba748eda2e97be3bec17ad"]
   ["src/uui.clj"
    {:row 98, :col 36, :end-row 98, :end-col 44}
    :warning

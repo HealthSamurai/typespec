@@ -1,12 +1,14 @@
 (ns typespec.macro-contracts
-  "Opt-in, trusted binding-body macro assumptions, NOT verified macro expansions.
+  "Source-derived Spec checks and opt-in, trusted binding-body assumptions.
   No macros are loaded, expanded or executed. Contracts describe only body locals
   and its expected return, not the macro expression's value or generated vars.
   :macro-contracts {qualified/macro {:shape :binding-body
                                    :bindings [type-at-index-0 ...] :ret type}}.
   Only a first argument vector of distinct simple symbols is supported; remaining
   arguments are body forms. Destructuring, rest bindings and other shapes fail closed."
-  (:require [clojure.walk :as walk]
+  (:require [clojure.string :as str]
+            [clojure.walk :as walk]
+            [typespec.env :as env]
             [typespec.types :as t]))
 
 (defn compile-contracts
@@ -69,3 +71,119 @@
          (every? #(and (= :sym (:op %)) (simple-symbol? (:val %))
                        (not= '& (:val %))) (:children bindings))
          (= (count used) (count (distinct used))))))
+
+(defn- binding-name [node]
+  (let [sym (:val node)]
+    (when (and (= :sym (:op node)) (simple-symbol? sym)
+               (not (contains? '#{& &form &env} sym)) (empty? (:meta node)))
+      sym)))
+
+(defn- parameter-locals [node]
+  (if-let [sym (binding-name node)]
+    [sym]
+    (when (and (= :map (:op node)) (even? (count (:children node))) (empty? (:meta node)))
+      (let [pairs (partition 2 (:children node))
+            aliases (filter #(= :as (:val (first %))) pairs)
+            fields (remove #(= :as (:val (first %))) pairs)
+            alias (binding-name (second (first aliases)))]
+        (when (and (= 1 (count aliases)) alias
+                   (every? (fn [[local key]] (and (binding-name local) (= :kw (:op key)))) fields))
+          (into [alias] (map (comp binding-name first)) fields))))))
+
+(defn- call-head [form arity]
+  (let [head (first (:children form))]
+    (when (and (= :list (:op form)) (= :sym (:op head))
+               (= (inc arity) (count (:children form))))
+      (:val head))))
+
+(defn- core-call? [ctx name arity form]
+  (= name (t/core-name ctx (call-head form arity))))
+
+(defn- spec-call? [ctx file name arity form]
+  (when-let [head (call-head form arity)]
+    (and (not (contains? (:defined-symbols ctx) head))
+         (= name (env/resolve-sym file head)))))
+
+(defn- unquoted-node [node]
+  (when (and (= :unquote (:op node)) (= 1 (count (:children node))))
+    (first (:children node))))
+
+(defn- spec-key [node]
+  (let [key (if (= :kw (:op node)) node (unquoted-node node))]
+    (when (and (= :kw (:op key)) (qualified-keyword? (:val key)))
+      (:val key))))
+
+(defn- invalid-test? [ctx file test result]
+  (let [[_ a b] (:children test)]
+    (or (and (core-call? ctx '= 2 test)
+             (= :kw (:op a)) (= :clojure.spec.alpha/invalid (:val a))
+             (= :sym (:op b)) (= result (:val b)))
+        (and (spec-call? ctx file 'clojure.spec.alpha/invalid? 1 test)
+             (= :sym (:op a)) (= result (:val a))))))
+
+(defn- rejection? [ctx file branch spec parameter]
+  (let [[_ exception] (:children branch)
+        [_ message explanation] (:children exception)
+        [_ key arg] (:children explanation)]
+    (and (core-call? ctx 'throw 1 branch)
+         (core-call? ctx 'ex-info 2 exception)
+         (= :str (:op message))
+         (spec-call? ctx file 'clojure.spec.alpha/explain-data 2 explanation)
+         (= spec (spec-key key))
+         (= parameter (binding-name (unquoted-node arg))))))
+
+(defn- direct-forwarding? [env file form parameters]
+  (when-let [head (call-head form (count parameters))]
+    (let [resolved (env/resolve-sym file head)
+          target (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))]
+      (and (get-in env [:vars target :parts])
+           (= 1 (get-in env [:root-definitions target]))
+           (not (contains? (:macros env) target))
+           (= parameters (mapv (comp binding-name unquoted-node) (rest (:children form))))))))
+
+(defn- spec-template-contract [env file form]
+  (let [{[{params :params [quoted & body] :body} & more] :arities} (env/defn-parts form)
+        ctx (assoc (env/type-ctx file nil) :defined-symbols (get-in env [:ns-defs (:ns file)]))
+        locals (mapv parameter-locals (:children params))
+        parameters (mapv first locals)
+        names (mapcat identity locals)
+        template (:syntax-template quoted)
+        [_ bindings conditional] (:children template)
+        [binding conform] (:children bindings)
+        result (binding-name binding)
+        [_ spec-node argument] (:children conform)
+        spec (spec-key spec-node)
+        parameter (binding-name (unquoted-node argument))
+        index (get (zipmap parameters (range)) parameter)
+        [_ test failure success] (:children conditional)]
+    (when (and (= 'defmacro (t/core-name ctx (get-in form [:children 0 :val])))
+               (empty? more) (empty? body) (empty? (:meta params))
+               (seq locals) (every? some? locals) (apply distinct? names)
+               (core-call? ctx 'let 2 template)
+               (= :vector (:op bindings)) (= 2 (count (:children bindings)))
+               result (str/ends-with? (name result) "#")
+               (spec-call? ctx file 'clojure.spec.alpha/conform 2 conform)
+               (some? index)
+               spec (get-in env [:specs spec])
+               (not= t/unknown (t/resolve-t env (t/ref-t spec)))
+               (core-call? ctx 'if 3 conditional)
+               (invalid-test? ctx file test result)
+               (rejection? ctx file failure spec parameter)
+               (direct-forwarding? env file success parameters))
+      {:spec spec :index index :arity (count parameters)})))
+
+(defn infer-spec-contracts
+  "Read a fixed syntax-quoted Spec guard and direct function call as an argument check."
+  [env files]
+  (when (seq (:macros env))
+    (let [definitions (for [file files form (:forms file)
+                            :when (= 'defmacro (env/head file form))
+                            :let [nm (:val (second (:children form)))]
+                            :when (simple-symbol? nm)]
+                        [(symbol (str (:ns file)) (name nm)) file form])]
+      (into {}
+            (for [[sym [[_ file form] & more]] (group-by first definitions)
+                  :when (and (empty? more) (not (get-in env [:root-definitions sym])))
+                  :let [contract (spec-template-contract env file form)]
+                  :when contract]
+              [sym contract])))))

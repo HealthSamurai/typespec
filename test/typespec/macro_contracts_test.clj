@@ -1,5 +1,6 @@
 (ns typespec.macro-contracts-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.string :as str]
+            [clojure.test :refer :all]
             [typespec.check :as check]
             [typespec.main :as main]
             [typespec.parse :as parse]))
@@ -129,3 +130,54 @@
            {:macro-contracts contracts})]
     (is (contains? (codes r) "TSP2345"))
     (is (not (contains? (codes r) "TSP7031")))))
+
+(def ^:private spec-guard-provider
+  "(ns fixture.guard-api (:require [clojure.spec.alpha :as s]))
+(s/def ::method #{:get :post})
+(s/def ::request (s/keys :req-un [::method]))
+(defn accept [ctx request] request)
+(defmacro install [ctx {_method :method :as request}]
+  `(let [result# (s/conform ~::request ~request)]
+     (if (s/invalid? result#)
+       (throw (ex-info \"Invalid request\" (s/explain-data ~::request ~request)))
+       (accept ~ctx ~request))))")
+
+(deftest static-spec-macro-argument-checks-work-across-namespaces
+  (let [provider (parse/parse-string "provider.clj" spec-guard-provider)
+        client (parse/parse-string "client.clj"
+                                   "(ns client (:require [fixture.guard-api :as g :refer [install]]
+                                                         [clojure.spec.alpha :as s]))
+(g/install {} {:method :get})
+(g/install {} {:method :trace})
+(install {} {})
+(install {})
+(defn inbound [request] (install {} request))
+(let [install (fn [_ request] request)] (install {} {:method :trace}))
+(with-redefs [s/conform (fn [_ x] x)] (g/install {} {:method :trace}))")
+        result (check/check-files [client provider] {})
+        issues (:diagnostics result)]
+    (is (= {:spec :fixture.guard-api/request :index 1 :arity 2}
+           (get-in result [:env :spec-macro-contracts 'fixture.guard-api/install])))
+    (is (= [[4 15 "TSP2322" :error] [5 13 "TSP2741" :error] [6 1 "TSP2554" :error]
+            [7 37 "TSP210-01" :warning] [9 40 "TSP7031" :warning]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code :severity) issues))
+        (pr-str issues))
+    (is (= issues (:diagnostics (check/check-files [provider client] {}))))
+    (is (= "t/unknown" (main/type-at result "client.clj" 3 1)))
+    (is (= {:cast 0 :any 0 :ignore 0} (:trust result)))
+    (is (nil? (find-ns 'fixture.guard-api)))))
+
+(deftest unsupported-spec-templates-retain-the-macro-warning
+  (let [client (parse/parse-string "client.clj"
+                                   "(ns client (:require [fixture.guard-api :as g]))
+(g/install {} {:method :trace})")]
+    (doseq [source [(str/replace spec-guard-provider "(s/invalid? result#)" "(s/invalid? different#)")
+                    (str/replace spec-guard-provider "~::request" "~(identity ::request)")
+                    (str/replace spec-guard-provider "(accept ~ctx ~request)" "(accept ~ctx ~@request)")
+                    (str/replace spec-guard-provider "(throw (ex-info" "(do (ex-info")
+                    (str/replace spec-guard-provider "(s/conform" "(custom/conform")
+                    (str/replace spec-guard-provider "[ctx {_method" "[ctx & {_method")
+                    (str spec-guard-provider "\n(defmacro install [& forms] (throw (Exception. \"opaque\")))")]]
+      (let [result (check/check-files [client (parse/parse-string "provider.clj" source)] {})]
+        (is (= ["TSP7031"] (mapv :code (:diagnostics result))) (pr-str (:diagnostics result)))
+        (is (empty? (get-in result [:env :spec-macro-contracts])))))))

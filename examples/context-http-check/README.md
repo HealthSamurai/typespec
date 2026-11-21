@@ -134,12 +134,18 @@ coverage snapshot records their AST positions as recognized Var references
 and retains all 49 diagnostic tuples.
 
 F112 extracts the original endpoint predicates at `http.clj:111` and
-`:113`. The current snapshot has **0 errors and 48 warnings**. The delta
+`:113`. The F112 snapshot had **0 errors and 48 warnings**. The delta
 removes two `TSP9002` warnings and adds one `TSP210-01` for the unknown
 request method at `http.clj:311:60`. Acceptance also checks
 [`probe/endpoint.clj`](probe/endpoint.clj) alongside all eight production
 sources. It expects both valid calls to pass and checks two type errors
 for deliberately invalid endpoint maps.
+
+F610 checks the argument of `http/register-endpoint` against the original
+`::http/endpoint`. The current snapshot has **0 errors and 43 warnings**.
+Five calls pass and the dynamic endpoint at `http.clj:172:37` yields one
+`TSP210-01`. The endpoint probe compares direct checks and macro calls
+against the same Spec.
 
 Acceptance also checks [`probe/response.clj`](probe/response.clj).
 The response contract accepts a string `"content-type"` and rejects an

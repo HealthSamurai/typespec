@@ -186,11 +186,12 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 
 ### Macros
 
-Typespec does not run project code, so a macro has to be known to it in one of four ways:
+Typespec checks macros through these sources of information:
 
 | Way | When |
 |---|---|
 | built-in rule | `clojure.core` and core.async macros (`let`, `fn`, `for`, `doseq`, `->`, `cond->`, `go`, `with-open`, …); errors are reported in terms of the original form |
+| source Spec check | a fixed syntax-quoted `s/conform` guard rejects invalid input and forwards the original arguments to a known function. The original Spec checks the argument at macro call sites. [F610](../features/F610-macro-contracts.md) |
 | `:lint-as` | the macro has the shape of a known one: `{my.app/defhandler clojure.core/defn}` |
 | hook | a small function (run in SCI, not on the project classpath) that rewrites the form into plain Clojure |
 | `:t/macro` in externs | the macro behaves like a typed function |

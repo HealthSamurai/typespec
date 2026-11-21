@@ -533,7 +533,9 @@
 
 (declare parse-type)
 
-(defn- core-predicate-name [ctx head]
+(defn core-name
+  "Unqualified name of a core symbol in a source context, or nil."
+  [ctx head]
   (when (and (symbol? head)
              (not (contains? (:locals ctx) head))
              (not (contains? (:defined-symbols ctx) head)))
@@ -557,7 +559,7 @@
 (defn- predicate-expression-type [ctx parameter? expression]
   (when (seq? expression)
     (let [[head arg value & more] expression
-          op (core-predicate-name ctx head)]
+          op (core-name ctx head)]
       (case op
         contains? (when (and (set? arg) (every? literal-set-member? arg)
                              (parameter? value) (empty? more))
@@ -577,7 +579,7 @@
   (let [[head params body & more] form
         param (first (when (vector? params) params))
         reader-fn? (:typespec.parse/reader-fn (meta form))]
-    (when (and (or reader-fn? (= 'fn* head) (= 'fn (core-predicate-name ctx head)))
+    (when (and (or reader-fn? (= 'fn* head) (= 'fn (core-name ctx head)))
                (simple-symbol? param) (= 1 (count params)) (empty? more)
                (not-any? (comp :typespec.parse/source-meta meta) [param params]))
       (predicate-expression-type (update ctx :defined-symbols (fnil conj #{}) param)

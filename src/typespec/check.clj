@@ -3246,6 +3246,15 @@
   ;; A trusted body contract says nothing about the expansion's expression type.
   t/unknown)
 
+(defn- check-spec-macro [ctx node sym {:keys [spec index arity]} args]
+  (if (= arity (count args))
+    (doseq [[i arg] (map-indexed vector args)]
+      (let [actual (infer ctx arg)]
+        (when (= i index)
+          (assignable! ctx arg actual (t/ref-t spec)))))
+    (report! ctx node "TSP2554" (str sym " expects " arity " argument(s), got " (count args))))
+  t/unknown)
+
 (defn- check-unknown-call [ctx args]
   (let [binding-vector (first args)
         bindings (:children binding-vector)
@@ -3300,8 +3309,11 @@
             contract-sym (cond (namespace head) head
                                (contains? (:macros (:env ctx)) local-sym) local-sym)
             contract (when contract-sym (get-in ctx [:env :macro-contracts contract-sym]))
+            spec-contract (when-not (:guards-disabled? ctx)
+                            (get-in ctx [:env :spec-macro-contracts contract-sym]))
             r (cond contract (check-macro-body ctx node contract)
                     has-rule? (special ctx node head)
+                    spec-contract (check-spec-macro ctx node contract-sym spec-contract args)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
                     (and (not own?) (not extern?) (core/stdlib-macro? core-sym)) t/unknown
                     :else ::none)]
@@ -3486,6 +3498,7 @@
                   #(not= (get-method special %) (get-method special ::none)))
         env-diags (concat env-diags (:diagnostics compiled))
         guard-env (assoc env0 :macro-contracts (:contracts compiled)
+                             :spec-macro-contracts (macros/infer-spec-contracts env0 files)
                              :strict-nil (boolean (:strict-nil opts))
                              :nss (set (map :ns files)))
         guard-result (compile-guards guard-env opts)

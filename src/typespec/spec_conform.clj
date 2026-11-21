@@ -47,6 +47,7 @@
                                            assoc ::tagged true)
                                 t/unknown))
                       :s/spec (child (first args))
+                      (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
                       :s/nilable (t/union t/nil-t (child (first args)))
                       :s/tuple (tuple (mapv child args))
                       :s/keys (let [shape (t/parse-type (assoc context :fail (constantly nil)) form)

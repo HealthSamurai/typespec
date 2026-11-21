@@ -131,18 +131,22 @@
                       by-name (expression-children form operator))))]
     (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files)))
 
+(declare ^:private protocol-methods)
+
 (defn namespace-vars
   "Known names and Var initialization sites. Defs inside opaque macro bodies are excluded."
   [files macros]
   (let [declarations (var-declarations files macros)
         top-level (reduce (fn [acc file]
                             (update acc (:ns file) (fnil into #{})
-                                    (for [form (:forms file)
-                                          :when (= :list (:op form))
-                                          :let [[h nm] (:children form)]
-                                          :when (and (= :sym (:op h)) (= :sym (:op nm))
-                                                     (.startsWith (name (:val h)) "def"))]
-                                      (:val nm))))
+                                    (mapcat (fn [form]
+                                              (let [[h nm & forms] (:children form)]
+                                                (when (and (= :list (:op form)) (= :sym (:op h)) (= :sym (:op nm))
+                                                           (.startsWith (name (:val h)) "def"))
+                                                  (cons (:val nm)
+                                                        (when (= 'defprotocol (head file form))
+                                                          (keys (protocol-methods file forms)))))))
+                                            (:forms file))))
                           {} files)]
     {:var-declarations declarations
      :ns-defs (reduce (fn [acc sym]
@@ -153,7 +157,7 @@
   (some (fn [[kn vn]] (when (= k (:val kn)) vn)) (partition 2 (:children attr))))
 
 (defn type-ctx [file fail]
-  (assoc (select-keys file [:ns :aliases :refers :imports]) :fail fail))
+  (assoc (select-keys file [:ns :aliases :refers :imports :refer-clojure :defined-symbols]) :fail fail))
 
 (defn- map-pattern-keys
   "[[key required?] ...] of a map destructuring pattern, without positions."
@@ -307,9 +311,6 @@
                                                       :operator-error (operator-errors diags file (:pos sig-node)))
                                                (parse/node->data sig-node true)))})))
 
-         (= 'defmacro h)
-         (update acc :macros conj (qualify (:val (second (:children form)))))
-
          (and (#{'def 'defonce} h) (= :sym (:op (second (:children form)))))
          (update-in acc [:root-definitions (qualify (:val (second (:children form))))] (fnil inc 0))
 
@@ -343,13 +344,21 @@
   ([files] (build files {}))
   ([files contracts]
   (let [diags (atom [])
-        acc (reduce #(collect-file %1 %2 diags) {:specs {} :fdefs {} :defns {} :macros #{} :protocols {}} files)
+        macros (into #{} (for [file files form (:forms file)
+                               :when (= 'defmacro (head file form))
+                               :let [sym (var-name file (second (:children form)))]
+                               :when sym]
+                           sym))
+        names (namespace-vars files macros)
+        acc (reduce (fn [acc file]
+                      (collect-file acc (assoc file :defined-symbols (get-in names [:ns-defs (:ns file)])) diags))
+                    {:specs {} :fdefs {} :defns {} :protocols {}} files)
         contracts (externs/normalize-contracts (:specs acc) contracts)
         operator-env {:specs (merge (:specs contracts) (:specs acc))}
-        env {:specs (:specs acc) :opaque-fdefs (:opaque-fdefs acc)
-             :macros (:macros acc) :root-definitions (:root-definitions acc)
-             :protocols (:protocols acc)
-             :key-nss (set (keep namespace (keys (:specs acc))))}
+        env (assoc names :specs (:specs acc) :opaque-fdefs (:opaque-fdefs acc)
+                   :macros macros :root-definitions (:root-definitions acc)
+                   :protocols (:protocols acc)
+                   :key-nss (set (keep namespace (keys (:specs acc)))))
         vars (into {}
                    (for [[sym d] (:defns acc)
                          :let [fd (get-in acc [:fdefs sym])

@@ -126,12 +126,20 @@ warning at `http/formats.clj:239:70`. In `(comp #{:json :charset} first)`,
 `first` has no function signature as a value. The composition
 `(comp byte int)` at line 305 has a checked signature and accepts the
 `Character` values produced by walking the string. Acceptance also asserts
-the inferred signature at that source position. The current snapshot
+the inferred signature at that source position. The F233 snapshot
 records **0 errors and 49 warnings**.
 
 F721 recognizes ten `#'var` forms in the parsed source. The reviewed
 coverage snapshot records their AST positions as recognized Var references
 and retains all 49 diagnostic tuples.
+
+F112 extracts the original endpoint predicates at `http.clj:111` and
+`:113`. The current snapshot has **0 errors and 48 warnings**. The delta
+removes two `TSP9002` warnings and adds one `TSP210-01` for the unknown
+request method at `http.clj:311:60`. Acceptance also checks
+[`probe/endpoint.clj`](probe/endpoint.clj) alongside all eight production
+sources. It expects both valid calls to pass and checks two type errors
+for deliberately invalid endpoint maps.
 
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,

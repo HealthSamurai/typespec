@@ -366,7 +366,9 @@
                                   (length/subset? s t)
                                   (or (= 0 (:max-count s)) (sub? env (:of s) (:of t)))))
                      :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
-                     :class (prim-is-class? (or (:kind s) :coll) (:name t))
+                     :class (if-let [c (:jvm-class s)]
+                              (class-sub? c (:name t))
+                              (prim-is-class? (or (:kind s) :coll) (:name t)))
                      false)
       (= :fn st) (case tt
                     :fn (boolean (fn-sub? env s t))
@@ -515,7 +517,7 @@
     double? :double float? :double number? :number pos? :number
     keyword? :keyword simple-keyword? :keyword qualified-keyword? :keyword
     symbol? :symbol boolean? :boolean uuid? :uuid inst? :inst
-    map? :map vector? :vector set? :set seq? :seq list? :seq sequential? :coll coll? :coll
+    map? :map vector? :vector set? :set seq? :seq sequential? :coll coll? :coll
     fn? :fn ifn? :fn})
 
 (defn type-form-op [ctx sym]
@@ -525,10 +527,62 @@
           full (when n (str (get (:aliases ctx) (symbol n) n)))]
       (cond (#{"clojure.spec.alpha" "s"} full) (keyword "s" (name sym))
             (= "t" n) (keyword "t" (name sym))
+            (and (= "clojure.core" full) (= "fn" (name sym))) :fn
             (nil? n) (keyword (name sym))
             :else nil))))
 
 (declare parse-type)
+
+(defn- core-predicate-name [ctx head]
+  (when (and (symbol? head)
+             (not (contains? (:locals ctx) head))
+             (not (contains? (:defined-symbols ctx) head)))
+    (let [sym (get (:refers ctx) head head)
+          n (namespace sym)
+          {:keys [only exclude rename] :as refers} (:refer-clojure ctx)]
+      (cond
+        (and n (= 'clojure.core (get (:aliases ctx) (symbol n) (symbol n))))
+        (symbol (name sym))
+
+        (and (nil? n) (not (some #{sym} exclude)) (not (contains? rename sym))
+             (or (not (contains? refers :only)) (some #{sym} only)))
+        sym))))
+
+(defn- literal-set-member? [value]
+  (or (nil? value) (string? value) (keyword? value) (number? value) (boolean? value)))
+
+(defn- literal-set-type [values]
+  (apply union (map #(if (nil? %) nil-t (lit %)) (sort-by pr-str values))))
+
+(defn- predicate-expression-type [ctx parameter? expression]
+  (when (seq? expression)
+    (let [[head arg value & more] expression
+          op (core-predicate-name ctx head)]
+      (case op
+        contains? (when (and (set? arg) (every? literal-set-member? arg)
+                             (parameter? value) (empty? more))
+                    (literal-set-type arg))
+        instance? (when (and (symbol? arg) (parameter? value) (empty? more))
+                    (some-> (resolve-class (:imports ctx) arg) class-type))
+        or (let [branches (mapv #(predicate-expression-type ctx parameter? %) (rest expression))]
+             (when (and (seq branches) (every? some? branches))
+               (apply union branches)))
+        (when (and (= 2 (count expression)) (parameter? arg)
+                   (contains? '#{list? vector? map? set? string? keyword? symbol? boolean? nil? any?} op))
+          (parse-type (dissoc ctx :type-vars) op))))))
+
+(defn predicate-spec-type
+  "Type of a recognized unary Spec predicate, or nil for an opaque expression."
+  [ctx form]
+  (let [[head params body & more] form
+        param (first (when (vector? params) params))
+        reader-fn? (:typespec.parse/reader-fn (meta form))]
+    (when (and (or reader-fn? (= 'fn* head) (= 'fn (core-predicate-name ctx head)))
+               (simple-symbol? param) (= 1 (count params)) (empty? more)
+               (not-any? (comp :typespec.parse/source-meta meta) [param params]))
+      (predicate-expression-type (update ctx :defined-symbols (fnil conj #{}) param)
+                                 (fn [argument] (or (= param argument) (and reader-fn? (= '%1 argument))))
+                                 body))))
 
 (defn- flat-keys [x] (cond (keyword? x) [x] (seq? x) (mapcat flat-keys (rest x)) :else []))
 
@@ -715,18 +769,19 @@
                        (cond (get (:type-vars ctx) nm) (get (:type-vars ctx) nm)
                              (pred-prims nm) (cond-> (prim (pred-prims nm))
                                                (#{'pos-int? 'nat-int? 'neg-int? 'pos?
-                                                  'simple-keyword? 'qualified-keyword? 'list? 'sequential? 'fn?} nm)
+                                                  'simple-keyword? 'qualified-keyword? 'sequential? 'fn?} nm)
                                                (with-meta {::unchecked-contract true}))
                              (= 'any? nm) any
                              (= 'some? nm) (with-meta any {::unchecked-contract true})
                              (= 'nil? nm) nil-t
+                             (= 'list? nm) (class-type "clojure.lang.IPersistentList")
                              (#{'true? 'false?} nm) (with-meta (prim :boolean) {::unchecked-contract true})
                              (= 't/unknown nm) unknown
                              (= 't/never nm) never
                              (:inside-all ctx) (fail)
                              :else (if-let [c (resolve-class (:imports ctx) nm)] (class-type c) (fail))))
-      (set? form) (if (and (seq form) (every? #(or (string? %) (keyword? %) (number? %) (boolean? %)) form))
-                    (apply union (map lit (sort-by pr-str form)))
+      (set? form) (if (and (seq form) (every? #(and (some? %) (literal-set-member? %)) form))
+                    (literal-set-type form)
                     (fail))
       (vector? form) (if (and (:inside-all ctx) (some #{'&} form)) (fail) (parse-sig ctx form))
       (seq? form)
@@ -750,12 +805,7 @@
         :t/fn (if (:inside-all ctx)
                 (if (and (= 2 (count form)) (vector? (second form))) (p (second form)) (fail))
                 (parse-sig ctx (second form)))
-        ;; #(instance? C %) and (partial instance? C): the usual way to say "a Java class" in spec
-        (:fn* :fn) (let [body (last form)]
-                     (if-let [c (and (seq? body) (= 'instance? (first body))
-                                     (resolve-class (:imports ctx) (second body)))]
-                       (class-type c)
-                       (fail)))
+        (:fn* :fn) (or (predicate-spec-type ctx form) (fail))
         :partial (if-let [c (and (= 'instance? (second form)) (resolve-class (:imports ctx) (nth form 2 nil)))]
                    (class-type c)
                    (fail))

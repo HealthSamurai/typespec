@@ -1671,10 +1671,13 @@
   (when (and (qualified-keyword? k) (get-in (:env ctx) [:specs k]))
     (let [actual (eff ctx vtype) expected (t/ref-t k)
           result (t/sub-result (:env ctx) actual expected)]
-      (when-not (= :proved (:status result))
-        (if-let [[code msg details] (nested-platform-problem ctx "TSP2322" actual expected result)]
-          (apply report! ctx vnode code msg (mapcat identity details))
-          (report! ctx vnode "TSP2322" (str (t/show actual) " is not assignable to " (show-ref ctx expected))))))))
+      (case (:status result)
+        :inconclusive (let [[code msg details] (incomplete-problem ctx actual expected result)]
+                        (apply report! ctx vnode code msg (mapcat identity details)))
+        :mismatch (if-let [[code msg details] (nested-platform-problem ctx "TSP2322" actual expected result)]
+                    (apply report! ctx vnode code msg (mapcat identity details))
+                    (report! ctx vnode "TSP2322" (str (t/show actual) " is not assignable to " (show-ref ctx expected))))
+        :proved nil))))
 
 (defn- key-type [ctx k vtype]
   (if (and (qualified-keyword? k) (get-in (:env ctx) [:specs k])) (t/ref-t k) (widen vtype)))
@@ -1795,7 +1798,9 @@
                    (parse/node->data spec))
             result (when form
                      (conform/tagged-result (:env ctx)
-                                            (assoc (env/type-ctx (:file ctx) nil) :locals (:locals ctx))
+                                            (assoc (env/type-ctx (:file ctx) nil)
+                                                   :locals (:locals ctx)
+                                                   :defined-symbols (get-in ctx [:env :ns-defs (get-in ctx [:file :ns])]))
                                             form))]
         (when (and *spec-uses* (qualified-keyword? form) (not (:quiet ctx)) (not (:synthetic node)))
           (swap! *spec-uses* conj {:spec form :kind :conform :file (get-in ctx [:file :file]) :pos (:pos spec)}))
@@ -1825,9 +1830,14 @@
 (defmethod special 'var [ctx node _]
   (var-reference ctx (args-of node)))
 
+(defn- quoted-type [node]
+  (case (:op node)
+    :sym (t/prim :symbol)
+    :list (t/class-type "clojure.lang.IPersistentList")
+    t/unknown))
+
 (defmethod special 'quote [_ node _]
-  (let [x (second (:children node))]
-    (if (= :sym (:op x)) (t/prim :symbol) t/unknown)))
+  (quoted-type (second (:children node))))
 
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
@@ -3237,7 +3247,7 @@
                (some literal-directive? (:directives h)))
       (infer ctx h))
     (cond
-      (nil? h) {:t :coll :kind :seq :of t/never}
+      (nil? h) {:t :coll :kind :seq :of t/never :jvm-class "clojure.lang.IPersistentList"}
       (= :kw (:op h)) (let [[m default] args
                             ty (infer ctx m)]
                         (if default
@@ -3346,7 +3356,7 @@
                                    (dissoc vty :fresh))]))
                               pairs static-keys))}
              (do (run! #(infer ctx %) (:children node)) (t/prim :map))))
-    :quote (if (= :sym (:op (first (:children node)))) (t/prim :symbol) t/unknown)
+    :quote (quoted-type (first (:children node)))
     :fn-lit (infer-callback ctx node nil)
     :list (infer-list ctx node)
     t/unknown))
@@ -3457,16 +3467,9 @@
                   (get opts :macro-contracts {}) env0
                   #(not= (get-method special %) (get-method special ::none)))
         env-diags (concat env-diags (:diagnostics compiled))
-        protocol-defs (reduce-kv (fn [names sym entry]
-                                   (if (:protocol entry)
-                                     (update names (symbol (namespace sym)) (fnil conj #{}) (symbol (name sym)))
-                                     names))
-                                 {} (:vars env0))
-        names (update (env/namespace-vars files (:macros env0)) :ns-defs #(merge-with into % protocol-defs))
-        guard-env (merge env0 names
-                         {:macro-contracts (:contracts compiled)
-                          :strict-nil (boolean (:strict-nil opts))
-                          :nss (set (map :ns files))})
+        guard-env (assoc env0 :macro-contracts (:contracts compiled)
+                             :strict-nil (boolean (:strict-nil opts))
+                             :nss (set (map :ns files)))
         guard-result (compile-guards guard-env opts)
         env (assoc guard-env :guards (:guards guard-result))
         guard-trust (count (filter #(= :trusted (:mode %)) (vals (:guards env))))]

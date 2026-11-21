@@ -29,6 +29,7 @@
  clojure.core/even?      [number? :-> boolean?]
  clojure.core/odd?       [number? :-> boolean?]
  clojure.core/count      [any? :-> int?]
+ clojure.core/list       [& any? :-> list?]
  clojure.core/subs       ([string? int? :-> string?] [string? int? int? :-> string?])
  clojure.core/name       [(t/or string? keyword? symbol?) :-> string?]
  clojure.core/namespace  [(t/or keyword? symbol?) :-> (s/nilable string?)]

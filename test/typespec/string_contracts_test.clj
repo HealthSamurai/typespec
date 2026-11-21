@@ -23,7 +23,7 @@
                 "(s/starts-with? (StringBuilder. \"ab\") \"a\")"
                 "(s/ends-with? (StringBuilder. \"ab\") \"b\")"
                 "(s/includes? (StringBuilder. \"ab\") (StringBuilder. \"b\"))"
-                "(join nil)" "(join [1 nil :a])" "(join #{1 2})"
+                "(join nil)" "(join [1 nil :a])" "(join #{1 2})" "(join '(1 2))"
                 "(join {:a 1})" "(join (range 2))" "(join \"ab\")"
                 "(join (StringBuilder. \"ab\"))"
                 "(join (java.util.ArrayList.))" "(join (java.util.HashMap.))"
@@ -59,10 +59,9 @@
           (str form " => " (pr-str ds))))))
 
 (deftest honest-incomplete-boundaries
-  ;; No group-count specialization, and quoted sequence inference is incomplete.
-  (doseq [form ["(join '(1 2))"
-                "(replace \"abc\" #\"(a)\" (fn [x] (s/upper-case x)))"]]
-    (is (some #(= "TSP210-01" (:code %)) (diagnostics form)) form)))
+  ;; Regex groups reach the callback as a string or a vector.
+  (is (some #(= "TSP210-01" (:code %))
+            (diagnostics "(replace \"abc\" #\"(a)\" (fn [x] (s/upper-case x)))"))))
 
 (deftest character-roundtrip
   (doseq [source ["\\a" "\\newline" "\\space" "\\u03bb"]]

@@ -80,8 +80,10 @@
   (let [[_ nm & more] form
         clauses (filter seq? more)
         libspecs (for [c clauses :when (= :require (first c)) s (rest c)] s)
-        imports (for [c clauses :when (= :import (first c)) s (rest c)] s)]
+        imports (for [c clauses :when (= :import (first c)) s (rest c)] s)
+        core-clause (some #(when (= :refer-clojure (first %)) (rest %)) clauses)]
     {:ns nm
+     :refer-clojure (apply hash-map core-clause)
      :aliases (into {} (for [s libspecs :when (vector? s)
                              :let [[lib & opts] s o (apply hash-map opts)]
                              a [(:as o) (:as-alias o)] :when a]
@@ -149,15 +151,18 @@
   ([n positions?]
    (let [read-child #(node->data % positions?)]
      (case (:op n)
-       (:sym :kw :str :num :bool :char) (:val n)
+       :sym (cond-> (:val n) (seq (:meta n)) (vary-meta assoc ::source-meta true))
+       (:kw :str :num :bool :char) (:val n)
        :nil nil
        :list (let [form (apply list (map read-child (:children n)))]
                (if positions? (with-meta form {:typespec/pos (:pos n)}) form))
-       :vector (mapv read-child (:children n))
+       :vector (cond-> (mapv read-child (:children n))
+                 (seq (:meta n)) (vary-meta assoc ::source-meta true))
        :map (let [kids (map read-child (:children n))]
               (if (even? (count kids)) (apply array-map kids) ::opaque))
        :set (set (map read-child (:children n)))
        :quote (list 'quote (read-child (first (:children n))))
        :var (list 'var (read-child (first (:children n))))
-       :fn-lit (list 'fn* '[%] (apply list (map read-child (:children n))))
+       :fn-lit (with-meta (list 'fn* '[%] (apply list (map read-child (:children n))))
+                 {::reader-fn true})
        ::opaque))))

@@ -1,6 +1,6 @@
 {:review
- "F220 adds four warnings in reduce and routing. F233 checks comp. F721 recognizes ten Var literals without changing diagnostics.",
- :counts {:warning 49},
+ "F112 checks both endpoint Spec predicates. The unknown request method in dispatch is reported as an incomplete compatibility check.",
+ :counts {:warning 48},
  :coverage
  [{:file "src/http.clj",
    :opaque-nodes 1,
@@ -92,20 +92,6 @@
    #{:unknown}
    "c61e5c2a3d0e5e55e9435766a46f7dae"]
   ["src/http.clj"
-   {:row 111, :col 17, :end-row 111, :end-col 71}
-   :warning
-   "TSP9002"
-   "this spec is opaque to the checker and is treated as t/unknown: (fn* [%] (contains? #{:get :patch :delete :head :post :put} %))"
-   nil
-   "261d9a90948f1ab244e876de0816a523"]
-  ["src/http.clj"
-   {:row 113, :col 21, :end-row 113, :end-col 48}
-   :warning
-   "TSP9002"
-   "this spec is opaque to the checker and is treated as t/unknown: (fn* [%] (or (list? %) (vector? %)))"
-   nil
-   "50e7206170ad63ae1bdfb9f937aac24b"]
-  ["src/http.clj"
    {:row 141, :col 41, :end-row 141, :end-col 45}
    :warning
    "TSP210-01"
@@ -140,6 +126,13 @@
    "compatibility not checked: t/unknown to string? (unknown)"
    #{:unknown}
    "4fd4d780e92ac816ae500d86ea42d223"]
+  ["src/http.clj"
+   {:row 311, :col 60, :end-row 311, :end-col 64}
+   :warning
+   "TSP210-01"
+   "compatibility not checked: t/unknown to ::method (#{:delete :get :head :patch :post :put}) (unknown)"
+   #{:unknown}
+   "e72cbd959f6a69efaaa4a7bce804c1ca"]
   ["src/http.clj"
    {:row 313, :col 61, :end-row 313, :end-col 72}
    :warning

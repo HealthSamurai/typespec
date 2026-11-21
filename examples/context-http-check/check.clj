@@ -7,6 +7,18 @@
          '[typespec.main :as main])
 (import '[java.security MessageDigest] '[java.util HexFormat])
 (assert (>= (.feature (Runtime/version)) 25) "Use JDK >=25 (Java catalogue baseline)")
+
+(defn- check-endpoint-probe! [files]
+  (let [path "probe/endpoint.clj"
+        checked (check/check-files (conj files (parse/parse-file path)) {})
+        issues (filter #(= path (:file %)) (:diagnostics checked))]
+    (assert (= [[10 :error "TSP2322"] [11 :error "TSP2322"]]
+               (mapv (juxt (comp :row :pos) :severity :code) issues))
+            (str "Endpoint contract diagnostics changed: " (pr-str issues)))
+    (assert (str/includes? (:message (first issues)) "value of :method: :trace"))
+    (assert (str/includes? (:message (second issues)) "value of :middleware:"))
+    (println "ENDPOINT PASS: original HTTP Spec accepted list/vector middleware and rejected two invalid calls")))
+
 (let [pin "e158b6b244c2b8e053de2a097d1071d9419adef9"
       manifest (into (sorted-map) (edn/read-string (slurp "manifest.edn")))
       root (.getParentFile (io/file (.toURI (io/resource "http.clj")) ))
@@ -25,8 +37,8 @@
                        :parse (try {:ok (parse/parse-string path source)}
                                    (catch Exception e {:error {:class (.getName (class e))
                                                                :message (.getMessage e)}}))})) manifest)
-      parsed (keep #(get-in % [:parse :ok]) reads)
-      result (check/check-files (vec parsed) {})
+      parsed (into [] (keep #(get-in % [:parse :ok])) reads)
+      result (check/check-files parsed {})
       ds (:diagnostics result)
       namespaces '[http http.formats http.mcp http.openapi http.routing uui uui.heroicons uui.menu]
       loaded (vec (filter find-ns namespaces))
@@ -76,6 +88,7 @@
               "Expected future in notify-on-request to have its built-in type")
       (assert (= "t/unknown" (main/type-at result "src/http.clj" 267 9))
               "Expected the subscriber call inside future to be analyzed")
+      (check-endpoint-probe! parsed)
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))

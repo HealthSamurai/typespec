@@ -14,6 +14,7 @@
     typespec.collection-length-test
     typespec.apply-test
     typespec.spec-args-test
+    typespec.spec-predicate-test
     typespec.spec-conform-test
     typespec.project-contracts-test
     typespec.contract-diff-test

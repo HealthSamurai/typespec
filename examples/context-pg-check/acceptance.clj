@@ -54,17 +54,18 @@
       (expect! "all production namespaces remain unloaded" [] (:upstream-loaded coverage))
       (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
       (expect! "whole-tree diagnostic counts"
-               {[:error "TSP2322"] 1 [:error "TSP2345"] 1
+               {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 1
                 [:warning "TSP210-01"] 76 [:warning "TSP7020"] 10
                 [:warning "TSP7023"] 1 [:warning "TSP7031"] 3}
                (:codes coverage))
       (expect! "whole-tree error locations"
-               (frequencies (filter #(= :error (first %)) expected))
+               (frequencies (conj (vec (filter #(= :error (first %)) expected))
+                                  [:error "TSP2531" "upstream/src/pg/docker.clj" 72 55]))
                (frequencies (map location (filter #(= :error (:severity %)) (:diagnostics tree)))))
       (expect! "checked conditional step in mk-table-constraint" true
                (contains? (set (map location (:diagnostics tree)))
                           [:warning "TSP210-01" "upstream/src/dsql/pg.clj" 1196 77]))
-      (println "PASS: all 9 pinned pg production sources (351 forms, 2 expected errors, 90 warnings).")))
+      (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 90 warnings).")))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

@@ -54,8 +54,11 @@ Single-file regression on JDK 27, using the contracts mode:
 - `pg` absent before and after checking; trust counters `cast/any/ignore = 0/0/0`.
 
 The production-tree check verifies all nine hashes and **351 top-level forms**.
-It checks that both errors remain at the same locations, pins the warning
-counts by diagnostic code (**90 total**), and verifies the warning inside
+It checks three errors at their exact locations. The two `pg.clj` errors
+are also covered by the single-file regression. The third, `TSP2531` at
+`pg/docker.clj:72:55`, covers a failed Docker result whose absent `:output`
+can reach `str/split` as `nil`. It pins the warning counts by diagnostic
+code (**90 total**) and verifies the warning inside
 the conditional step in `mk-table-constraint`. The upstream namespaces
 remain unloaded and the trust counters stay at zero in both checks.
 

@@ -4,6 +4,7 @@
             [clojure.walk :as walk]
             [typespec.parse :as parse]
             [typespec.types :as t]
+            [typespec.length :as length]
             [typespec.literals :as literals]
             [typespec.type-operators :as operators]
             [typespec.spec-conform :as conform]
@@ -167,13 +168,16 @@
    {:severity (if (:strict (:opts ctx)) :error :warning)
     :reasons (:reasons result)}])
 
-(defn- nested-type-problem [ctx code {:keys [path missing-key actual expected]}]
+(defn- length-message [actual expected]
+  (str "expected collection length " (length/describe expected) ", got " (length/describe actual)))
+
+(defn- nested-type-problem [ctx code {:keys [path missing-key actual expected length?]}]
   (when (seq path)
-    [(if missing-key "TSP2741" code)
+    [(cond missing-key "TSP2741" length? "TSP330-01" :else code)
      (str "at " (pr-str path) ": "
-          (if missing-key
-            (str "required key " missing-key " is missing")
-            (str (show-ref ctx actual) " is not assignable to " (show-ref ctx expected))))
+          (cond missing-key (str "required key " missing-key " is missing")
+                length? (length-message actual expected)
+                :else (str (show-ref ctx actual) " is not assignable to " (show-ref ctx expected))))
      {:type-path path}]))
 
 (defn- fresh-problems [ctx actual expected]
@@ -210,21 +214,31 @@
       (when-let [k (first (remove #(contains? (:req (first am)) %) (keys (:req (first em)))))]
         [k (contains? (:opt (first am)) k)]))))
 
-(defn- tuple-problem [ctx actual expected]
+(defn- collection-problem [ctx actual expected]
   (let [env (:env ctx)
         am (t/members env actual)
         em (t/members env expected)
-        a (:items (first am))
-        e (:items (first em))]
-    (when (and (= 1 (count am) (count em)) a e (= :vector (:kind (first am)) (:kind (first em))))
-      (if (not= (count a) (count e))
-        ["TSP330-01" (str "expected vector length " (count e) ", got " (count a))]
-        (first (keep-indexed (fn [i item]
-                              (let [target (nth e i)]
-                                (when (= :mismatch (:status (t/sub-result env item target)))
-                                  ["TSP2345" (str "vector element " i ": " (show-ref ctx item)
-                                                   " is not assignable to " (show-ref ctx target))])))
-                            a))))))
+        source (first am)
+        target (first em)
+        a (:items source)
+        e (:items target)]
+    (when (= 1 (count am) (count em))
+      (cond
+        (and a e (= :vector (:kind source) (:kind target)))
+        (if (not= (count a) (count e))
+          ["TSP330-01" (str "expected vector length " (count e) ", got " (count a))]
+          (first (keep-indexed (fn [i item]
+                                (let [target (nth e i)]
+                                  (when (= :mismatch (:status (t/sub-result env item target)))
+                                    ["TSP2345" (str "vector element " i ": " (show-ref ctx item)
+                                                     " is not assignable to " (show-ref ctx target))])))
+                              a)))
+
+        (and (= :coll (:t source) (:t target))
+             (or (nil? (:kind target)) (= (:kind source) (:kind target)))
+             (or (length/constrained? target) (and e (length/constrained? source)))
+             (not (length/subset? source target)))
+        ["TSP330-01" (length-message source target)]))))
 
 (defn- problems
   "Why a value of type `actual` (written as `node`) cannot be used as `expected`. Empty when it can."
@@ -233,14 +247,14 @@
         result (t/sub-result env actual expected)
         nested-error (when (= :mismatch (:status result))
                        (nested-type-problem ctx (if (:fresh actual) "TSP2322" "TSP2345") result))
-        tuple-error (when (= :mismatch (:status result)) (tuple-problem ctx actual expected))]
+        collection-error (when (= :mismatch (:status result)) (collection-problem ctx actual expected))]
     (cond
       (:generic-failure actual) []
       (= :proved (:status result)) (if (:fresh actual) (filter #(= "TSP2353" (first %)) (fresh-problems ctx actual expected)) [])
       nested-error [nested-error]
       (seq (fresh-problems ctx actual expected)) (fresh-problems ctx actual expected)
       (= :inconclusive (:status result)) [(incomplete-problem ctx actual expected result)]
-      tuple-error [tuple-error]
+      collection-error [collection-error]
       (and (not (#{:nil :map} (:op node))) (t/nilable? env actual) (not (t/nilable? env expected))
            (t/sub? env (t/remove-nil env actual) expected))
       [["TSP2531" (str (or (:display node) (parse/unparse node)) " may be nil"
@@ -574,7 +588,7 @@
   (let [head (builtin-head ctx node)]
     (when (or (primitive-predicates head)
               (guard-call ctx node)
-              (#{'some? 'nil? 'not 'and 'or '= 'not= 'contains? 'instance?
+              (#{'some? 'nil? 'seq 'not 'and 'or '= 'not= 'contains? 'instance?
                  'clojure.spec.alpha/valid? 'clojure.spec.alpha/invalid?} head))
       {:test node
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
@@ -585,6 +599,21 @@
                          (for [truthy? [true false]
                                :let [ty (truth-part (:env ctx) leaf truthy?)]]
                            (when-not (= :never (:t ty)) ty)))))
+
+(defn- seq-contexts [ctx node]
+  (let [[source & extra] (rest (:children node))]
+    (when (and (= 'seq (builtin-head ctx node)) source (empty? extra))
+      (refine-path ctx source
+                   (fn [member]
+                     (case (:t member)
+                       :nil [nil member]
+                       :never [nil nil]
+                       :coll (let [[lo hi] (length/bounds member)]
+                               [(when-not (= 0 hi)
+                                  (length/with-bounds member (max 1 lo) hi))
+                                (when (zero? lo)
+                                  (length/with-bounds member 0 0))])
+                       [member member]))))))
 
 (defn- narrow
   "Truth and falsity contexts. A nil context denotes an unreachable path."
@@ -624,6 +653,7 @@
           [ctx ctx])
 
       (and (= 'not h) (= 1 (count args))) (vec (reverse (narrow ctx a)))
+      (= 'seq h) (or (seq-contexts ctx test) [ctx ctx])
       (= 'and h) (logical-contexts ctx args true)
       (= 'or h) (logical-contexts ctx args false)
 
@@ -764,22 +794,41 @@
 
 (defn- positional-type [ctx ty i]
   (let [members (t/members (:env ctx) ty)]
-    (if (some :items members)
-      (apply t/union (for [m members]
-                       (cond (:items m) (get (:items m) i t/nil-t)
-                             (= :nil (:t m)) t/nil-t
-                             :else (indexed (elem-type ctx m)))))
+    (if (some #(or (:items %) (length/constrained? %) (= :nil (:t %))) members)
+      (t/with-assumption
+       (apply t/union (for [m members]
+                        (cond
+                          (:items m) (get (:items m) i t/nil-t)
+                          (= :nil (:t m)) t/nil-t
+                          (length/constrained? m)
+                          (case (length/position m i)
+                            :present (:of m)
+                            :absent t/nil-t
+                            :possible (t/union (:of m) t/nil-t))
+                          :else (eff ctx (indexed (elem-type ctx m))))))
+       (t/assumption ty))
       (indexed (elem-type ctx ty)))))
 
+(defn- sequence-tail [ctx ty skip nullable?]
+  (t/with-assumption
+   (apply t/union
+          (for [member (t/members (:env ctx) (eff ctx ty))]
+            (if (= :never (:t member))
+              t/never
+              (let [items (:items member)
+                    [min-count max-count] (if (= :nil (:t member)) [0 0] (length/bounds member))
+                    lo (max 0 (- min-count skip))
+                    hi (when max-count (max 0 (- max-count skip)))
+                    tail (cond
+                           (and nullable? (= 0 hi)) t/nil-t
+                           items (assoc (t/tuple (subvec items (min skip (count items)))) :kind :seq)
+                           :else (length/with-bounds {:t :coll :kind :seq :of (elem-type ctx member)}
+                                                     (if nullable? (max lo 1) lo) hi))]
+                (if (and nullable? (zero? lo)) (t/union tail t/nil-t) tail)))))
+   (t/assumption ty)))
+
 (defn- positional-rest [ctx ty i]
-  (apply t/union
-         (for [m (t/members (:env ctx) ty)]
-           (cond
-             (:items m) (if (< i (count (:items m)))
-                          (assoc (t/tuple (subvec (:items m) i)) :kind :seq)
-                          t/nil-t)
-             (= :nil (:t m)) t/nil-t
-             :else {:t :coll :of (elem-type ctx m)}))))
+  (sequence-tail ctx ty i true))
 
 (defn- check-hint!
   "A hint that cannot be true for the value it is put on."
@@ -1374,7 +1423,7 @@
                     (apply t/union (mapcat #(concat (drop (count fixed) (:params %))
                                                    (when-let [r (:rest %)] [r])) contracts))
                     t/unknown))
-        tail {:t :coll :kind :seq :of rest-of}
+        tail {:t :coll :kind :seq :of rest-of :min-count 1}
         c (if rest
             (bind-pattern c rest (cond kwargs kwargs
                                        (not (seq contracts)) t/unknown
@@ -1843,9 +1892,10 @@
         ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
-        tc (bind-pattern ctx p (dissoc positive :fresh))]
-    [(if (= :never (:t positive)) t/never (infer tc then))
-     (if (= :never (:t negative)) t/never (if else (infer ctx else) t/nil-t))]))
+        [tc fc] (or (seq-contexts ctx init) [ctx ctx])]
+    [(if (or (nil? tc) (= :never (:t positive))) t/never
+         (infer (bind-pattern tc p (dissoc positive :fresh)) then))
+     (if (or (nil? fc) (= :never (:t negative))) t/never (if else (infer fc else) t/nil-t))]))
 
 (defmethod special 'if-let [ctx node _] (apply t/union (if-let-form ctx node false)))
 (defmethod special 'if-some [ctx node _] (apply t/union (if-let-form ctx node true)))
@@ -1856,9 +1906,10 @@
         ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
-        tc (bind-pattern ctx p (dissoc positive :fresh))]
-    (t/union (if (= :never (:t positive)) t/never (infer-body tc body))
-             (if (= :never (:t negative)) t/never t/nil-t))))
+        [tc fc] (or (seq-contexts ctx init) [ctx ctx])]
+    (t/union (if (or (nil? tc) (= :never (:t positive))) t/never
+                 (infer-body (bind-pattern tc p (dissoc positive :fresh)) body))
+             (if (or (nil? fc) (= :never (:t negative))) t/never t/nil-t))))
 
 (defmethod special 'when-let [ctx node _] (when-let-form ctx node false))
 (defmethod special 'when-some [ctx node _] (when-let-form ctx node true))
@@ -2130,7 +2181,8 @@
            (for [member (t/members env ty)]
              (case (:t member)
                :coll (case (:kind member)
-                       :vector (cond (not (<= 0 index Integer/MAX_VALUE)) t/never
+                       :vector (cond (or (not (<= 0 index Integer/MAX_VALUE))
+                                         (= :absent (length/position member index))) t/never
                                      (:items member) (get (:items member) (int index) t/never)
                                      :else (:of member))
                        :set (:of member)
@@ -2161,7 +2213,8 @@
             {:keys [type optional?]} (if (= :num (:op key))
                                        (let [i (:val key)]
                                          {:type (numeric-path-value ctx current i)
-                                          :optional? (not (every? #(and (= :vector (:kind %)) (:items %) (<= 0 i) (< i (count (:items %))))
+                                          :optional? (not (every? #(and (= :vector (:kind %)) (<= 0 i Integer/MAX_VALUE)
+                                                                          (= :present (length/position % i)))
                                                                   (t/members (:env ctx) current)))})
                                        (key-info ctx current (:val key) key true))]
         (recur type more (or missing? optional?)))
@@ -2197,7 +2250,8 @@
 (defn- forget-map-keys [ctx ty]
   (apply t/union (for [member (t/members (:env ctx) ty)]
                    (cond (= :map (:t member)) (t/prim :map)
-                         (:items member) (assoc (dissoc member :items) :of t/unknown)
+                         (or (:items member) (length/constrained? member))
+                         (assoc (dissoc member :items :min-count :max-count) :of t/unknown)
                          :else member))))
 
 (defn- path-writes
@@ -2345,7 +2399,14 @@
   (let [form (if (= :quote (:op tail)) (first (:children tail)) tail)]
     (if (and (= :list (:op form)) (empty? (:children form)) (empty? (:directives tail)))
       [[]]
-      (mapv #(if (= :nil (:t %)) [] (:items %)) (t/members (:env ctx) (eff ctx ty))))))
+      (mapv (fn [member]
+              (cond
+                (= :nil (:t member)) []
+                (:items member) (:items member)
+                (= :coll (:t member)) (let [[lo hi] (length/bounds member)]
+                                        (when (and (= lo hi) (<= lo 64))
+                                          (vec (repeat lo (:of member)))))))
+            (t/members (:env ctx) (eff ctx ty))))))
 
 (defn- spread-tail-nodes [tail items]
   (if (and (= :vector (:op tail)) (empty? (:directives tail)) (not (env/tag-node tail))
@@ -2435,7 +2496,10 @@
         ty (infer ctx c)
         it (infer ctx index)
         default-type (when default (infer ctx default))
-        i (:val it)
+        value (:val it)
+        literal-index? (and (= :lit (:t it)) (number? value))
+        i (when literal-index? (try (int value) (catch IllegalArgumentException _ nil)
+                                                  (catch ArithmeticException _ nil)))
         members (t/members (:env ctx) (eff ctx ty))]
     (cond
       (or (nil? index) (seq extra))
@@ -2443,24 +2507,44 @@
           (report! ctx node "TSP2554" (str "nth expects 2 or 3 arguments, got " (count args)))
           t/unknown)
 
-      (and (= :lit (:t it)) (integer? i) (<= Integer/MIN_VALUE i Integer/MAX_VALUE) (some :items members))
-      (let [missing? #(and (:items %) (not (<= 0 i (dec (count (:items %))))))]
+      (= :mismatch (:status (t/sub-result (:env ctx) (eff ctx it) (t/prim :number))))
+      (do (assignable! ctx index it (t/prim :number))
+          t/unknown)
+
+      (and literal-index? (nil? i))
+      (do (report! ctx index "TSP330-02" (str "index " value " cannot be represented as a JVM int"))
+          t/unknown)
+
+      (some? i)
+      (let [missing? #(and (= :coll (:t %)) (= :absent (length/position % i)))]
         (when-let [miss (and (nil? default) (first (filter missing? members)))]
           (report! ctx index "TSP330-02" (str "index " i
                                               (if (every? missing? members) " is" " may be")
-                                              " out of bounds for length " (count (:items miss)))))
+                                              " out of bounds for length " (length/describe miss))))
         (apply t/union (for [m members]
-                         (cond (:items m) (get (:items m) (int i) (or default-type t/never))
-                               (= :nil (:t m)) (or default-type t/nil-t)
-                               :else (t/union (elem-type ctx m) (or default-type t/never))))))
-      :else (t/union (elem-type ctx ty) (or default-type t/never)))))
+                         (cond
+                           (= :nil (:t m)) (or default-type t/nil-t)
+                           (missing? m) (or default-type t/never)
+                           (:items m) (get (:items m) i (or default-type t/never))
+                           (and (= :coll (:t m)) (= :present (length/position m i))) (:of m)
+                           :else (t/union (elem-type ctx m) (or default-type t/never))))))
+      :else (apply t/union (or default-type t/never)
+                   (map (fn [m]
+                          (cond (= :nil (:t m)) (or default-type t/nil-t)
+                                (and (= :coll (:t m)) (= 0 (second (length/bounds m)))) t/never
+                                :else (elem-type ctx m)))
+                        members)))))
 
-(doseq [h '[rest next seq reverse distinct sort shuffle butlast vec set doall]]
+(doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
+  (defmethod special h [ctx node _]
+    (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))
+
+(doseq [h '[reverse distinct sort shuffle butlast vec set doall]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)
           el (elem-type ctx (infer ctx c))
           res (coll-of (get '{vec :vector set :set} h :seq) el)]
-      (if ('#{next seq butlast} h) (t/union res t/nil-t) res))))
+      (if (= 'butlast h) (t/union res t/nil-t) res))))
 
 (doseq [h '[take drop take-last drop-last partition-all]]
   (defmethod special h [ctx node _]
@@ -2570,7 +2654,7 @@
 
 (defn- join-accumulator [acc step]
   (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
-    (update (dissoc acc :items) :of t/union (:of step))
+    (update (dissoc acc :items :min-count :max-count) :of t/union (:of step))
     (t/union acc step)))
 
 (defn- reduction-accumulator [ctx f seed el empty-call?]
@@ -2626,7 +2710,8 @@
         xts (map #(infer ctx %) xs)
         m (first (remove #(= :nil (:t %)) (t/members (:env ctx) cty)))]
     (if (= :coll (:t m))
-      (assoc (if (seq xs) (dissoc m :items) m) :of (apply t/union (:of m) (map #(widen (dissoc % :fresh)) xts)))
+      (assoc (if (seq xs) (dissoc m :items :min-count :max-count) m)
+             :of (apply t/union (:of m) (map #(widen (dissoc % :fresh)) xts)))
       cty)))
 
 (defn- transducer-element [ctx ty]
@@ -2676,7 +2761,7 @@
       (apply t/union
              (for [m (t/members (:env ctx) target)]
                (case (:t m)
-                 :coll (update (dissoc m :fresh :items) :of t/union out)
+                 :coll (update (dissoc m :fresh :items :min-count :max-count) :of t/union out)
                  (:map :map-of) (t/prim :map)
                  :nil (t/union t/nil-t (coll-of :seq out))
                  :prim (if (#{:vector :set :seq :map :coll} (:name m)) m t/unknown)
@@ -2693,7 +2778,8 @@
               el (elem-type ctx (infer ctx second-arg))]
           (cond (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector el)
                 (and (= :set (:op to)) (empty? (:children to))) (coll-of :set el)
-                (some :items (t/members (:env ctx) target)) (into-transformed ctx target el)
+                (some #(or (:items %) (length/constrained? %)) (t/members (:env ctx) target))
+                (into-transformed ctx target el)
                 :else (dissoc target :fresh)))
       3 (let [target (infer ctx to)
               source (infer ctx from)
@@ -2720,14 +2806,14 @@
     (let [env (:env ctx) actual (eff ctx actual)
           result (t/sub-result env actual expected)
           nested-error (when (= :mismatch (:status result)) (nested-type-problem ctx "TSP2322" result))
-          tuple-error (when (= :mismatch (:status result)) (tuple-problem ctx actual expected))
+          collection-error (when (= :mismatch (:status result)) (collection-problem ctx actual expected))
           emit (fn [[c m extra]] (apply report! ctx node c m (mapcat identity extra)))]
       (cond
         (= :proved (:status result)) (run! emit (problems ctx node actual expected))
         nested-error (emit nested-error)
         (seq (fresh-problems ctx actual expected)) (run! emit (fresh-problems ctx actual expected))
         (= :inconclusive (:status result)) (emit (incomplete-problem ctx actual expected result))
-        tuple-error (let [[code message] tuple-error]
+        collection-error (let [[code message] collection-error]
                       (report! ctx node (if (= "TSP330-01" code) code "TSP2322") message))
         (and (t/nilable? env actual) (not (t/nilable? env expected)) (t/sub? env (t/remove-nil env actual) expected))
         (report! ctx node "TSP2322"
@@ -2752,7 +2838,8 @@
      :tail (apply t/union
                   (for [{:keys [params rest] :as contract} contracts]
                     (if rest
-                      (let [tail {:t :coll :kind :seq :of (apply t/union rest (drop n params))}]
+                      (let [tail {:t :coll :kind :seq :of (apply t/union rest (drop n params))
+                                  :min-count (max 1 (- (t/arity-minimum contract) n))}]
                         (if (= n (t/arity-minimum contract)) (t/union tail t/nil-t) tail))
                       (if (= n (count params))
                         t/nil-t
@@ -3177,7 +3264,13 @@
                  :else (or (:type (read-var ctx s node :value)) t/unknown)))
     :vector (let [items (mapv #(dissoc (infer ctx %) :fresh) (:children node))]
               (t/tuple items (literal-element-type ctx items)))
-    :set {:t :coll :kind :set :of (literal-element-type ctx (map #(infer ctx %) (:children node)))}
+    :set (let [items (:children node)
+               size (count items)
+               minimum (if (every? literal-node? items)
+                         (count (set (map :val items)))
+                         (if (zero? size) 0 1))]
+           (length/with-bounds {:t :coll :kind :set :of (literal-element-type ctx (map #(infer ctx %) items))}
+                               minimum size))
     :map (let [children (:children node)
                pairs (partition 2 children)]
            (when (:missing-directive-target (peek children))

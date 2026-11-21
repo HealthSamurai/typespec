@@ -2,6 +2,7 @@
   "Type representation, the spec-style type language (read and print), and subtyping."
   (:require [clojure.string :as str]
             [clojure.walk :as walk]
+            [typespec.length :as length]
             [typespec.recursive-types :as recursive]))
 
 (def any {:t :any})
@@ -295,6 +296,7 @@
                      :coll (and (contains? #{:vector :set :seq :coll} (:name s))
                                 (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
                                 (cond (:items t) (inconclusive! :tuple-length)
+                                      (length/constrained? t) (inconclusive! :collection-length)
                                       *strict-shapes* (inconclusive! :unsupported)
                                       :else true))
                      :map-of (and (= :map (:name s))
@@ -303,8 +305,12 @@
       (= :class st) (case tt
                       :class (class-sub? (:name s) (:name t))
                       :prim (class-is-prim? (:name s) (:name t))
-                      :coll (when (and (:items t) (class-is-prim? (:name s) :vector))
-                              (inconclusive! :tuple-length))
+                      :coll (cond
+                              (and (:items t) (class-is-prim? (:name s) :vector))
+                              (inconclusive! :tuple-length)
+                              (and (length/constrained? t)
+                                   (class-is-prim? (:name s) (or (:kind t) :coll)))
+                              (inconclusive! :collection-length))
                       false)
       (= :map st) (case tt
                     :map (map-sub? env s t)
@@ -319,14 +325,18 @@
                        :class (prim-is-class? :map (:name t))
                        false)
       (= :coll st) (case tt
-                     :coll (if (:items t)
+                     :coll (if-let [positions (:items t)]
                              (cond (:items s) (and (= (:kind s) (:kind t))
-                                                   (= (count (:items s)) (count (:items t)))
-                                                   (every? true? (map #(sub? env %1 %2) (:items s) (:items t))))
+                                                   (length/subset? s t)
+                                                   (every? true? (map #(sub? env %1 %2) (:items s) positions)))
+                                   (and (length/constrained? s) (not (length/subset? s t))) false
+                                   (and (length/subset? s t) (= (:kind s) (:kind t)))
+                                   (every? #(sub? env (:of s) %) positions)
                                    (#{nil :vector} (:kind s)) (inconclusive! :tuple-length)
                                    :else false)
                              (and (or (nil? (:kind t)) (= (:kind s) (:kind t)))
-                                  (sub? env (:of s) (:of t))))
+                                  (length/subset? s t)
+                                  (or (= 0 (:max-count s)) (sub? env (:of s) (:of t)))))
                      :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
                      :class (prim-is-class? (or (:kind s) :coll) (:name t))
                      false)
@@ -435,7 +445,10 @@
       :map-of (str "(s/map-of " (show (:k t)) " " (show (:v t)) ")")
       :coll (if (and (:items t) (::tuple-contract (meta t)))
               (str "(s/tuple" (apply str (map #(str " " (show %)) (:items t))) ")")
-              (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?")) ")"))
+              (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?"))
+                   (when-let [lo (:min-count t)] (str " :min-count " lo))
+                   (when-let [hi (:max-count t)] (str " :max-count " hi))
+                   ")"))
       :fn (if-let [ars (seq (:arities t))]
             (let [ar (fn [a] (str "[" (str/join " " (concat (map show (:params a))
                                                             (repeat (get a :rest-min 0) (some-> (:rest a) show))
@@ -619,6 +632,29 @@
                        ty)))]
     (or (= a b) (= (normalize a) (normalize b)))))
 
+(defn- collection-type [ctx [_ inner & {:keys [kind min-count max-count count] :as opts} :as form]]
+  (let [kinds '{vector? :vector set? :set list? :seq seq? :seq}
+        kind-name (if (and (symbol? kind) (= "clojure.core" (namespace kind)))
+                    (symbol (name kind))
+                    kind)
+        kind-type (get kinds kind-name)
+        ;; Spec uses bounded-count for :count. An uncounted seq can satisfy
+        ;; it with additional elements, so only counted kinds get an upper bound.
+        exact? (and (some? count) (#{:vector :set} kind-type))
+        declared (remove nil? [min-count max-count count])]
+    (if (every? #(and (integer? %) (<= 0 % Integer/MAX_VALUE)) declared)
+      (let [lower (max (or min-count 0) (or count 0))
+            upper (if exact? (min count (or max-count count)) max-count)]
+        (if (and upper (> lower upper))
+          (do ((:fail ctx) form) unknown)
+          (cond-> (length/with-bounds {:t :coll :of (parse-type ctx inner) :kind kind-type} lower upper)
+            (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
+                (and kind (not (contains? (dissoc kinds 'list?) kind-name)))
+                (and (some? count) (not exact?))
+                (= :s/every (type-form-op ctx (first form))))
+            (with-meta {::unchecked-contract true}))))
+      (do ((:fail ctx) form) unknown))))
+
 (defn parse-type
   "Reads a type form (plain data). ctx: {:aliases :imports :fail (fn [form])}."
   [ctx form]
@@ -656,13 +692,7 @@
         :s/spec (p (second form))
         :s/keys (if (even? (count (rest form))) (parse-keys (rest form)) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
-        (:s/coll-of :s/every) (let [[_ inner & {:keys [kind] :as opts}] form
-                                    kinds '{vector? :vector set? :set list? :seq seq? :seq}]
-                                (cond-> {:t :coll :of (p inner) :kind (get kinds kind)}
-                                  (or (some #(not= :kind %) (keys opts))
-                                      (and (contains? opts :kind) (not (contains? (dissoc kinds 'list?) kind)))
-                                      (= :s/every (type-form-op ctx (first form))))
-                                  (with-meta {::unchecked-contract true})))
+        (:s/coll-of :s/every) (collection-type ctx form)
         :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
         :s/tuple (with-meta (tuple (mapv p (rest form))) {::tuple-contract true})
         :s/fspec (if (:inside-all ctx) (fail) (let [{:keys [args ret]} (apply hash-map (rest form))

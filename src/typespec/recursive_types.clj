@@ -1,6 +1,7 @@
 (ns typespec.recursive-types
   "Regular recursive specs and structural subtyping over a finite graph."
-  (:require [clojure.string :as str]))
+  (:require [clojure.string :as str]
+            [typespec.length :as length]))
 
 (def ^:private empty-queue clojure.lang.PersistentQueue/EMPTY)
 (def ^:dynamic *max-obligations* 8192)
@@ -86,7 +87,9 @@
       :never false
       (:nil :prim :lit :any) true
       :map (every? #(finite? specs inhabitants % optimistic?) (vals (:req ty)))
-      :coll (every? #(finite? specs inhabitants % optimistic?) (:items ty))
+      :coll (if-let [items (:items ty)]
+              (every? #(finite? specs inhabitants % optimistic?) items)
+              (or (zero? (first (length/bounds ty))) (finite? specs inhabitants (:of ty) optimistic?)))
       :union (some #(finite? specs inhabitants % optimistic?) (:types ty))
       optimistic?)))
 
@@ -172,11 +175,14 @@
   (let [actual (:items a)
         expected (:items b)]
     (cond
-      (and expected (or (nil? actual) (not= (:kind a) (:kind b)) (not= (count actual) (count expected))))
-      (if (nil? actual) (leaf a b) (mismatch a b))
+      (and expected (nil? actual) (not (length/constrained? a))) (leaf a b)
+      (and expected (not= (:kind a) (:kind b))) (mismatch a b)
 
       (and (not expected) (:kind b) (not= (:kind a) (:kind b))) (mismatch a b)
+      (not (length/subset? a b)) (assoc (mismatch a b) :length? true)
       actual {:all (mapv (fn [i ty] [i ty (if expected (nth expected i) (:of b))]) (range) actual)}
+      expected {:all (mapv (fn [i ty] [i (:of a) ty]) (range) expected)}
+      (= 0 (:max-count a)) proved
       :else {:all [[::element (:of a) (:of b)]]})))
 
 (defn- head-kind [specs ty]

@@ -16,6 +16,7 @@ nil?     any?      t/unknown  t/never                ; any? = explicit opt-out, 
 (s/keys :req [:patient/id] :opt [:patient/name])     ; map with qualified keys (structural)
 (s/keys :req-un [:patient/id])                       ; unqualified key :id, type from :patient/id
 (s/coll-of T :kind vector?)  (s/map-of K V)  (s/tuple A B)
+(s/coll-of T :kind vector? :min-count 1 :max-count 4)
 (s/merge A B)                                        ; input must satisfy both = intersection of requirements
 (s/cat :a A :b B)  (s/alt :a A :b B)                 ; argument lists, as in s/fdef
 (s/* T)  (s/+ T)  (s/? T)                            ; repeated and optional arguments
@@ -166,6 +167,7 @@ The table is validated with a **differential test**: a generator builds random f
 - **Tagged conformation.** `s/conform` of a known `s/or` yields tagged entries or `:clojure.spec.alpha/invalid`. After checking `s/invalid?`, destructure the entry and use `case` on its tag to narrow the payload. The `contracts` command adds a `conform` field to referenced tagged specs. [Supported specs and example](../features/F261-spec-conform.md)
 - **Exhaustiveness**: `case` over literal unions, `cond`/`condp` using `=` on a single variable, and `defmulti` with closed dispatch (`{:t/closed true}`). A `cond` without `:else` yields `T | nil`; this is not an error.
 - **nil-punning**: `(first nil)` → `nil`, `(seq x)` narrows to a non-empty collection, `(:k x)` on `t/unknown` produces a “narrow first” error.
+- **Collection length.** Literal `:min-count` and `:max-count` bounds participate in assignability. `:count` is exact for Spec vector and set kinds. A successful `seq` guarantees a first position. Its element type can still include `nil`. [Length and positions](../features/F330-tuples-and-nonempty.md)
 - **String keys** and **map tails**: `t/keys-str` and `t/keys ... :rest` from section 1.
 
 ### Clojure specifics
@@ -431,7 +433,7 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP280-02` | malformed or conflicting literal directive |
 | `TSP295-01` | recursive spec cycle without a structural transition |
 | `TSP295-02` | recursive spec lacks a proven finite base |
-| `TSP330-01` | vector length does not match a tuple contract |
+| `TSP330-01` | collection length does not satisfy the declared bounds or tuple length |
 | `TSP330-02` | constant `nth` index may be out of bounds without a default |
 | `TSP410-01` | the length or positions of an `apply` tail could not be verified |
 | `TSP430-01` | method or arity conflicts with its protocol declaration |

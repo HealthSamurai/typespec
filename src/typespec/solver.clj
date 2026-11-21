@@ -1,6 +1,7 @@
 (ns typespec.solver
   "Pure, bounded rank-1 constraint solving. Fresh identity is local to each opening."
-  (:require [typespec.types :as t]))
+  (:require [typespec.length :as length]
+            [typespec.types :as t]))
 
 (defn substitute
   "Capture-free substitution by variable identity, visiting type positions only."
@@ -153,13 +154,16 @@
                      (recur-all [(child (get fields k) v [:key k])]))))
                (:opt r)))
       ;; Right unions need disjunctive search; leave them to concrete subtyping.
-      (and (:items l) (:items r) (= (:kind l) (:kind r)))
-      (if (= (count (:items l)) (count (:items r)))
-        (recur-all (map-indexed (fn [i ty] (child ty (nth (:items r) i) [:index i])) (:items l)))
-        [(assoc c :mismatch :tuple-length)])
-      (and (= :coll (:t l)) (= :coll (:t r)) (not (:items r))
-           (or (nil? (:kind r)) (= (:kind l) (:kind r))))
-      (recur-all [(child (:of l) (:of r) :of)])
+      (and (= :coll (:t l) (:t r))
+           (or (= (:kind l) (:kind r)) (and (nil? (:kind r)) (nil? (:items r))))
+           (or (nil? (:items r)) (:items l) (length/constrained? l)))
+      (cond
+        (not (length/subset? l r))
+        [(assoc c :mismatch (if (:items r) :tuple-length :collection-length))]
+        (:items r)
+        (recur-all (map-indexed #(child (get (:items l) %1 (:of l)) %2 [:index %1]) (:items r)))
+        (= 0 (:max-count l)) []
+        :else (recur-all [(child (:of l) (:of r) :of)]))
       (and (fixed? l) (fixed? r)
            (= (count (:params (first (:arities l)))) (count (:params (first (:arities r))))))
       (let [a (first (:arities l)) b (first (:arities r))]

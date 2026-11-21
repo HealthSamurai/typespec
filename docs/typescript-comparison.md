@@ -21,7 +21,7 @@
 | Пользовательские guards | Type predicates; явная сигнатура не доказывает тело | Есть built-in predicates; общие checked guards не реализованы | [F250](../features/F250-checked-guards.md) |
 | Nullable-типы | strictNullChecks различает null/undefined | nil и platform-типы, strict-nil; остаются ложные успехи | [F320](../features/F320-nil-and-platform.md) |
 | Optional property ≠ nullable value | Уточняется exactOptionalPropertyTypes | req/opt моделируются; get/default ошибочно может удалять явный nil | [F310](../features/F310-maps-and-destructuring.md) |
-| Безопасность индексации | noUncheckedIndexedAccess добавляет undefined | Частичные правила get/first/nth; точная пустота не везде известна | [F330](../features/F330-tuples-and-nonempty.md) |
+| Безопасность индексации | noUncheckedIndexedAccess добавляет undefined | Границы из Spec, позиции tuple, непустота после `seq` и проверка литеральных индексов | [F330](../features/F330-tuples-and-nonempty.md) |
 | Структурные объекты / мапы | Структурная совместимость | Основные s/keys и map-операции работают частично | [F310](../features/F310-maps-and-destructuring.md) |
 | Общий тип доменного ключа | Обычно поле объявляется в каждом интерфейсе или через переиспользуемый тип | Qualified key получает тип из s/def; это не доказывает присутствие/валидность в неизвестной мапе | [F120](../features/F120-key-is-type.md) |
 | Exact object | Нет общего exact-object режима; есть excess-property check свежих литералов | t/exact в дизайне; не считать проверку опечаток полной exactness | [F310](../features/F310-maps-and-destructuring.md) |

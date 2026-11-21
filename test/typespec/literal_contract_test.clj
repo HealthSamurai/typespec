@@ -80,8 +80,8 @@
                          #_(t/satisfies true?) false
                          (defn assumed? {:t/guard 'string?} [x] (number? x))
                          (defn consumes [x] (when (assumed? x) #_(t/satisfies string?) x))")]
-    (is (= (cons "TSP2345" (repeat 5 "TSP280-01")) (codes result)) (pr-str (:diagnostics result)))
-    (is (= (concat [nil] (repeat 4 #{:unsupported-contract}) [#{:trusted-guard}])
+    (is (= (concat ["TSP2345" "TSP330-01"] (repeat 4 "TSP280-01")) (codes result)) (pr-str (:diagnostics result)))
+    (is (= (concat [nil nil] (repeat 3 #{:unsupported-contract}) [#{:trusted-guard}])
            (mapv :reasons (:diagnostics result))))))
 
 (deftest nested-platform-values-and-qualified-key-diagnostics

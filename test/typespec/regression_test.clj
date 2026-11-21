@@ -9,6 +9,7 @@
     typespec.incomplete-overload-test
     typespec.maps-regression-test
     typespec.tuples-and-rows-test
+    typespec.collection-length-test
     typespec.apply-test
     typespec.spec-args-test
     typespec.spec-conform-test

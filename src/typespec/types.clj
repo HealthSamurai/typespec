@@ -334,7 +334,11 @@
       (= :map st) (case tt
                     :map (map-sub? env s t)
                     :prim (contains? #{:map :coll} (:name t))
-                    :map-of (every? #(sub? env % (:v t)) (concat (vals (:req s)) (vals (:opt s))))
+                    :map-of (every? (fn [[k v]]
+                                     (or (= :never (:t v))
+                                         (and (sub? env (lit k) (:k t))
+                                              (sub? env v (:v t)))))
+                                   (concat (:req s) (:opt s)))
                     :class (prim-is-class? :map (:name t))
                     false)
       (= :map-of st) (case tt
@@ -472,8 +476,12 @@
                               :else (str "(t/or " (str/join " " (map show others)) ")"))]
                (if (some #(= :nil (:t %)) ts) (str "(s/nilable " core ")") core))
       :merge (str "(s/merge " (str/join " " (map show (:types t))) ")")
-      :map (if (:fresh t)
-             (str "{" (str/join ", " (map (fn [[k v]] (str k " " (show v))) (:req t))) "}")
+      :map (cond
+             (:fresh t)
+             (str "{" (str/join ", " (map (fn [[k v]] (str (pr-str k) " " (show v))) (:req t))) "}")
+             (some (complement keyword?) (concat (keys (:req t)) (keys (:opt t))))
+             "map?"
+             :else
              (str "(s/keys"
                   (when (seq (:req t)) (str " :req [" (str/join " " (map show-kw (keys (:req t)))) "]"))
                   (when (seq (:opt t)) (str " :opt [" (str/join " " (map show-kw (keys (:opt t)))) "]"))

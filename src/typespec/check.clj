@@ -26,10 +26,20 @@
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
          assoc-map-key specialize-map-return dynamic-definition?)
 
+(defn- static-map-key [node]
+  (case (:op node)
+    (:kw :str) (:val node)
+    :quote (let [value (first (:children node))]
+             (when (= :sym (:op value)) (:val value)))
+    :list (let [[head value & more] (:children node)]
+            (when (and (= 'quote (:val head)) (= :sym (:op value)) (empty? more))
+              (:val value)))
+    nil))
+
 (defn- at-type-path [node path]
   (reduce (fn [current step]
             (if-let [child (case (:op current)
-                             :map (some (fn [[k v]] (when (= step (:val k)) v))
+                             :map (some (fn [[k v]] (when (= step (static-map-key k)) v))
                                         (partition 2 (:children current)))
                              :vector (when (integer? step) (get (:children current) step))
                              nil)]
@@ -74,7 +84,8 @@
     (->> candidates
          (remove #(= (str %) sx))
          (map (fn [c] [(if (= (norm c) (norm sx)) 0 (edit-distance sx (str c))) c]))
-         (filter (fn [[d c]] (<= d (max 1 (min 2 (quot (count (name c)) 2))))))
+         (filter (fn [[d c]]
+                   (<= d (max 1 (min 2 (quot (count (if (string? c) c (name c))) 2))))))
          (sort-by first) first second)))
 
 (defn- hint-suffix [x candidates]
@@ -99,7 +110,9 @@
                            ;; a map whose type was inferred (a literal, a pattern) may hold more keys than we saw
                            (:inferred m) loose
                            :else [:missing nil])
-                :map-of [:opt (:v m)]
+                :map-of (if (= :mismatch (:status (t/sub-result env (t/lit k) (:k m))))
+                          [:absent nil]
+                          [:opt (:v m)])
                 :coll (cond (and path? (= :set (:kind m))) [:opt (t/lit k)]
                             (and path? (nil? (:kind m))) loose
                             :else [:not-map nil])
@@ -129,7 +142,7 @@
     (case status
       :req {:type type :optional? (t/nilable? env ty) :declared? true :status :req}
       :opt {:type type :optional? true :declared? true}
-      :nil {:type t/nil-t :optional? true :declared? true}
+      :nil {:type t/never :optional? true :declared? true}
       :absent {:type t/never :optional? true :declared? true}
       :unknown (do (when (and (qualified-keyword? k) (not (get-in env [:specs k]))
                               (contains? (:key-nss env) (namespace k))
@@ -153,11 +166,7 @@
 (defn- read-key-default [ctx ty k node default-type]
   (let [{:keys [type optional?]} (key-info ctx ty k node)]
     ;; A default replaces absence, never a nil value stored at the key.
-    (if optional?
-      (if (every? #(= :nil (:t %)) (t/members (:env ctx) ty))
-        default-type
-        (t/union type default-type))
-      type)))
+    (if optional? (t/union type default-type) type)))
 
 ;; ---- assignability ----
 
@@ -704,13 +713,44 @@
 
 ;; ---- destructuring ----
 
-(defn- keys-directive [k]
-  (when (and (= :kw (:op k)) (#{"keys" "keys!"} (name (:val k))))
-    {:ns (namespace (:val k)) :bang? (= "keys!" (name (:val k)))}))
+(defn- keys-directive [node]
+  (when (= :kw (:op node))
+    (let [key (:val node)
+          nsp (namespace key)]
+      (case (name key)
+        ("keys" "keys!") {:key-of #(keyword (or nsp (namespace %)) (name %))
+                          :bang? (= "keys!" (name key))}
+        "strs" (when-not nsp {:key-of #(when (simple-symbol? %) (name %))})
+        "syms" {:key-of #(when (symbol? %) (symbol (or nsp (namespace %)) (name %)))}
+        nil))))
 
 (defn- has-bang? [pattern]
   (and (= :map (:op pattern))
        (some (fn [[k _]] (or (:bang? (keys-directive k)) (has-bang? k))) (partition 2 (:children pattern)))))
+
+(defn- bind-map-entry [ctx pattern node key ty outer-why projection defaults]
+  (let [env (:env ctx)
+        {:keys [type optional? declared? status]} (key-info ctx ty key node)
+        local (when (= :sym (:op pattern)) (:val pattern))
+        default (get defaults local)
+        default-type (when default (infer ctx default))
+        bang? (has-bang? pattern)
+        tname (when (and declared? (or optional? bang?)) (t/show (t/remove-nil env ty)))
+        why (cond
+              default (when (t/nilable? env type)
+                        (str key " is " (t/show (t/resolve-t env type))
+                             ", and :or applies only when the key is absent"))
+              optional? (cond
+                          (= :req status) (or outer-why "the destructured value may be nil")
+                          declared? (str key " is optional in " tname)
+                          :else (str key " may be absent")))]
+    (when (and bang? declared? (or optional? (t/nilable? env type)))
+      (report! ctx node "TSP2741" (str ":keys! below requires " key ", but it is optional in " tname)))
+    (bind-pattern ctx pattern (cond bang? (t/remove-nil env type)
+                                    optional? (t/union type (or default-type t/nil-t))
+                                    :else type)
+                  why
+                  (when-not (or default bang?) projection))))
 
 (defn- destructure-map [ctx pattern ty outer-why projection]
   (let [env (:env ctx)
@@ -723,6 +763,11 @@
         ;; field bindings share this identity, even without :as.
         [ctx origin path] (track-path ctx (or projection {:path [] :type ty}))
         ctx (cond-> ctx missing-sym (bind missing-sym (t/union (t/prim :map) t/nil-t)))
+        ctx (if-let [alias (:as special)]
+              (-> (bind ctx (:val alias) ty)
+                  (remember-projection (:val alias) origin path))
+              ctx)
+        project (fn [key] {:origin origin :path (conj path key)})
         ctx (reduce
              (fn [ctx [k v]]
                (let [kd (keys-directive k)]
@@ -730,56 +775,33 @@
                    (and kd (= :vector (:op v)))
                    (reduce
                     (fn [ctx s]
-                      (if-not (#{:sym :kw} (:op s))
-                        ctx
-                        (let [key (keyword (or (:ns kd) (namespace (:val s))) (name (:val s)))
-                              sym (symbol (name (:val s)))
-                              {:keys [type optional? declared? status]} (key-info ctx ty key s)
-                              default (get defaults sym)]
-                          (cond
-                            (and (:bang? kd) missing-sym)
-                            (-> (bind ctx sym (t/union type t/nil-t) :why (str key " is missing when " missing-sym " is not nil"))
-                                (update-in [:missing-of missing-sym] (fnil conj []) sym))
-                            (:bang? kd)
-                            (do (when (and optional? declared?)
-                                  (report! ctx s "TSP2741" (str ":keys! requires " key ", but it is optional in " tname)))
-                                (bind ctx sym type))
-                            default
-                            (bind ctx sym (if optional? (t/union type (infer ctx default)) type)
-                                  :why (when (t/nilable? env type)
-                                         (str key " is " (t/show (t/resolve-t env type))
-                                              ", and :or applies only when the key is absent")))
-                            optional?
-                            (-> (bind ctx sym (t/union type t/nil-t)
-                                      :why (cond (= :req status) (or outer-why "the destructured value may be nil")
-                                                 declared? (str key " is optional in " tname)
-                                                 :else (str key " may be absent")))
-                                (remember-projection sym origin (conj path key)))
-                            :else (-> (bind ctx sym type)
-                                      (remember-projection sym origin (conj path key)))))))
+                      (if-let [key (when (#{:sym :kw} (:op s)) ((:key-of kd) (:val s)))]
+                        (let [sym (symbol (name (:val s)))
+                              binding (assoc s :op :sym :val sym)]
+                          (if (:bang? kd)
+                            (let [{:keys [type optional? declared?]} (key-info ctx ty key s)]
+                              (if missing-sym
+                                (-> (bind ctx sym (t/union type t/nil-t)
+                                          :why (str key " is missing when " missing-sym " is not nil"))
+                                    (update-in [:missing-of missing-sym] (fnil conj []) sym))
+                                (do (when (and optional? declared?)
+                                      (report! ctx s "TSP2741" (str ":keys! requires " key ", but it is optional in " tname)))
+                                    (bind ctx sym type))))
+                            (bind-map-entry ctx binding s key ty outer-why (project key) defaults)))
+                        ctx))
                     ctx (:children v))
 
-                   (and (= :kw (:op k)) (= :as (:val k)))
-                   (-> (bind ctx (:val v) ty)
-                       (remember-projection (:val v) origin path))
-                   (and (= :kw (:op k)) (= :missing (:val k))) ctx
+                   (and (= :kw (:op k)) (#{:as :or :missing} (:val k))) ctx
                    (and (= :kw (:op k)) (#{:select :excess :all} (:val k))) (bind ctx (:val v) t/unknown)
-                   (and (= :kw (:op k)) (#{:strs :syms :strs! :syms!} (:val k)))
+                   (and (= :kw (:op k)) (#{:strs! :syms!} (:val k)))
                    (reduce #(bind %1 (:val %2) t/unknown) ctx (filter #(= :sym (:op %)) (:children v)))
 
-                   (= :kw (:op v))
-                   (let [{:keys [type optional? declared?]} (key-info ctx ty (:val v) v)
-                         bang? (has-bang? k)]
-                     (when (and bang? declared? (or optional? (t/nilable? env type)))
-                       (report! ctx v "TSP2741" (str ":keys! below requires " (:val v) ", but it is optional in " tname)))
-                     (bind-pattern ctx k (cond bang? (t/remove-nil env type)
-                                               optional? (t/union type t/nil-t)
-                                               :else type)
-                                   (when (and optional? declared?) (str (:val v) " is optional in " tname))
-                                   (when (and (not bang?) (not (contains? defaults (:val k))))
-                                     {:origin origin :path (conj path (:val v))})))
-                   :else ctx)))
-             ctx pairs)]
+                   :else
+                   (if-let [key (static-map-key v)]
+                     (let [binding (if (#{:sym :kw} (:op k)) (assoc k :op :sym :val (symbol (name (:val k)))) k)]
+                       (bind-map-entry ctx binding v key ty outer-why (project key) defaults))
+                     ctx))))
+             ctx (sort-by (fn [[k _]] (if (keys-directive k) 1 0)) pairs))]
     ctx))
 
 (defn- elem-type [ctx ty]
@@ -3276,16 +3298,16 @@
            (length/with-bounds {:t :coll :kind :set :of (literal-element-type ctx (map #(infer ctx %) items))}
                                minimum size))
     :map (let [children (:children node)
-               pairs (partition 2 children)]
+               pairs (partition 2 children)
+               static-keys (map static-map-key (map first pairs))]
            (when (:missing-directive-target (peek children))
              (literal-directives ctx (peek children)))
-           (if (every? #(= :kw (:op (first %))) pairs)
+           (if (every? some? static-keys)
              {:t :map :fresh true :inferred true :complete-keys? true :opt {}
               :req (into (array-map)
-                         (for [[k v] pairs]
+                         (map (fn [[k v] kk]
                            (let [_ (when (some literal-directive? (:directives k)) (infer ctx k))
-                                 vty (infer ctx v)
-                                 kk (:val k)]
+                                 vty (infer ctx v)]
                              (check-key-value! ctx kk v vty)
                              (when (and (qualified-keyword? kk) (not (get-in (:env ctx) [:specs kk]))
                                         (contains? (:key-nss (:env ctx)) (namespace kk))
@@ -3295,7 +3317,8 @@
                              [kk (if (and (qualified-keyword? kk) (get-in (:env ctx) [:specs kk])
                                           (not (t/sub? (:env ctx) (eff ctx vty) (t/ref-t kk))))
                                    (t/ref-t kk)
-                                   (dissoc vty :fresh))])))}
+                                   (dissoc vty :fresh))]))
+                              pairs static-keys))}
              (do (run! #(infer ctx %) (:children node)) (t/prim :map))))
     :quote (if (= :sym (:op (first (:children node)))) (t/prim :symbol) t/unknown)
     :fn-lit (infer-callback ctx node nil)

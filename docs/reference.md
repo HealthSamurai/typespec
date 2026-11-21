@@ -125,9 +125,11 @@ In strict mode, a qualified key with no declared type produces `TSP2304: no type
 
 An unqualified key (`{:keys [id]}`) gets its type only from a declared `s/keys :req-un`. Without a declaration, its type is `t/unknown`.
 
+With `s/map-of` or a map literal, `:strs`, `:syms` and explicit bindings such as `{label "label"}` read the type of the selected value. `:or` applies to absent keys, including a `nil` input. A stored `nil` remains `nil`. [F113](../features/F113-destructuring.md)
+
 ### 2.4 `:keys!` and other Clojure 1.13 directives
 
-`:keys!`, `:req!`, `:select`, `:excess`, `:missing`, and `:all` are **code**: they change behavior (`req!` throws an exception). Typespec never adds or removes them automatically. If they are already in the code, Typespec understands them:
+`:keys!`, `:req!`, `:select`, `:excess`, `:missing`, and `:all` are **code**: they change behavior (`req!` throws an exception). The table describes the proposed checker rules for Clojure 1.13.
 
 | Directive | Type |
 |---|---|
@@ -142,7 +144,7 @@ An unqualified key (`{:keys [id]}`) gets its type only from a declared `s/keys :
 | `(selector f)` | one directive → its type; multiple directives → `{:select .. :excess ..}` without nil values |
 | `[& {:keys! [a]}]` | required keyword arguments |
 
-The table is validated with a **differential test**: a generator builds random forms and values, then compares the predicted type with the result of the actual `destructure`. The Clojure version is pinned in the config: the 1.13 syntax is still in alpha, `:defaults` has already been removed, and `:req!` was added later.
+Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation of the proposed rules requires a separate Clojure 1.13 pin and comparison with that version's `destructure`.
 
 
 ---

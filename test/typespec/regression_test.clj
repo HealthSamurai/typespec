@@ -8,6 +8,7 @@
     typespec.incomplete-boundary-test
     typespec.incomplete-overload-test
     typespec.maps-regression-test
+    typespec.destructuring-test
     typespec.platform-nullability-test
     typespec.tuples-and-rows-test
     typespec.collection-length-test

@@ -1417,8 +1417,12 @@
 (defn infer-body [ctx forms]
   (loop [[form & more] forms, ctx ctx, result t/nil-t]
     (if form
-      (let [result (infer ctx form)
-            initialized (seq (body-initializers ctx form))]
+      (let [reachable? (not= :never (:t result))
+            ;; Keep diagnostics for later forms without adding dead loop edges.
+            inferred (infer (cond-> ctx (not reachable?) (dissoc :recur-types)) form)
+            result (if reachable? inferred result)
+            initialized (when (not= :never (:t result))
+                          (seq (body-initializers ctx form)))]
         (recur more (cond-> ctx initialized (update :initialized-vars (fnil into #{}) initialized)) result))
       result)))
 
@@ -1901,7 +1905,28 @@
   (let [ts (mapv #(infer ctx %) (args-of node))]
     (when-let [calls (:recur-types ctx)] (swap! calls conj ts)))
   t/never)
-(defmethod special 'throw [ctx node _] (run! #(infer ctx %) (args-of node)) t/never)
+(defmethod special 'throw [ctx node _]
+  (let [[exception :as args] (args-of node)]
+    (if (= 1 (count args))
+      ;; The JVM also accepts a null reference here and raises an NPE.
+      (assignable! ctx exception (infer ctx exception)
+                   (t/union (t/class-type "java.lang.Throwable") t/nil-t))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "throw expects exactly one argument"))))
+  t/never)
+
+(defmethod special 'assert [ctx node _]
+  (if (= 'assert (t/core-name (:file ctx) (:val (first (:children node)))))
+    (let [[test message :as args] (args-of node)]
+      (if (<= 1 (count args) 2)
+        (let [[_ failure] (condition-contexts ctx test)]
+          (when (and message failure)
+            (infer failure message)))
+        (do (run! #(infer ctx %) args)
+            (report! ctx node "TSP2554" "assert expects one or two arguments")))
+      ;; Clojure may omit assertions at compile time.
+      t/nil-t)
+    t/unknown))
 
 (doseq [h '[some? nil?]]
   (defmethod special h [ctx node head]
@@ -2100,14 +2125,15 @@
   (let [forms (args-of node)
         catch? #(= 'catch (env/head (:file ctx) %))
         finally? #(= 'finally (env/head (:file ctx) %))
-        body (remove #(or (catch? %) (finally? %)) forms)]
-    (run! #(infer-body ctx (args-of %)) (filter finally? forms))
-    (apply t/union
-           (infer-body ctx body)
-           (for [c (filter catch? forms)
-                 :let [[cls sym & cbody] (args-of c)
-                       cn (t/resolve-class (:imports (:file ctx)) (:val cls))]]
-             (infer-body (bind ctx (:val sym) (if cn (t/class-type cn) t/unknown) :hinted true) cbody)))))
+        body (remove #(or (catch? %) (finally? %)) forms)
+        normal (apply t/union
+                      (infer-body ctx body)
+                      (for [c (filter catch? forms)
+                            :let [[cls sym & cbody] (args-of c)
+                                  cn (t/resolve-class (:imports (:file ctx)) (:val cls))]]
+                        (infer-body (bind ctx (:val sym) (if cn (t/class-type cn) t/unknown) :hinted true) cbody)))
+        cleanup (mapv #(infer-body ctx (args-of %)) (filter finally? forms))]
+    (if (some #(= :never (:t %)) cleanup) t/never normal)))
 
 (defn- threaded-step [ctx step first? previous display input hinted?]
   (let [names (into (set (keys (:locals ctx)))

@@ -21,6 +21,7 @@
     typespec.protocol-contracts-test
     typespec.multimethod-contracts-test
     typespec.case-narrowing-test
+    typespec.control-flow-test
     typespec.checked-guards-test
     typespec.type-operators-test
     typespec.diagnostic-json-test

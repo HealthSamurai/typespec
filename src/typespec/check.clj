@@ -46,7 +46,7 @@
 (defn- eff
   "With :strict-nil, a platform type (from a hint or from Java) may be nil."
   [ctx ty]
-  (if (and (:strict-nil (:opts ctx)) (:platform ty)) (t/union (dissoc ty :platform) t/nil-t) ty))
+  (if (:strict-nil (:opts ctx)) (t/allow-platform-nil ty) ty))
 
 (defn- show-ref [ctx ty]
   (let [s (t/show ty)]
@@ -180,6 +180,13 @@
                 :else (str (show-ref ctx actual) " is not assignable to " (show-ref ctx expected))))
      {:type-path path}]))
 
+(defn- nested-platform-problem [ctx code actual expected result]
+  (when-let [{:keys [path platform-origin expected]}
+             (t/nested-platform-mismatch (:env ctx) actual expected result)]
+    [code (str "at " (pr-str path) ": " (show-ref ctx platform-origin)
+               " may be nil, expected " (show-ref ctx expected))
+     {:type-path path}]))
+
 (defn- fresh-problems [ctx actual expected]
   (let [env (:env ctx)
         ms (remove #(= :nil (:t %)) (t/members env expected))]
@@ -195,7 +202,7 @@
                :when (and exp (not= :proved (:status result)))]
            (if (= :inconclusive (:status result))
              (conj (incomplete-problem ctx v exp result) [:value k])
-             ["TSP2322" (str "value of " k ": " (t/show v) " is not assignable to " (show-ref ctx exp)) nil [:value k]]))
+             ["TSP2322" (str "value of " k ": " (t/show (eff ctx v)) " is not assignable to " (show-ref ctx exp)) nil [:value k]]))
          (for [k (keys (:req actual))
                :when (and (not (some #{k} known))
                           (not (and (qualified-keyword? k) (get-in env [:specs k])))
@@ -230,7 +237,7 @@
           (first (keep-indexed (fn [i item]
                                 (let [target (nth e i)]
                                   (when (= :mismatch (:status (t/sub-result env item target)))
-                                    ["TSP2345" (str "vector element " i ": " (show-ref ctx item)
+                                    ["TSP2345" (str "vector element " i ": " (show-ref ctx (eff ctx item))
                                                      " is not assignable to " (show-ref ctx target))])))
                               a)))
 
@@ -246,7 +253,8 @@
   (let [env (:env ctx) actual (eff ctx actual)
         result (t/sub-result env actual expected)
         nested-error (when (= :mismatch (:status result))
-                       (nested-type-problem ctx (if (:fresh actual) "TSP2322" "TSP2345") result))
+                       (or (nested-platform-problem ctx "TSP2531" actual expected result)
+                           (nested-type-problem ctx (if (:fresh actual) "TSP2322" "TSP2345") result)))
         collection-error (when (= :mismatch (:status result)) (collection-problem ctx actual expected))]
     (cond
       (:generic-failure actual) []
@@ -1213,10 +1221,11 @@
   (probe ctx #(infer % node)))
 
 (defn- widen [ty]
-  (case (:t ty)
-    :lit (t/with-assumption (t/lit-prim (:val ty)) (t/assumption ty))
-    :union (apply t/union (map widen (:types ty)))
-    ty))
+  (cond-> (case (:t ty)
+            :lit (t/with-assumption (t/lit-prim (:val ty)) (t/assumption ty))
+            :union (apply t/union (map widen (:types ty)))
+            ty)
+    (:platform ty) (assoc :platform true)))
 
 (defn- map-edits [ctx head args]
   (case head
@@ -1638,8 +1647,12 @@
   "Key = type: a value stored under a qualified key must fit the spec of that key."
   [ctx k vnode vtype]
   (when (and (qualified-keyword? k) (get-in (:env ctx) [:specs k]))
-    (when-not (t/sub? (:env ctx) (eff ctx vtype) (t/ref-t k))
-      (report! ctx vnode "TSP2322" (str (t/show vtype) " is not assignable to " (show-ref ctx (t/ref-t k)))))))
+    (let [actual (eff ctx vtype) expected (t/ref-t k)
+          result (t/sub-result (:env ctx) actual expected)]
+      (when-not (= :proved (:status result))
+        (if-let [[code msg details] (nested-platform-problem ctx "TSP2322" actual expected result)]
+          (apply report! ctx vnode code msg (mapcat identity details))
+          (report! ctx vnode "TSP2322" (str (t/show actual) " is not assignable to " (show-ref ctx expected))))))))
 
 (defn- key-type [ctx k vtype]
   (if (and (qualified-keyword? k) (get-in (:env ctx) [:specs k])) (t/ref-t k) (widen vtype)))
@@ -2805,7 +2818,9 @@
   (when-not (or (:generic-failure actual) (#{:unknown :any} (:t expected)))
     (let [env (:env ctx) actual (eff ctx actual)
           result (t/sub-result env actual expected)
-          nested-error (when (= :mismatch (:status result)) (nested-type-problem ctx "TSP2322" result))
+          nested-error (when (= :mismatch (:status result))
+                         (or (nested-platform-problem ctx "TSP2322" actual expected result)
+                             (nested-type-problem ctx "TSP2322" result)))
           collection-error (when (= :mismatch (:status result)) (collection-problem ctx actual expected))
           emit (fn [[c m extra]] (apply report! ctx node c m (mapcat identity extra)))]
       (cond
@@ -3120,16 +3135,6 @@
                         [h d]))))
             directives))))
 
-(defn- strict-value-type [ctx ty]
-  (let [seen (java.util.IdentityHashMap.)]
-    (letfn [(visit [value]
-              (or (.get seen value)
-                  (let [resolved (walk/walk visit #(if (and (map? %) (:platform %)) (eff ctx %) %) value)]
-                    ;; Tuple positions and the element summary can share type nodes.
-                    (when (map? value) (.put seen value resolved))
-                    resolved)))]
-      (visit ty))))
-
 (defn- check-satisfies! [ctx node directive actual before-trust]
   (let [annotation (second (:children directive))
         env (:env ctx)
@@ -3143,8 +3148,7 @@
         (report! ctx node "TSP280-01" (str "t/satisfies cannot establish " (show-ref ctx type)
                                          " (" (name issue) ")")
                  :reasons #{issue})
-        (let [actual (if (:strict-nil (:opts ctx)) (strict-value-type ctx actual) actual)
-              fields (when (= :map (:op node))
+        (let [fields (when (= :map (:op node))
                        (into {} (map (fn [[k v]] [(:val k) {:key k :value v}]))
                              (partition 2 (:children node))))]
           (binding [t/*strict-shapes* true]
@@ -3412,6 +3416,7 @@
         names (update (env/namespace-vars files (:macros env0)) :ns-defs #(merge-with into % protocol-defs))
         guard-env (merge env0 names
                          {:macro-contracts (:contracts compiled)
+                          :strict-nil (boolean (:strict-nil opts))
                           :nss (set (map :ns files))})
         guard-result (compile-guards guard-env opts)
         env (assoc guard-env :guards (:guards guard-result))

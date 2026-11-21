@@ -218,6 +218,7 @@ Clojure on the JVM already has a type system — Java's. Typespec uses it fully 
 - A hinted parameter or return has that type. Hints count as a signature: a function with hints on all parameters and the return value needs no `t/sig`.
 - Class names are part of the type language: `{:t/sig '[String long :-> (s/nilable java.time.Instant)]}`, `(s/coll-of java.util.UUID)`, `(t/class java.util.List String)` for Java generics.
 - `^String` allows nil (the compiler allows it) — the type is the **platform type** `(t/platform String)`, as in Kotlin's `String!`: method calls are allowed, nil flows are counted in coverage. With `:strict-nil` it becomes `String | nil`, and `(.length s)` requires narrowing. Primitives `^long`/`^double` are never nil.
+- Strict nil checks also apply to platform values stored in maps, tuples and collections. The same value can satisfy a non-nil contract after a local guard such as `when-let` or `some?`. [Nil and platform types](../features/F320-nil-and-platform.md)
 - `t/sig` and hints must agree: `^long` in the code and `string?` in the signature give `TSP2322`.
 
 ### 4.2 The type checker checks hints
@@ -345,7 +346,7 @@ declarations, known uses, and paths through referenced specs.
 ```
 
 - `expected`/`actual` are printed **in the type language from section 1** and can be pasted into `t/sig`.
-- `type-path` lists map keys and vector indexes leading to a mismatch in a recursive type. With an inline literal, the range points to the mismatched value.
+- `type-path` lists map keys and vector indexes leading to a mismatch in a recursive type or a nested platform-nil mismatch. With an inline literal, the range points to the mismatched value.
 - `cause_of` groups cascading errors by root cause. `id` is stable across runs (needed for the baseline).
 - `risk` is `safe`, `review`, or `unsafe`. A fix using `any?`, a cast, or type weakening is never `safe`.
 

@@ -20,26 +20,43 @@
 (defn strip [t] (dissoc t :platform :as :generic-failure))
 
 (defn union [& ts]
-  (let [flat (loop [xs (seq ts) seen #{} out []]
-               (if (empty? xs)
-                 out
-                 (let [x (first xs) more (rest xs)]
-                   (cond (= :union (:t x)) (recur (concat (:types x) more) seen out)
-                         (= :never (:t x)) (recur more seen out)
-                         ;; the same type twice: keep the copy without the failure note
-                         (seen (strip x)) (recur more seen
-                                                 (if (:generic-failure x) out
-                                                   (mapv #(if (= (strip %) (strip x)) (dissoc % :generic-failure) %) out)))
-                         :else (recur more (conj seen (strip x)) (conj out x))))))]
-    (cond-> (with-assumption
-              (cond (empty? flat) never
-                    (some #(= :any (:t %)) flat) any
-                    (some #(= :unknown (:t %)) flat) unknown
-                    (= 1 (count flat)) (first flat)
-                    :else {:t :union :types flat})
-              (some assumption ts))
+  (let [[flat nullable?]
+        (loop [xs (seq ts) seen {} out [] nullable? false]
+          (if (seq xs)
+            (let [x (first xs)
+                  more (rest xs)
+                  shape (strip x)]
+              (case (:t x)
+                :union (recur (concat (:types x) more) seen out (or nullable? (:platform x)))
+                :never (recur more seen out nullable?)
+                (if-let [i (get seen shape)]
+                  ;; Preserve the risk when either branch is a platform value.
+                  (recur more seen
+                         (update out i
+                                 #(cond-> %
+                                    (:platform x) (assoc :platform true)
+                                    (not (:generic-failure x)) (dissoc :generic-failure)))
+                         nullable?)
+                  (recur more (assoc seen shape (count out)) (conj out x) nullable?))))
+            [out nullable?]))
+        result (cond (empty? flat) never
+                     (some #(= :any (:t %)) flat) any
+                     (some #(= :unknown (:t %)) flat) unknown
+                     (= 1 (count flat)) (first flat)
+                     :else {:t :union :types flat})]
+    (cond-> (with-assumption result (some assumption ts))
+      (and nullable? (not (#{:any :unknown :nil :never} (:t result))))
+      (assoc :platform true)
       (some #(-> % meta ::unchecked-contract) ts)
       (vary-meta assoc ::unchecked-contract true))))
+
+(defn allow-platform-nil [ty]
+  (if (:platform ty)
+    (union (dissoc ty :platform) (with-meta nil-t {::platform-origin ty}))
+    ty))
+
+(defn effective-type [env ty]
+  (if (:strict-nil env) (allow-platform-nil ty) ty))
 
 (defn lit-prim [v]
   (prim (cond (string? v) :string (keyword? v) :keyword (integer? v) :int
@@ -124,20 +141,21 @@
   "Flat list of alternatives of a type, with refs resolved."
   ([env t] (members env t #{}))
   ([env t seen]
-   (case (:t t)
-     :ref (if (or (seen (:name t)) (get-in env [:recursive-types :invalid (:name t)]))
-            [unknown]
-            (if-let [d (get-in env [:specs (:name t) :type])]
-              (recur env d (conj seen (:name t)))
-              [unknown]))
-     :union (mapcat #(members env % seen) (:types t))
-     :merge (let [parts (map #(members env % seen) (:types t))]
-              (if (every? #(and (= 1 (count %)) (= :map (:t (first %)))) parts)
-                [(reduce (fn [a b] {:t :map :req (merge (:req a) (:req b))
-                                    :opt (apply dissoc (merge (:opt a) (:opt b)) (concat (keys (:req a)) (keys (:req b))))})
-                         (map first parts))]
+   (let [t (effective-type env t)]
+     (case (:t t)
+       :ref (if (or (seen (:name t)) (get-in env [:recursive-types :invalid (:name t)]))
+              [unknown]
+              (if-let [d (get-in env [:specs (:name t) :type])]
+                (recur env d (conj seen (:name t)))
                 [unknown]))
-     [t])))
+       :union (mapcat #(members env % seen) (:types t))
+       :merge (let [parts (map #(members env % seen) (:types t))]
+                (if (every? #(and (= 1 (count %)) (= :map (:t (first %)))) parts)
+                  [(reduce (fn [a b] {:t :map :req (merge (:req a) (:req b))
+                                      :opt (apply dissoc (merge (:opt a) (:opt b)) (concat (keys (:req a)) (keys (:req b))))})
+                           (map first parts))]
+                  [unknown]))
+       [t]))))
 
 (defn resolve-t [env t] (apply union (members env t)))
 
@@ -145,14 +163,15 @@
 
 (defn remove-nil [env t]
   (letfn [(without-nil [ty seen]
-            (case (:t ty)
-              :nil never
-              :union (apply union (map #(without-nil % seen) (:types ty)))
-              :ref (cond
-                     (contains? seen (:name ty)) unknown
-                     (nilable? env ty) (recur (get-in env [:specs (:name ty) :type]) (conj seen (:name ty)))
-                     :else ty)
-              ty))]
+            (let [ty (if (:strict-nil env) (dissoc ty :platform) ty)]
+              (case (:t ty)
+                :nil never
+                :union (apply union (map #(without-nil % seen) (:types ty)))
+                :ref (cond
+                       (contains? seen (:name ty)) unknown
+                       (nilable? env ty) (recur (get-in env [:specs (:name ty) :type]) (conj seen (:name ty)))
+                       :else ty)
+                ty)))]
     (without-nil t #{})))
 
 ;; ---- subtyping ----
@@ -348,17 +367,34 @@
                     false)
       :else false)))
 
+(defn- structural-result [env s t]
+  (recursive/compare-types
+   env s t
+   (fn [a b]
+     (binding [*inconclusive* (atom #{})]
+       (cond
+         (sub1? env a b) {:status :proved}
+         (seq @*inconclusive*) {:status :inconclusive :reasons @*inconclusive*}
+         :else {:status :mismatch :actual a :expected b})))
+   *contract-subtyping*
+   #(effective-type env %)))
+
 (defn- recursive-result [env s t]
   (when (and (<= *depth* 12) (recursive/candidate? env s t))
-    (recursive/compare-types
-     env s t
-     (fn [a b]
-       (binding [*inconclusive* (atom #{}) *strict-shapes* true]
-         (cond
-           (sub1? env a b) {:status :proved}
-           (seq @*inconclusive*) {:status :inconclusive :reasons @*inconclusive*}
-           :else {:status :mismatch :actual a :expected b})))
-     *contract-subtyping*)))
+    (binding [*strict-shapes* true]
+      (structural-result env s t))))
+
+(defn nested-platform-mismatch
+  "Locate a platform nil after a failed structural comparison."
+  [env actual expected original-result]
+  (when (:strict-nil env)
+    (let [result (if (seq (:path original-result))
+                   original-result
+                   (when (recursive/contains-structural? :platform actual)
+                     (structural-result env actual expected)))]
+      (when (and (= :mismatch (:status result)) (seq (:path result)))
+        (when-let [origin (some-> (:actual result) meta ::platform-origin)]
+          (assoc result :platform-origin origin))))))
 
 (defn- ordinary-sub? [env s t]
   (if (> *depth* 12)

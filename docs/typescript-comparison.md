@@ -19,7 +19,7 @@
 | Tagged unions | Связь discriminant с остальными полями | Корреляция полей мап пока не реализована полноценно | [F240](../features/F240-narrowing-and-exhaustiveness.md) |
 | Полнота ветвления | Обычно проверяется через never; не каждый switch автоматически обязан быть полным | Есть ограниченные проверки case; не все cond/dispatch | [F240](../features/F240-narrowing-and-exhaustiveness.md) |
 | Пользовательские guards | Type predicates; явная сигнатура не доказывает тело | Есть built-in predicates; общие checked guards не реализованы | [F250](../features/F250-checked-guards.md) |
-| Nullable-типы | strictNullChecks различает null/undefined | nil и platform-типы, strict-nil; остаются ложные успехи | [F320](../features/F320-nil-and-platform.md) |
+| Nullable-типы | strictNullChecks различает null/undefined | `--strict-nil` учитывает Java platform-типы во вложенных мапах, кортежах и коллекциях | [F320](../features/F320-nil-and-platform.md) |
 | Optional property ≠ nullable value | Уточняется exactOptionalPropertyTypes | req/opt моделируются; get/default ошибочно может удалять явный nil | [F310](../features/F310-maps-and-destructuring.md) |
 | Безопасность индексации | noUncheckedIndexedAccess добавляет undefined | Границы из Spec, позиции tuple, непустота после `seq` и проверка литеральных индексов | [F330](../features/F330-tuples-and-nonempty.md) |
 | Структурные объекты / мапы | Структурная совместимость | Основные s/keys и map-операции работают частично | [F310](../features/F310-maps-and-destructuring.md) |

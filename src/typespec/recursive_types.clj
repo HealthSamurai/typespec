@@ -149,11 +149,13 @@
 
 (def ^:private supported-heads #{:ref :union :map :coll :class :prim :nil :lit :any :unknown :never})
 
+(defn contains-structural? [pred & types]
+  (some pred (mapcat #(tree-seq (comp seq structural-children) structural-children %) types)))
+
 (defn candidate? [env a b]
   (let [recursive (get-in env [:recursive-types :reachable])]
     (and (seq recursive)
-         (some #(and (= :ref (:t %)) (contains? recursive (:name %)))
-               (mapcat #(tree-seq (comp seq structural-children) structural-children %) [a b])))))
+         (contains-structural? #(and (= :ref (:t %)) (contains? recursive (:name %))) a b))))
 
 (def ^:private proved {:status :proved})
 (defn- unknown-proof [reason] {:status :inconclusive :reasons #{reason}})
@@ -217,14 +219,24 @@
       (and (= :coll st) (= :coll tt)) (collection-obligation a b leaf)
       :else (leaf a b))))
 
-(defn- build-obligations [env a b leaf strict-contracts?]
+(defn- build-obligations [env a b leaf strict-contracts? effective]
   (let [ids (java.util.IdentityHashMap.)
+        expansions (java.util.IdentityHashMap.)
+        expand (fn [ty]
+                 (if (and (:strict-nil env) (:platform ty))
+                   (or (.get expansions ty)
+                       (let [expanded (effective ty)]
+                         (.put expansions ty expanded)
+                         expanded))
+                   ty))
         id (fn [ty]
              (or (.get ids ty)
                  (let [id (.size ids)]
                    (.put ids ty id)
                    id)))
         pair-key (fn [s t] [(id s) (id t)])
+        a (expand a)
+        b (expand b)
         root (pair-key a b)]
     (loop [pending (conj empty-queue [root a b]) graph {} reverse-edges {} fuel *max-obligations*]
       (if-let [[key a b] (peek pending)]
@@ -235,7 +247,10 @@
                   edges (or (:all node) (:any node))
                   fuel (- fuel 1 (count edges))]
               (when (not (neg? fuel))
-                (let [children (mapv (fn [[step s t]] [step (pair-key s t) s t]) edges)
+                (let [children (mapv (fn [[step s t]]
+                                       (let [s (expand s) t (expand t)]
+                                         [step (pair-key s t) s t]))
+                                     edges)
                       graph (assoc graph key (if edges
                                                (let [edges (mapv #(subvec % 0 2) children)]
                                                  (cond-> {:op (if (:all node) :all :any) :edges edges}
@@ -280,8 +295,8 @@
                        (conj seen key) fallback reasons)))
       (if (zero? answer) (or fallback {:status :mismatch}) {:status :inconclusive :reasons reasons}))))
 
-(defn compare-types [env a b leaf strict-contracts?]
-  (if-let [{:keys [root graph dependents]} (build-obligations env a b leaf strict-contracts?)]
+(defn compare-types [env a b leaf strict-contracts? effective]
+  (if-let [{:keys [root graph dependents]} (build-obligations env a b leaf strict-contracts? effective)]
     (let [states (solve-obligations graph dependents)
           answer (get states root 2)]
       (if (= 2 answer) proved (explain root graph states answer)))

@@ -85,7 +85,8 @@
   fuel (a volatile) bounds the total number of visited nodes of one solve: shared
   named maps expand as a tree, so depth alone does not bound the work."
   [env ty budget seen fuel]
-  (let [step #(normalize env % (dec budget) seen fuel)]
+  (let [ty (t/effective-type env ty)
+        step #(normalize env % (dec budget) seen fuel)]
     (cond
       (neg? budget) (assoc t/unknown :solver-reason :depth)
       (neg? (vswap! fuel dec)) (assoc t/unknown :solver-reason :size)

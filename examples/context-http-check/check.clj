@@ -58,6 +58,14 @@
     (assert (nil? (find-ns 'clj-yaml.core)) "YAML Codec namespace should remain unloaded")
     (println "YAML PASS: all seven method bodies resolve against the pinned protocol declaration")))
 
+(defn- check-mcp-dispatch! [files]
+  (let [checked (check/check-files (conj files (parse/parse-file "probe/mcp.clj")) {})
+        errors (filter #(= :error (:severity %)) (:diagnostics checked))]
+    (assert (empty? errors) (pr-str errors))
+    (assert (= ":probe.call/name" (main/type-at checked "src/http/mcp.clj" 100 61))
+            "Expected the tools/call method to see the required name from its Spec branch")
+    (println "MCP PASS: tools/call narrows the request from its Spec without a local guard")))
+
 (let [pin "e158b6b244c2b8e053de2a097d1071d9419adef9"
       manifest (into (sorted-map) (edn/read-string (slurp "manifest.edn")))
       root (.getParentFile (io/file (.toURI (io/resource "http.clj")) ))
@@ -131,6 +139,7 @@
               "Expected an integer index in the breadcrumb map-indexed callback")
       (check-probes! parsed)
       (check-yaml-extensions! parsed)
+      (check-mcp-dispatch! parsed)
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))

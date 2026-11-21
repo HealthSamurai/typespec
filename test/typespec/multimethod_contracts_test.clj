@@ -57,6 +57,67 @@
     (is (= [["demo.clj" 8 "TSP2322"]] (locations result)) (pr-str (:diagnostics result)))
     (is (str/includes? (get-in result [:diagnostics 0 :message]) "returns int?"))))
 
+(def ^:private request-spec
+  "
+(s/def :render.text/method #{\"text\" \"plain\"})
+(s/def :render.text/payload string?)
+(s/def :render.count/method #{\"count\"})
+(s/def :render.count/payload int?)
+(s/def ::text (s/keys :req-un [:render.text/method :render.text/payload]))
+(s/def ::count (s/keys :req-un [:render.count/method :render.count/payload]))
+(s/def ::request (s/or :text ::text :count ::count))\n")
+
+(deftest string-dispatch-narrows-the-selected-spec-argument
+  (let [provider (parse/parse-string "display.clj"
+                                    (str "(ns catalog.display (:require [clojure.spec.alpha :as s]))"
+                                         request-spec
+                                         "(s/fdef render :args (s/cat :context any? :request ::request) :ret string?)
+(defmulti render \"Render a request.\" (fn [ctx request] (:method request)))"))
+        client (parse/parse-string "client.clj"
+                                  "(ns client (:require [catalog.display :as api]))
+(defmethod api/render \"text\" [_ {:keys [method payload]}] (if (= method \"text\") (subs payload 1) 42))
+(defmethod api/render \"plain\" [_ request] (str (inc (:payload request))))
+(defmethod api/render \"count\" [_ {:keys [payload]}] (str (inc payload)))
+(defmethod api/render :default [_ {:keys [payload]}] (subs payload 1))
+(defmethod api/render \"other\" [_ {:keys [payload]}] (subs payload 1))
+(api/render nil {:method \"text\" :payload 7})")
+        result (check/check-files [client provider] {})]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (locations result))
+        (pr-str (:diagnostics result)))
+    (is (= (:diagnostics result) (:diagnostics (check/check-files [provider client] {}))))))
+
+(deftest string-dispatch-uses-the-shared-contract-when-narrowing-is-uncertain
+  (let [source (str "(ns demo (:require [clojure.spec.alpha :as s]))"
+                    request-spec
+                    "(s/fdef by-key :args (s/cat :request ::request) :ret string?)
+(defmulti by-key :method)
+(defmethod by-key \"text\" [{:keys [payload]}] (subs payload 1))
+(s/fdef by-default :args (s/cat :request ::request) :ret string?)
+(defmulti by-default :method :default \"text\")
+(defmethod by-default \"text\" [{:keys [payload]}] (subs payload 1))
+(defmethod by-default \"count\" [{:keys [payload]}] (str (inc payload)))
+(s/fdef by-hierarchy :args (s/cat :request ::request) :ret string?)
+(defmulti by-hierarchy :method :hierarchy #'custom)
+(defmethod by-hierarchy \"text\" [{:keys [payload]}] (subs payload 1))
+(s/fdef by-computation :args (s/cat :request ::request) :ret string?)
+(defmulti by-computation (fn [request] (str (:method request))))
+(defmethod by-computation \"text\" [{:keys [payload]}] (subs payload 1))
+(s/fdef redefined :args (s/cat :request ::request) :ret string?)
+(defmulti redefined :method)
+(defmulti redefined (fn [request] (str (:method request))))
+(defmethod redefined \"text\" [{:keys [payload]}] (subs payload 1))
+(s/def ::optional-text (s/keys :req-un [:render.text/payload] :opt-un [:render.text/method]))
+(s/def ::optional-request (s/or :text ::optional-text :count ::count))
+(s/fdef optional-tag :args (s/cat :request ::optional-request) :ret string?)
+(defmulti optional-tag :method)
+(defmethod optional-tag \"text\" [{:keys [payload]}] (subs payload 1))")
+        result (check/check-files [(parse/parse-string "demo.clj" source)] {})]
+    (is (= (mapv #(vector "demo.clj" % "TSP2345") [14 18 21 25 30])
+           (locations result))
+        (pr-str (:diagnostics result)))))
+
 (deftest variadic-spec-also-checks-fixed-methods-and-their-rest-alternatives
   (let [file (parse/parse-string "demo.clj"
                                 "(ns demo (:require [clojure.spec.alpha :as s]))

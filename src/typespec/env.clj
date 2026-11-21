@@ -243,6 +243,34 @@
           [(:val method) {:var (symbol (str (:ns file)) (name (:val method)))
                           :file (:file file) :pos (:pos method) :arities arities}])))
 
+(defn- dispatch-projection [file dispatch]
+  (case (:op dispatch)
+    :kw {:index 0 :key (:val dispatch) :arity 1}
+    :list (let [[head params body & extra] (:children dispatch)
+                [key target & args] (:children body)
+                names (mapv :val (:children params))]
+            (when (and (#{'fn 'fn*} (t/core-name file (:val head)))
+                       (= :vector (:op params)) (every? simple-symbol? names)
+                       (not-any? #{'&} names) (= (count names) (count (distinct names)))
+                       (empty? extra) (= :list (:op body)) (= :kw (:op key))
+                       (= :sym (:op target)) (empty? args))
+              (when-let [index (first (keep-indexed #(when (= %2 (:val target)) %1) names))]
+                {:index index :key (:val key) :arity (count names)})))
+    nil))
+
+(defn- multimethod-dispatch [file forms]
+  (let [forms (if (= :str (:op (first forms))) (rest forms) forms)
+        forms (if (= :map (:op (first forms))) (rest forms) forms)
+        [dispatch & options] forms
+        [option fallback & extra] options]
+    ;; Strings do not participate in Clojure's built-in derive relations.
+    ;; Only use that fact with the default hierarchy and a known fallback.
+    (when (or (empty? options)
+              (and (= :kw (:op option)) (= :default (:val option))
+                   (#{:kw :str :nil :num :bool :char} (:op fallback)) (empty? extra)))
+      (when-let [projection (dispatch-projection file dispatch)]
+        (assoc projection :default (if (empty? options) :default (:val fallback)))))))
+
 (defn- register-spec [acc bucket sym entry diags]
   (when-let [previous (get-in acc [bucket sym])]
     (when (and (not= (:file entry) (:file previous))
@@ -294,6 +322,12 @@
          (let [[_ nm & forms] (:children form)]
            (if (and (= :sym (:op nm)) (simple-symbol? (:val nm)))
              (assoc-in acc [:protocols (symbol (str (:ns file)) (name (:val nm)))] (protocol-methods file forms))
+             acc))
+
+         (= 'defmulti (t/core-name file (:val (first (:children form)))))
+         (let [[_ target & forms] (:children form)]
+           (if-let [sym (var-name file target)]
+             (update-in acc [:multimethod-dispatches sym] (fnil conj []) (multimethod-dispatch file forms))
              acc))
 
          (#{'defn 'defn-} h)
@@ -358,6 +392,11 @@
         env (assoc names :specs (:specs acc) :opaque-fdefs (:opaque-fdefs acc)
                    :macros macros :root-definitions (:root-definitions acc)
                    :protocols (:protocols acc)
+                   :multimethod-dispatches (into {}
+                                                 (for [[sym [dispatch :as declarations]] (:multimethod-dispatches acc)
+                                                       :when (and dispatch (= 1 (count declarations))
+                                                                  (not (contains? (:root-definitions acc) sym)))]
+                                                   [sym dispatch]))
                    :key-nss (set (keep namespace (keys (:specs acc)))))
         vars (into {}
                    (for [[sym d] (:defns acc)

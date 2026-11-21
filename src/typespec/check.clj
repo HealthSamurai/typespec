@@ -3064,6 +3064,22 @@
   (let [resolved (env/resolve-sym file sym)]
     (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))))
 
+(defn- narrow-dispatch-params [ctx types {:keys [arity index key default]} dispatch]
+  (if (and (= arity (count types)) (= :str (:op dispatch)) (literal-node? dispatch)
+           (not= default (:val dispatch)))
+    (let [original (nth types index)
+          alternatives (path-alternatives ctx original [key])]
+      (if (and (seq alternatives)
+               (every? (fn [[leaf]] (and (= :lit (:t leaf)) (string? (:val leaf)))) alternatives))
+        (let [matches (keep (fn [[leaf rebuild]]
+                              (when (= (:val dispatch) (:val leaf)) (rebuild leaf)))
+                            alternatives)]
+          (if (seq matches)
+            (assoc types index (t/with-assumption (apply t/union matches) (t/assumption original)))
+            types))
+        types))
+    types))
+
 (defmethod special 'defmethod [ctx node _]
   (let [{:keys [target dispatch local-name arities]} (env/defmethod-parts node)
         {:keys [env file]} ctx
@@ -3071,6 +3087,7 @@
               (qualified-var file (:val target)))
         shared (get-in env [:vars sym])
         contracts (when (= :fdef (:source shared)) (get-in shared [:type :arities]))
+        selector (get-in env [:multimethod-dispatches sym])
         plans (spec-implementation-plans arities contracts :partial)
         by-params (group-by (comp :node first) (mapcat identity plans))
         description (when contracts (str "defmethod " sym " " (parse/unparse dispatch) ", s/fdef"))
@@ -3081,6 +3098,9 @@
             :let [{:keys [fixed rest]} (env/split-params params)
                   expected (merge-implementation-contracts (count fixed) (map second (get by-params params)))
                   types (or (:params expected) (mapv #(env/pattern-type env file %) fixed))
+                  types (if (and expected selector (nil? rest))
+                          (narrow-dispatch-params ctx types selector dispatch)
+                          types)
                   method-ctx (reduce (fn [c [param type]]
                                        (when expected (record! c param type))
                                        (bind-pattern c param type))

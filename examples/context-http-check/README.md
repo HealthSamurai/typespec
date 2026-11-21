@@ -160,6 +160,11 @@ declaration from the pinned `clj-yaml` source and test `s/fdef` contracts.
 It verifies all seven method implementations in `http/formats.clj`, including
 qualified `decode` method names and the `LocalDate` receiver in `encode`.
 
+The [MCP probe](probe/mcp.clj) adds a test Spec for two request variants and
+checks all eight production files. The original `"tools/call"` method
+infers the required string name at `http/mcp.clj:100:61` from its dispatch
+value.
+
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,
 then deliberately edit the expected file in a separate review step. There

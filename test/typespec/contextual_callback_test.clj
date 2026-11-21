@@ -230,3 +230,54 @@
   (let [res (check-source "(defn- f [rf] (reduce rf 0 [1 2]))" {:strict true})]
     (is (= ["TSP210-01"] (codes res)) (pr-str (:diagnostics res)))
     (is (= #{:accumulator} (get-in res [:diagnostics 0 :reasons])))))
+
+(deftest reduce-kv-checks-reducer-spec-across-namespaces
+  (let [api (parse/parse-string "fold/api.clj"
+                               "(ns fold.api (:require [clojure.spec.alpha :as s]))
+                                (s/def ::acc (s/coll-of int? :kind vector?))
+                                (s/fdef step :args (s/cat :acc ::acc :key string? :value int?) :ret ::acc)
+                                (defn step [acc _ value] (conj acc value))")
+        caller (parse/parse-string "fold/caller.clj"
+                                  "(ns fold.caller (:require [clojure.spec.alpha :as s] [fold.api :as api]))
+(s/fdef good :args (s/cat :m (s/map-of string? int?)) :ret ::api/acc)
+(defn good [m] (reduce-kv api/step [] m))
+(s/fdef wrong-value :args (s/cat :m (s/map-of string? string?)) :ret ::api/acc)
+(defn wrong-value [m] (reduce-kv api/step [] m))
+(s/fdef wrong-key :args (s/cat :m (s/map-of keyword? int?)) :ret ::api/acc)
+(defn wrong-key [m] (reduce-kv api/step [] m))
+(defn- wrong-seed [] (reduce-kv api/step [\"bad\"] {\"a\" 1}))")
+        result (check/check-files [caller api] {})]
+    (is (= [["fold/caller.clj" 5 "TSP2345"]
+            ["fold/caller.clj" 7 "TSP2345"]
+            ["fold/caller.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
+(deftest reduce-kv-contextualizes-key-and-value
+  (let [result (check-source "(clojure.core/reduce-kv (fn [acc k v] (conj acc (str (str/upper-case k) (inc v)))) [] {\"a\" 1 \"b\" 2})
+(reduce-kv #(+ %1 %2 %3) 0 [1 2])
+(reduce-kv (fn [acc _ {:keys [n]}] (+ acc n)) 0 {:a {:n 2}})
+(reduce-kv (fn [acc k v] (inc k)) 0 {:a 1})
+(reduce-kv (fn [acc k v] (inc v)) 0 {\"a\" \"bad\"})
+(reduce-kv (fn [acc _] acc) 0 {:a 1})
+(reduce-kv (fn [acc k v] acc) 0)
+(s/fdef sum-indices :args (s/cat :v vector?) :ret int?)
+(defn sum-indices [v] (reduce-kv (fn [acc i _] (+ acc i)) 0 v))")]
+    (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"] [11 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["(s/coll-of string? :kind vector?)" "int?" "int?"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7])))))
+
+(deftest reduce-kv-checks-the-accumulator-only-when-stepping
+  (let [result (check-source "(let [m {}] (reduce-kv (fn [acc k] \"unused\") :seed m))
+(reduce-kv (fn [acc k] \"unused\") :seed nil)
+(reduce-kv (fn [acc k v] \"changed\") 0 {:a 1})
+(reduce-kv (fn [acc k v] (if (string? acc) (inc acc) \"changed\")) 0 {:a 1 :b 2})
+(s/fdef maybe-fold :args (s/cat :m (s/nilable (s/map-of keyword? int?))) :ret (s/or :init keyword? :step string?))
+(defn maybe-fold [m] (reduce-kv (fn [acc k v] \"changed\") :seed m))
+(reduce-kv (fn [acc k v] acc) 0 (throw (Exception.)))")]
+    (is (= [[8 "TSP2345"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= [":seed" ":seed" "\"changed\"" "t/never"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 11])))))

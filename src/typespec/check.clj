@@ -2737,9 +2737,9 @@
     (update (dissoc acc :items :min-count :max-count) :of t/union (:of step))
     (t/union acc step)))
 
-(defn- reduction-accumulator [ctx f seed el empty-call?]
+(defn- reduction-accumulator [ctx f seed inputs empty-call?]
   (loop [acc seed iterations 0]
-    (let [args [acc el]
+    (let [args (into [acc] inputs)
           calls (cond-> [] empty-call? (conj []) true (conj args))
           step (probe ctx #(reduction-result % f (reduction-function % f calls) args))]
       (cond
@@ -2764,7 +2764,7 @@
             repeat? (and step? (or (nil? n) (>= n (if init 2 3))))
             start (if init (widen (dissoc initial :fresh)) el)
             empty-call? (and (not init) may-be-empty?)
-            invariant (if repeat? (reduction-accumulator ctx f start el empty-call?) start)
+            invariant (if repeat? (reduction-accumulator ctx f start [el] empty-call?) start)
             step-args [(or invariant start) el]
             calls (cond-> [] empty-call? (conj []) step? (conj step-args))
             ty (if (seq calls) (reduction-function ctx f calls) (infer ctx f))
@@ -2783,6 +2783,59 @@
           (not step?) base
           (nil? invariant) t/unknown
           :else (t/union base step))))))
+
+(defn- kv-reduction-input [member]
+  (let [opaque {:bounds [0 nil] :key t/unknown :value t/unknown}]
+    (case (:t member)
+      (:nil :never) {:bounds [0 0]}
+      :map-of {:bounds (length/bounds member) :key (:k member) :value (:v member)}
+      :map (if (:complete-keys? member)
+             (let [entries (concat (:req member) (:opt member))]
+               {:bounds [(count (:req member)) (count entries)]
+                :key (apply t/union (map (comp t/lit key) entries))
+                :value (apply t/union (map val entries))})
+             (assoc opaque :bounds [(count (:req member)) nil]))
+      :coll (if (= :vector (:kind member))
+              {:bounds (length/bounds member) :key (t/prim :int) :value (:of member)}
+              opaque)
+      :prim (cond-> opaque (= :vector (:name member)) (assoc :key (t/prim :int)))
+      opaque)))
+
+(defmethod special 'reduce-kv [ctx node _]
+  (let [[f init c :as args] (args-of node)]
+    (if (not= 3 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "reduce-kv expects 3 arguments")
+          t/unknown)
+      (let [initial (infer ctx init)
+            ct (eff ctx (infer ctx c))
+            entries (mapv kv-reduction-input (t/members (:env ctx) ct))
+            active (remove #(= 0 (second (:bounds %))) entries)]
+        (cond
+          (or (= :never (:t initial)) (= :never (:t ct)))
+          (do (infer ctx f) t/never)
+
+          (empty? active)
+          (do (infer ctx f) initial)
+
+          :else
+          (let [may-be-empty? (some #(zero? (first (:bounds %))) entries)
+                repeat? (some #(let [maximum (second (:bounds %))] (or (nil? maximum) (> maximum 1))) active)
+                inputs (mapv (fn [part]
+                               (t/with-assumption (apply t/union (map part active)) (t/assumption ct)))
+                             [:key :value])
+                start (widen (dissoc initial :fresh))
+                invariant (if repeat? (reduction-accumulator ctx f start inputs false) start)
+                step-args (into [(or invariant start)] inputs)
+                ty (reduction-function ctx f [step-args])
+                step (reduction-result ctx f ty step-args)]
+            (when (and (or (nil? invariant) (= :unknown (:t step)))
+                       (or (empty? (:arities ty)) (seq (matching-arities ty 3))))
+              (unchecked-hof! ctx f "reduce-kv accumulator is not checked" :accumulator))
+            (cond
+              (nil? invariant) t/unknown
+              may-be-empty? (t/union initial step)
+              :else step)))))))
 
 (defmethod special 'conj [ctx node _]
   (let [[c & xs] (args-of node)

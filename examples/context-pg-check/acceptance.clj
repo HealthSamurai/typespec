@@ -55,7 +55,7 @@
       (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
       (expect! "whole-tree diagnostic counts"
                {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 1
-                [:warning "TSP210-01"] 76 [:warning "TSP7020"] 10
+                [:warning "TSP210-01"] 79 [:warning "TSP7020"] 10
                 [:warning "TSP7023"] 1 [:warning "TSP7031"] 3}
                (:codes coverage))
       (expect! "whole-tree error locations"
@@ -65,7 +65,16 @@
       (expect! "checked conditional step in mk-table-constraint" true
                (contains? (set (map location (:diagnostics tree)))
                           [:warning "TSP210-01" "upstream/src/dsql/pg.clj" 1196 77]))
-      (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 90 warnings).")))
+      (expect! "reduce-kv diagnoses unknown inputs inside the dsql reducers"
+               [[1172 40] [1172 73] [1176 44] [1187 32] [1187 48]]
+               (->> (:diagnostics tree)
+                    (keep (fn [{:keys [file code severity pos]}]
+                            (when (and (= "upstream/src/dsql/pg.clj" file)
+                                       (= "TSP210-01" code) (= :warning severity)
+                                       (<= 1166 (:row pos) 1189))
+                              [(:row pos) (:col pos)])))
+                    vec))
+      (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

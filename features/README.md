@@ -23,9 +23,9 @@ To discuss a feature, open an issue named after its card, for example `F240: nar
 
 | Status | Cards | Meaning |
 |---|---|---|
-| `implemented` | 20 | works in the prototype; the example in the card is checked by `clojure -M:test` |
+| `implemented` | 21 | works in the prototype; the example in the card is checked by `clojure -M:test` |
 | `partial` | 0 | design partly settled; see implementation for code status |
-| `designed` | 36 | accepted design; implementation status is separate |
+| `designed` | 35 | accepted design; implementation status is separate |
 | `proposed` | 8 | an idea under discussion, not yet accepted into the design |
 
 This file is generated from the card headers by `clojure -M:test --update`.
@@ -60,7 +60,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F273](F273-template-literal-types.md) | Типы строковых шаблонов | `proposed` | `not-implemented` | types | TypeScript |
 | [F280](F280-literal-preservation.md) | Литералы и проверка без потери типа | `implemented` | `implemented` | core | Typespec |
 | [F290](F290-brands.md) | Доменные brands | `designed` | `not-implemented` | types | Clojure |
-| [F295](F295-recursive-types.md) | Рекурсивные типы | `designed` | `partial` | types | Clojure |
+| [F295](F295-recursive-types.md) | Рекурсивные типы | `implemented` | `implemented` | types | Clojure |
 | [F310](F310-maps-and-destructuring.md) | Мапы, пути и деструктуризация | `designed` | `partial` | core | Typespec |
 | [F311](F311-row-polymorphism.md) | Row polymorphism — сохранение остатка мапы | `proposed` | `not-implemented` | data | TypeScript and research |
 | [F312](F312-literal-map-paths.md) | Литеральные пути мап | `implemented` | `implemented` | data | Clojure |

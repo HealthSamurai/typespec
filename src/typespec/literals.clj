@@ -22,13 +22,15 @@
                         :unsupported-contract)
                       (case tag
                         :ref (let [k (:name value)]
-                               (cond (active k) :recursive-type
+                               (cond (get-in env [:recursive-types :invalid k]) :recursive-type
+                                     (active k) (when-not (contains? (get-in env [:recursive-types :reachable]) k) :recursive-type)
                                      (get-in env [:specs k :type])
                                      (visit (get-in env [:specs k :type]) (conj active k))
                                      :else :unresolved-type))
                         :class (when-not (t/load-class (:name value)) :unresolved-class)
                         :any (when-not contract? :any)
                         :unknown (cond (not contract?) :unknown (seq active) :opaque-contract)
+                        :coll (some #(visit % active) (or (:items value) [(:of value)]))
                         (:var :ivar :rigid :all :operator) :unresolved-type
                         (some #(visit % active) (vals value)))))
                 (coll? value) (some #(visit % active) value)))]

@@ -4,6 +4,7 @@
 
 (def suites
   '[typespec.types-regression-test
+    typespec.recursive-types-test
     typespec.incomplete-boundary-test
     typespec.incomplete-overload-test
     typespec.maps-regression-test

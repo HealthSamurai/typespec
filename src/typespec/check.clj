@@ -25,9 +25,21 @@
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
          assoc-map-key specialize-map-return dynamic-definition?)
 
+(defn- at-type-path [node path]
+  (reduce (fn [current step]
+            (if-let [child (case (:op current)
+                             :map (some (fn [[k v]] (when (= step (:val k)) v))
+                                        (partition 2 (:children current)))
+                             :vector (when (integer? step) (get (:children current) step))
+                             nil)]
+              child
+              (reduced current)))
+          node path))
+
 (defn- report! [ctx node code msg & {:as extra}]
   (when-not (:quiet ctx)
-    (swap! *diags* conj (merge {:code code :severity :error :file (:file (:file ctx)) :pos (:pos node) :message msg} extra)))
+    (let [at (at-type-path node (:type-path extra))]
+      (swap! *diags* conj (merge {:code code :severity :error :file (:file (:file ctx)) :pos (:pos at) :message msg} extra))))
   nil)
 
 (defn- eff
@@ -155,6 +167,15 @@
    {:severity (if (:strict (:opts ctx)) :error :warning)
     :reasons (:reasons result)}])
 
+(defn- nested-type-problem [ctx code {:keys [path missing-key actual expected]}]
+  (when (seq path)
+    [(if missing-key "TSP2741" code)
+     (str "at " (pr-str path) ": "
+          (if missing-key
+            (str "required key " missing-key " is missing")
+            (str (show-ref ctx actual) " is not assignable to " (show-ref ctx expected))))
+     {:type-path path}]))
+
 (defn- fresh-problems [ctx actual expected]
   (let [env (:env ctx)
         ms (remove #(= :nil (:t %)) (t/members env expected))]
@@ -210,10 +231,13 @@
   [ctx node actual expected]
   (let [env (:env ctx) actual (eff ctx actual)
         result (t/sub-result env actual expected)
+        nested-error (when (= :mismatch (:status result))
+                       (nested-type-problem ctx (if (:fresh actual) "TSP2322" "TSP2345") result))
         tuple-error (when (= :mismatch (:status result)) (tuple-problem ctx actual expected))]
     (cond
       (:generic-failure actual) []
       (= :proved (:status result)) (if (:fresh actual) (filter #(= "TSP2353" (first %)) (fresh-problems ctx actual expected)) [])
+      nested-error [nested-error]
       (seq (fresh-problems ctx actual expected)) (fresh-problems ctx actual expected)
       (= :inconclusive (:status result)) [(incomplete-problem ctx actual expected result)]
       tuple-error [tuple-error]
@@ -2695,10 +2719,12 @@
   (when-not (or (:generic-failure actual) (#{:unknown :any} (:t expected)))
     (let [env (:env ctx) actual (eff ctx actual)
           result (t/sub-result env actual expected)
+          nested-error (when (= :mismatch (:status result)) (nested-type-problem ctx "TSP2322" result))
           tuple-error (when (= :mismatch (:status result)) (tuple-problem ctx actual expected))
           emit (fn [[c m extra]] (apply report! ctx node c m (mapcat identity extra)))]
       (cond
         (= :proved (:status result)) (run! emit (problems ctx node actual expected))
+        nested-error (emit nested-error)
         (seq (fresh-problems ctx actual expected)) (run! emit (fresh-problems ctx actual expected))
         (= :inconclusive (:status result)) (emit (incomplete-problem ctx actual expected result))
         tuple-error (let [[code message] tuple-error]
@@ -3007,6 +3033,16 @@
                         [h d]))))
             directives))))
 
+(defn- strict-value-type [ctx ty]
+  (let [seen (java.util.IdentityHashMap.)]
+    (letfn [(visit [value]
+              (or (.get seen value)
+                  (let [resolved (walk/walk visit #(if (and (map? %) (:platform %)) (eff ctx %) %) value)]
+                    ;; Tuple positions and the element summary can share type nodes.
+                    (when (map? value) (.put seen value resolved))
+                    resolved)))]
+      (visit ty))))
+
 (defn- check-satisfies! [ctx node directive actual before-trust]
   (let [annotation (second (:children directive))
         env (:env ctx)
@@ -3020,9 +3056,7 @@
         (report! ctx node "TSP280-01" (str "t/satisfies cannot establish " (show-ref ctx type)
                                          " (" (name issue) ")")
                  :reasons #{issue})
-        (let [actual (if (:strict-nil (:opts ctx))
-                       (walk/postwalk #(if (and (map? %) (:platform %)) (eff ctx %) %) actual)
-                       actual)
+        (let [actual (if (:strict-nil (:opts ctx)) (strict-value-type ctx actual) actual)
               fields (when (= :map (:op node))
                        (into {} (map (fn [[k v]] [(:val k) {:key k :value v}]))
                              (partition 2 (:children node))))]
@@ -3204,7 +3238,7 @@
 
 (def ^:private known-diagnostic-codes
   #{"TSP250-01" "TSP250-02" "TSP250-03" "TSP270-01" "TSP270-02" "TSP270-03" "TSP280-01" "TSP280-02"
-    "TSP330-01" "TSP330-02" "TSP410-01" "TSP430-01" "TSP430-02" "TSP430-03"
+    "TSP295-01" "TSP295-02" "TSP330-01" "TSP330-02" "TSP410-01" "TSP430-01" "TSP430-02" "TSP430-03"
     "TSP2304" "TSP2305" "TSP2322" "TSP2339" "TSP2345" "TSP2353"
     "TSP2531" "TSP2554" "TSP2578" "TSP2678" "TSP2741" "TSP2790"
     "TSP7010" "TSP7020" "TSP7021" "TSP7023" "TSP7025" "TSP7031" "TSP7032" "TSP721-01" "TSP722-01"

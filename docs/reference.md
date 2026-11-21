@@ -44,7 +44,7 @@ Rules the type checker makes explicit:
 
 - `s/and` yields the type of its first component. Other predicates are **refinements**, meaning documentation (`pos?`, regexes), and are not checked statically.
 - A form outside the grammar produces `TSP9001 not a type`, not a silent `any?`.
-- Recursion is allowed: `(s/def :fhir/extension (s/keys :opt-un [:fhir/extension ...]))` is a recursive type.
+- Named specs can describe recursive maps and collections. For example, `(s/def :fhir/extension (s/keys :opt-un [:fhir/extension]))` describes a recursive map with an optional child. Ordinary project checks retain the field and index path to a nested mismatch. [Recursive types](../features/F295-recursive-types.md)
 
 ---
 
@@ -343,6 +343,7 @@ declarations, known uses, and paths through referenced specs.
 ```
 
 - `expected`/`actual` are printed **in the type language from section 1** and can be pasted into `t/sig`.
+- `type-path` lists map keys and vector indexes leading to a mismatch in a recursive type. With an inline literal, the range points to the mismatched value.
 - `cause_of` groups cascading errors by root cause. `id` is stable across runs (needed for the baseline).
 - `risk` is `safe`, `review`, or `unsafe`. A fix using `any?`, a cast, or type weakening is never `safe`.
 
@@ -428,6 +429,8 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP270-03` | unsupported map shape, conflicting fields, unresolved or cyclic map reference, or resolution limit |
 | `TSP280-01` | unsupported or unproven `t/satisfies` contract |
 | `TSP280-02` | malformed or conflicting literal directive |
+| `TSP295-01` | recursive spec cycle without a structural transition |
+| `TSP295-02` | recursive spec lacks a proven finite base |
 | `TSP330-01` | vector length does not match a tuple contract |
 | `TSP330-02` | constant `nth` index may be out of bounds without a default |
 | `TSP410-01` | the length or positions of an `apply` tail could not be verified |

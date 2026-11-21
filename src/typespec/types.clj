@@ -1,7 +1,8 @@
 (ns typespec.types
   "Type representation, the spec-style type language (read and print), and subtyping."
   (:require [clojure.string :as str]
-            [clojure.walk :as walk]))
+            [clojure.walk :as walk]
+            [typespec.recursive-types :as recursive]))
 
 (def any {:t :any})
 (def unknown {:t :unknown})
@@ -123,10 +124,10 @@
   ([env t] (members env t #{}))
   ([env t seen]
    (case (:t t)
-     :ref (if (seen (:name t))
+     :ref (if (or (seen (:name t)) (get-in env [:recursive-types :invalid (:name t)]))
             [unknown]
             (if-let [d (get-in env [:specs (:name t) :type])]
-              (members env d (conj seen (:name t)))
+              (recur env d (conj seen (:name t)))
               [unknown]))
      :union (mapcat #(members env % seen) (:types t))
      :merge (let [parts (map #(members env % seen) (:types t))]
@@ -142,11 +143,16 @@
 (defn nilable? [env t] (boolean (some #(= :nil (:t %)) (members env t))))
 
 (defn remove-nil [env t]
-  (case (:t t)
-    :nil never
-    :union (apply union (map #(remove-nil env %) (:types t)))
-    :ref (if (nilable? env t) (remove-nil env (get-in env [:specs (:name t) :type])) t)
-    t))
+  (letfn [(without-nil [ty seen]
+            (case (:t ty)
+              :nil never
+              :union (apply union (map #(without-nil % seen) (:types ty)))
+              :ref (cond
+                     (contains? seen (:name ty)) unknown
+                     (nilable? env ty) (recur (get-in env [:specs (:name ty) :type]) (conj seen (:name ty)))
+                     :else ty)
+              ty))]
+    (without-nil t #{})))
 
 ;; ---- subtyping ----
 
@@ -332,12 +338,19 @@
                     false)
       :else false)))
 
-(defn sub?
-  "Proven compatibility within the supported subset, with explicit any as a bypass.
-  Unknown is a safe top type: every type fits it, but it does not fit a concrete
-  type. Exhausting the recursion budget returns false, not evidence of a subtype.
-  Callers wanting tolerant checking must handle unknown separately."
-  [env s t]
+(defn- recursive-result [env s t]
+  (when (and (<= *depth* 12) (recursive/candidate? env s t))
+    (recursive/compare-types
+     env s t
+     (fn [a b]
+       (binding [*inconclusive* (atom #{}) *strict-shapes* true]
+         (cond
+           (sub1? env a b) {:status :proved}
+           (seq @*inconclusive*) {:status :inconclusive :reasons @*inconclusive*}
+           :else {:status :mismatch :actual a :expected b})))
+     *contract-subtyping*)))
+
+(defn- ordinary-sub? [env s t]
   (if (> *depth* 12)
     (inconclusive! :depth)
     (binding [*depth* (inc *depth*)]
@@ -351,17 +364,29 @@
                         (inconclusive! :structural-union))))
                 (members env s))))))
 
+(defn sub?
+  "Proven compatibility within the supported subset, with explicit any as a bypass.
+  Unknown is a safe top type: every type fits it, but it does not fit a concrete
+  type. Exhausting the recursion budget returns false, not evidence of a subtype.
+  Callers wanting tolerant checking must handle unknown separately."
+  [env s t]
+  (if-let [result (recursive-result env s t)]
+    (do (run! inconclusive! (:reasons result))
+        (= :proved (:status result)))
+    (ordinary-sub? env s t)))
+
 (defn sub-result
   "Companion to sub?: {:status :proved|:mismatch|:inconclusive :reasons #{...}}.
   Unknown sources and exhausted recursion cannot prove a concrete mismatch.
   Any remains an explicit bypass, not a runtime guarantee. Reasons are gathered
   conservatively across alternatives; a successful proof takes precedence."
   [env s t]
-  (binding [*inconclusive* (atom #{})]
-    (let [proved? (sub? env s t)
-          reasons @*inconclusive*]
-      {:status (cond proved? :proved (seq reasons) :inconclusive :else :mismatch)
-       :reasons (if proved? #{} reasons)})))
+  (or (some-> (recursive-result env s t) (update :reasons #(or % #{})))
+      (binding [*inconclusive* (atom #{})]
+        (let [proved? (ordinary-sub? env s t)
+              reasons @*inconclusive*]
+          {:status (cond proved? :proved (seq reasons) :inconclusive :else :mismatch)
+           :reasons (if proved? #{} reasons)}))))
 
 (defn contract-sub-result
   "Directional containment for public contract shapes. any? admits every input,

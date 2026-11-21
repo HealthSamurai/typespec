@@ -47,6 +47,7 @@
            :range {:start [(:row (:pos d)) (:col (:pos d))] :end [(:end-row (:pos d)) (:end-col (:pos d))]}
            :message (:message d)}
     (:reasons d) (assoc :reasons (vec (sort (map name (:reasons d)))))
+    (:type-path d) (assoc :type-path (mapv #(if (keyword? %) (str %) %) (:type-path d)))
     (:fixes d) (assoc :fixes (:fixes d))))
 
 (defn sig-lines [res ns-sym]

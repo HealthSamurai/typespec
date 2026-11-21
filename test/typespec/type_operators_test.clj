@@ -112,11 +112,13 @@
            ["::wrapped" "s/and"]
            ["(s/keys :req-un [::id] :opt-un [::id])" "conflicting declarations"]
            ["(s/keys :req-un [::id :other/id])" "conflicting declarations"]]]
-    (let [res (check-source (str "(s/def ::loop-a ::loop-b) (s/def ::loop-b ::loop-a)
-                                 (s/def ::wrapped (s/and ::person map?))
-                                 (defn verify {:t/sig '[(t/partial " input ") :-> boolean?]} [x] true)"))]
-      (is (= ["TSP270-03"] (codes res)) (pr-str (:diagnostics res)))
-      (is (str/includes? (get-in res [:diagnostics 0 :message]) message))))
+    (let [cycle? (= "::loop-a" input)
+          res (check-source (str (when cycle? "(s/def ::loop-a ::loop-b) (s/def ::loop-b ::loop-a)\n")
+                                 "(s/def ::wrapped (s/and ::person map?))
+                                  (defn verify {:t/sig '[(t/partial " input ") :-> boolean?]} [x] true)"))]
+      (is (= (if cycle? ["TSP295-01" "TSP270-03"] ["TSP270-03"]) (codes res))
+          (pr-str (:diagnostics res)))
+      (is (str/includes? (:message (last (:diagnostics res))) message))))
   (let [r (check-source "(defn poly {:t/sig '(t/all [a] [(t/get a :id) :-> boolean?])} [x] true)")]
     (is (= ["TSP270-03"] (codes r)) (pr-str (:diagnostics r))))
   (let [names (mapv #(str ":app/link-" %) (range 260))

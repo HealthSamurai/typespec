@@ -29,7 +29,7 @@
 | Pick/Omit/Partial/keyof/indexed access | Поддержаны | Пять операторов работают для одной объявленной формы `s/keys` в `:t/sig` и EDN | [F270](../features/F270-type-operators.md) |
 | Conditional/mapped/template-literal types | Поддержаны | Не реализованы; не обязательны для первого выпуска | [Исследование](../features/TS-FLOW-RESEARCH.md) |
 | as const / satisfies | Сохранение литералов и проверка совместимости с сохранением исходного типа | `t/const` сохраняет литеральные элементы вложенных коллекций. `t/satisfies` проверяет поддерживаемые контракты | [F280](../features/F280-literal-preservation.md) |
-| Рекурсивные типы | Recursive aliases с ограничениями | Ссылки есть, полноценной проверки нет; depth cutoff способен дать ложный успех | [F295](../features/F295-recursive-types.md) |
+| Рекурсивные типы | Recursive aliases с ограничениями | Регулярные `s/keys`, коллекции и объединения сравниваются структурно; ошибка указывает путь до поля | [F295](../features/F295-recursive-types.md) |
 | Номинальные brands | Обычно паттерн через unique symbol и пересечение | В дизайне, не реализованы; brand не доказательство валидации | [F290](../features/F290-brands.md) |
 | Уточнения runtime-предикатами | Произвольная логика валидатора статически не доказывается | s/and аппроксимируется; свидетельства валидации — план | [F260](../features/F260-opaque-refinements.md) |
 | Изменяемые контейнеры / variance | readonly и правила совместимости с известными компромиссами | Общая модель atom/volatile/channel пока отсутствует | [F340](../features/F340-mutation-and-variance.md) |

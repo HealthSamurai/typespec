@@ -2,6 +2,7 @@
   "Collects declarations from source text: s/def, s/fdef, {:t/sig ...}, type hints. No code is loaded."
   (:require [typespec.parse :as parse]
             [typespec.types :as t]
+            [typespec.recursive-types :as recursive]
             [typespec.type-operators :as operators]
             [typespec.externs :as externs]))
 
@@ -368,5 +369,7 @@
         only-fdef (for [[sym fd] (:fdefs acc) :when (not (contains? vars sym))]
                     [sym {:type (:type fd) :source :fdef :file (:file fd) :pos (:pos fd)}])]
     (let [vars (merge (into vars only-fdef) (protocol-vars (:protocols acc) (:fdefs acc) diags))
-          [env ext-diags] (externs/merge-contracts (assoc env :vars vars) contracts)]
-      [env (into @diags ext-diags)]))))
+          [env ext-diags] (externs/merge-contracts (assoc env :vars vars) contracts)
+          {:keys [diagnostics] :as recursion} (recursive/analyze (:specs env))]
+      [(assoc env :recursive-types (dissoc recursion :diagnostics))
+       (into (into @diags ext-diags) diagnostics)]))))

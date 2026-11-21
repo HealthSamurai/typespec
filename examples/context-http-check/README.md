@@ -155,6 +155,11 @@ Acceptance asserts that `map-indexed` infers `int?` for the callback index
 at `uui.clj:120:15` in `breadcrumb`. All 43 diagnostic tuples still match
 the reviewed snapshot.
 
+The YAML probe checks all eight production files with the `YAMLCodec`
+declaration from the pinned `clj-yaml` source and test `s/fdef` contracts.
+It verifies all seven method implementations in `http/formats.clj`, including
+qualified `decode` method names and the `LocalDate` receiver in `encode`.
+
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,
 then deliberately edit the expected file in a separate review step. There

@@ -27,6 +27,37 @@
     (println "ENDPOINT PASS: direct and macro calls use the original HTTP Spec")
     (println "RESPONSE PASS: a string content-type passed and an integer was rejected after assoc-in")))
 
+(defn- check-yaml-extensions! [files]
+  (let [path "probe/yaml-codec.clj"
+        declaration (->> (slurp (io/resource "clj_yaml/core.clj"))
+                         (parse/parse-string path)
+                         :forms
+                         (some #(when (= ['defprotocol 'YAMLCodec] (mapv :val (take 2 (:children %)))) %)))
+        _ (assert declaration "Expected YAMLCodec in the pinned clj-yaml source")
+        contracts (parse/parse-string path
+                    "(ns clj-yaml.core (:require [clojure.spec.alpha :as s]))
+                     (declare generate-string parse-string)
+                     (s/fdef encode :args (s/cat :data any?) :ret any?)
+                     (s/fdef decode :args (s/cat :data any? :opts any?) :ret any?)")
+        checked (check/check-files (conj files (update contracts :forms conj declaration)) {:track-uses true})
+        formats "src/http/formats.clj"
+        implementations (for [{:keys [kind file var pos]} (:uses checked)
+                              :when (and (= :implementation kind) (= formats file)
+                                         (= "clj-yaml.core" (namespace var)))]
+                          [var (:row pos)])
+        problems (for [{:keys [file pos code severity] :as d} (:diagnostics checked)
+                       :when (and (= formats file) (<= 22 (:row pos) 61)
+                                  (or (= :error severity) (str/starts-with? code "TSP430-")))]
+                   d)]
+    (assert (= [['clj-yaml.core/decode 24] ['clj-yaml.core/decode 36] ['clj-yaml.core/decode 40]
+                ['clj-yaml.core/encode 51] ['clj-yaml.core/encode 54]
+                ['clj-yaml.core/encode 57] ['clj-yaml.core/encode 60]]
+               implementations))
+    (assert (= "java.time.LocalDate" (main/type-at checked formats 51 12)))
+    (assert (empty? problems) (pr-str problems))
+    (assert (nil? (find-ns 'clj-yaml.core)) "YAML Codec namespace should remain unloaded")
+    (println "YAML PASS: all seven method bodies resolve against the pinned protocol declaration")))
+
 (let [pin "e158b6b244c2b8e053de2a097d1071d9419adef9"
       manifest (into (sorted-map) (edn/read-string (slurp "manifest.edn")))
       root (.getParentFile (io/file (.toURI (io/resource "http.clj")) ))
@@ -99,6 +130,7 @@
       (assert (= "int?" (main/type-at result "src/uui.clj" 120 15))
               "Expected an integer index in the breadcrumb map-indexed callback")
       (check-probes! parsed)
+      (check-yaml-extensions! parsed)
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))

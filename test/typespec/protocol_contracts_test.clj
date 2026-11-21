@@ -1,6 +1,7 @@
 (ns typespec.protocol-contracts-test
   (:require [clojure.test :refer [deftest is]]
             [typespec.check :as check]
+            [typespec.main :as main]
             [typespec.parse :as parse]
             [typespec.project-contracts :as project-contracts]))
 
@@ -39,6 +40,37 @@
   (render ([this] this) ([this prefix] prefix)))")]
     (is (= ["TSP2322"] (mapv :code (:diagnostics r))) (pr-str (:diagnostics r)))
     (is (re-find #"int\?" (get-in r [:diagnostics 0 :message])))))
+
+(deftest extend-protocol-checks-each-receiver-and-the-shared-spec
+  (let [r (checked "(clojure.core/extend-protocol api/Display
+  String
+  (api/render [this prefix] (str (subs this 1) (inc prefix)))
+  java.time.LocalDate
+  (catalog.display/render [this] (subs this 1))
+  nil
+  (render [this] (if (nil? this) \"empty\" 42))
+  Long
+  (render [this] this))")]
+    (is (= [[4 "TSP2345"] [6 "TSP2345"] [10 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["nil?" "nil?"]
+           [(main/type-at r "client.clj" 2 1) (main/type-at r "client.clj" 8 12)]))
+    (is (= (mapv #(vector 'catalog.display/render :implementation %) [4 6 8 10])
+           (mapv (juxt :var :kind (comp :row :pos)) (:uses r))))))
+
+(deftest extend-protocol-checks-method-identities-and-arities-per-class
+  (let [r (checked "(extend-protocol api/Display
+  String
+  (api/render ([this] this) ([this prefix] prefix))
+  (render [this] this)
+  (render [this x y] this)
+  (other [this] this)
+  Long
+  (render [this prefix] prefix))")]
+    (is (= [[5 "TSP430-01"] [6 "TSP430-01"] [7 "TSP430-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
 
 (deftest diagnoses-missing-duplicate-and-unknown-method-arities
   (let [r (checked "(reify api/Display

@@ -3,7 +3,7 @@ id: F430
 title: Протоколы и reify
 status: designed
 decision: accepted
-implementation: not-implemented
+implementation: partial
 area: functions
 origin: Clojure
 ---
@@ -11,8 +11,21 @@ origin: Clojure
 # F430 · Протоколы и reify
 
 [F431](F431-protocol-method-specs.md) реализует проверку `reify` и
-`extend-type` по `s/fdef`. Описание исходного состояния ниже относится
-к версии до F431.
+`extend-type` по `s/fdef`.
+
+## Проверка `extend-protocol`
+
+Для протоколов из выбранных исходников Typespec проверяет каждый блок
+реализации с типом его класса или `nil` для первого параметра. Сигнатура
+`s/fdef` задаёт типы остальных параметров и результата. Квалифицированное
+имя метода связывается с методом выбранного протокола по имени, как при
+раскрытии макроса Clojure. Проверяются объявленные методы и арности.
+Частичный блок `extend-protocol` может реализовывать отдельные методы.
+
+Регрессия `context-http-check --accept` проверяет все семь тел расширений
+`YAMLCodec` в оригинальном `http/formats.clj` с объявлением из
+закреплённого `clj-yaml` и тестовыми `s/fdef`. Описание исходного
+состояния ниже относится к версии до F431.
 
 ## Зачем
 

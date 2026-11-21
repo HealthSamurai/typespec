@@ -3096,12 +3096,12 @@
       (check-return! method-ctx (or (last body) params) actual (:ret expected) description))
     t/unknown))
 
-(defn- protocol-groups [forms]
+(defn- method-groups [forms target-ops]
   (reduce (fn [groups form]
-            (case (:op form)
-              :sym (conj groups {:protocol form :methods []})
-              :list (if (seq groups) (update-in groups [(dec (count groups)) :methods] conj form) groups)
-              groups))
+            (cond
+              (target-ops (:op form)) (conj groups [form []])
+              (and (= :list (:op form)) (seq groups)) (update-in groups [(dec (count groups)) 1] conj form)
+              :else groups))
           [] forms))
 
 (defn- protocol-diagnostic! [ctx at code message]
@@ -3116,7 +3116,7 @@
     (when expected
       (check-return! method-ctx (or (last body) params method) actual (:ret expected)))))
 
-(defn- check-protocol-group [ctx {:keys [protocol methods]} receiver]
+(defn- check-protocol-group [ctx protocol methods receiver form-kind]
   (let [full (qualified-var (:file ctx) (:val protocol))
         declared (get-in ctx [:env :protocols full])]
     (when declared
@@ -3124,7 +3124,10 @@
         (doseq [form methods
                 :let [{method :name arities :arities}
                       (env/defn-parts (update form :children #(into [{:op :sym :val 'defn}] %)))
-                      {:keys [var] allowed :arities} (get declared (:val method))]]
+                      method-name (when (= :sym (:op method))
+                                    ;; extend-type and extend-protocol key the method by its name.
+                                    (if (= :reify form-kind) (:val method) (symbol (name (:val method)))))
+                      {:keys [var] allowed :arities} (get declared method-name)]]
           (if-not (and var (seq arities))
             (report! ctx (or method form) "TSP430-01"
                      (str "invalid method " (parse/unparse method) " for protocol " full))
@@ -3133,7 +3136,7 @@
               (doseq [{:keys [params body]} arities
                       :let [{:keys [fixed rest]} (env/split-params params)
                             n (count fixed)
-                            method-arity [(:val method) n]
+                            method-arity [method-name n]
                             contracts (get-in ctx [:env :vars var :contract-arities])
                             contract (merge-implementation-contracts n (filter #(= n (count (:params %))) contracts))]]
                 (cond
@@ -3148,21 +3151,34 @@
                       (when-not contract
                         (protocol-diagnostic! ctx method "TSP430-03" (str var " has no s/fdef for arity " n)))
                       (check-protocol-body ctx method fixed body params contract receiver)))))))
-        (doseq [[method {:keys [var arities]}] (sort-by key declared)
-                n arities :when (not (contains? @covered [method n]))]
-          (protocol-diagnostic! ctx protocol "TSP430-02" (str "missing implementation of " var " with arity " n)))))))
+        (when (not= :extend-protocol form-kind)
+          (doseq [[method {:keys [var arities]}] (sort-by key declared)
+                  n arities :when (not (contains? @covered [method n]))]
+            (protocol-diagnostic! ctx protocol "TSP430-02" (str "missing implementation of " var " with arity " n))))))))
 
 (defmethod special 'reify [ctx node _]
-  (run! #(check-protocol-group ctx % nil) (protocol-groups (args-of node)))
+  (doseq [[protocol methods] (method-groups (args-of node) #{:sym})]
+    (check-protocol-group ctx protocol methods nil :reify))
   t/unknown)
+
+(defn- extension-receiver [ctx target]
+  (case (:op target)
+    :nil t/nil-t
+    :sym (some-> (t/resolve-class (get-in ctx [:file :imports]) (:val target)) t/class-type)
+    nil))
 
 (defmethod special 'extend-type [ctx node _]
   (let [[target & groups] (args-of node)
-        receiver (case (:op target)
-                   :nil t/nil-t
-                   :sym (some-> (t/resolve-class (get-in ctx [:file :imports]) (:val target)) t/class-type)
-                   nil)]
-    (run! #(check-protocol-group ctx % receiver) (protocol-groups groups)))
+        receiver (extension-receiver ctx target)]
+    (doseq [[protocol methods] (method-groups groups #{:sym})]
+      (check-protocol-group ctx protocol methods receiver :extend-type)))
+  t/nil-t)
+
+(defmethod special 'extend-protocol [ctx node _]
+  (let [[protocol & groups] (args-of node)]
+    (when (= :sym (:op protocol))
+      (doseq [[target methods] (method-groups groups #{:sym :nil})]
+        (check-protocol-group ctx protocol methods (extension-receiver ctx target) :extend-protocol))))
   t/nil-t)
 
 (defn- guard-claim [env entry]

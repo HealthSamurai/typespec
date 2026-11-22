@@ -320,6 +320,27 @@
             "t/unknown" "t/unknown"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest into-vectors-adds-length-bounds
+  (let [r (checked "(into [] [1 2])
+(into [1] [\"one\"])
+(into [] \"ab\")
+(first (into [] nil))
+(into [1] (throw (Exception.)))
+(into #{} [1 1])
+(s/def ::parts (s/coll-of string? :kind vector? :min-count 1 :max-count 2))
+(s/def ::tail (s/coll-of string? :kind seq? :min-count 2 :max-count 3))
+(s/def ::result (s/coll-of string? :kind vector? :min-count 3 :max-count 5))
+(s/fdef append-parts :args (s/cat :parts ::parts :tail ::tail) :ret ::result)
+(defn append-parts [parts tail] (into parts tail))
+(s/fdef append-fragments :args (s/cat :parts ::parts) :ret ::result)
+(defn append-fragments [parts] (into [] (concat parts [\"name\" \",\"])))")]
+    (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "(s/coll-of (t/or int? string?) :kind vector? :min-count 2 :max-count 2)"
+            "(s/coll-of java.lang.Character :kind vector? :min-count 2 :max-count 2)"
+            "nil?" "t/never" "(s/coll-of int? :kind set?)"]
+           (mapv #(at r %) (range 2 8))))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

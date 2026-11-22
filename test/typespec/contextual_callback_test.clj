@@ -224,7 +224,7 @@
 (defn labels [xs] (map-indexed (fn [i [label n]] (str (+ i n) (str/upper-case label))) xs))")]
     (is (empty? (codes result)) (pr-str (:diagnostics result)))
     (is (= ["(s/coll-of string? :kind seq? :min-count 1 :max-count 1)"
-            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of string? :kind vector? :min-count 1 :max-count 1)"
             "(s/coll-of t/never :kind seq? :max-count 0)"
             "(s/coll-of t/never :kind seq? :max-count 0)"
             "string?"

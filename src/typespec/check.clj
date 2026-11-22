@@ -3417,17 +3417,34 @@
                  :any t/any
                  t/unknown))))))
 
+(defn- into-vectors [ctx target vectors source]
+  (let [{:keys [lower upper element]} (sequence-summary ctx source)]
+    (t/with-assumption
+     (if (= 0 upper)
+       (dissoc target :fresh)
+       (apply t/union
+              (for [vector-type vectors
+                    :let [[target-min target-max] (length/bounds vector-type)
+                          elements (t/union (elem-type ctx vector-type) element)]]
+                (length/with-bounds (coll-of :vector elements)
+                                    (+' target-min lower)
+                                    (when (and target-max upper) (+' target-max upper))))))
+     (or (t/assumption target) (t/assumption source)))))
+
 (defmethod special 'into [ctx node _]
   (let [[to second-arg from :as args] (args-of node)]
     (case (count args)
       0 (coll-of :vector t/never)
       1 (infer ctx to)
       2 (let [target (infer ctx to)
-              el (elem-type ctx (infer ctx second-arg))]
-          (cond (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector el)
-                (and (= :set (:op to)) (empty? (:children to))) (coll-of :set el)
-                (some #(or (:items %) (length/constrained? %)) (t/members (:env ctx) target))
-                (into-transformed ctx target el)
+              source (eff ctx (infer ctx second-arg))
+              members (t/members (:env ctx) target)]
+          (cond (some #{t/never} [target source]) t/never
+                (every? vector-member? members) (into-vectors ctx target members source)
+                (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector (elem-type ctx source))
+                (and (= :set (:op to)) (empty? (:children to))) (coll-of :set (elem-type ctx source))
+                (some #(or (:items %) (length/constrained? %)) members)
+                (into-transformed ctx target (elem-type ctx source))
                 :else (dissoc target :fresh)))
       3 (let [target (infer ctx to)
               source (infer ctx from)

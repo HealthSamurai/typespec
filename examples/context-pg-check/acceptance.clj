@@ -89,6 +89,9 @@
                (mapv #(str "(s/coll-of t/unknown :kind seq? :min-count " % ")") [1 2 1 2])
                (mapv (fn [[row col]] (main/type-at tree "upstream/src/dsql/pg.clj" row col))
                      [[116 43] [1091 5] [1121 5] [1151 4]]))
+      (expect! "into keeps the separator counted in join-vec"
+               "(s/coll-of t/unknown :kind vector? :min-count 1)"
+               (main/type-at tree "upstream/src/dsql/pg.clj" 116 32))
       (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")
@@ -102,10 +105,15 @@
                  (mapv location (remove original (:diagnostics mutated))))
         (println "WITH-OPEN PASS: all 9 pg sources checked with the resource mutation."))
       (let [path "probe/migration_files.clj"
-            checked (fixture/run-tree-check nil [(parse/parse-file path)])]
+            fragments "probe/sql_fragment_vector.clj"
+            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments]))
+            diagnostics (:diagnostics checked)]
         (expect! "filterv keeps the migration count upper bound from Spec"
-                 [] (filterv #(= path (:file %)) (:diagnostics checked)))
-        (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec."))))
+                 [] (filterv #(= path (:file %)) diagnostics))
+        (expect! "into preserves the SQL fragment count inferred from concat"
+                 [] (filterv #(= fragments (:file %)) diagnostics))
+        (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec.")
+        (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

@@ -2809,6 +2809,35 @@
                   t/unknown)
               (partition-all-type ctx source size step))))))))
 
+(defn- interposed-length [size]
+  (when (some? size)
+    (if (zero? size) 0 (dec' (*' 2 size)))))
+
+(defmethod special 'interpose [ctx node _]
+  (let [[_ coll :as args] (args-of node)
+        [separator-type source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not (#{1 2} (count args)))
+      (do (report! ctx node "TSP2554" "interpose expects 1 or 2 arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+      (nil? coll) t/unknown
+
+      :else
+      (if-let [invalid (unsupported-sequence-member ctx source)]
+        (do (report! ctx coll "TSP2345" (str "interpose cannot sequence " (t/show invalid))) t/unknown)
+        (t/with-assumption
+         (apply t/union
+                (for [member (t/members (:env ctx) source)
+                      :let [element (elem-type ctx member)
+                            [lo hi] (if (= t/never element) [0 0] (length/bounds member))
+                            output (cond
+                                     (= 0 hi) t/never
+                                     (= 1 hi) element
+                                     :else (t/union element separator-type))]]
+                  (length/with-bounds (coll-of :seq output) (interposed-length lo) (interposed-length hi))))
+         (t/assumption source))))))
+
 (def ^:private comp-identity
   (t/parse-type {:fail #(throw (ex-info "Invalid comp identity signature" {:form %}))}
                 '(t/all [a] [a :-> a])))

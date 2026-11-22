@@ -40,6 +40,32 @@
             "(s/coll-of (s/coll-of t/never :kind seq? :max-count 0) :kind seq? :min-count 1)"]
            (mapv #(at r %) [5 7 8 9])))))
 
+(deftest interpose-keeps-separators-elements-and-lengths
+  (let [r (checked "(interpose 42 [\"a\" \"b\"])
+(interpose 42 [\"a\"])
+(interpose nil [1 2])
+(interpose :sep [])
+(interpose :sep nil)
+(interpose :sep 42)
+(interpose)
+(interpose :sep [] :extra)
+(interpose :sep [(inc \"bad\")])
+(interpose :sep)
+(s/fdef labels :args (s/cat :labels (s/coll-of string?)) :ret (s/coll-of string? :kind seq?))
+(defn labels [labels] (->> labels (map-indexed (fn [i label] (str i label))) (interpose \" / \")))
+(s/fdef bad-labels :args (s/cat :labels (s/coll-of string?)) :ret (s/coll-of string? :kind seq?))
+(defn bad-labels [labels] (->> labels (map-indexed (fn [i label] (str i label))) (interpose 42)))")]
+    (is (= [[7 "TSP2345"] [8 "TSP2554"] [9 "TSP2554"] [10 "TSP2345"] [15 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of (t/or string? int?) :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of string? :kind seq? :min-count 1 :max-count 1)"
+            "(s/coll-of (s/nilable int?) :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "t/unknown"]
+           (mapv #(at r %) [2 3 4 5 6 11])))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

@@ -143,6 +143,8 @@
               "Expected the subscriber call inside future to be analyzed")
       (assert (= "int?" (main/type-at result "src/uui.clj" 120 15))
               "Expected an integer index in the breadcrumb map-indexed callback")
+      (assert (= "(s/coll-of t/unknown :kind seq?)" (main/type-at result "src/uui.clj" 126 9))
+              "Expected breadcrumb interpose to retain a sequence type")
       (assert (= ["map?" "map?"]
                  (mapv (fn [[row col]] (main/type-at result "src/uui/heroicons.clj" row col))
                        [[18 14] [26 11]]))

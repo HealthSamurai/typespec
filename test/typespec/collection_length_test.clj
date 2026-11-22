@@ -449,6 +449,19 @@
     (is (= ["\"kept\"" "nil?" "nil?" "java.lang.Character"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest array-constructors-carry-their-jvm-class
+  (let [r (checked "(byte-array [1 2])
+(boolean-array [true])
+(object-array nil)
+(alength (double-array 2 [1.0]))
+(int-array \"bad-size\" [1])
+(byte-array :bad-source)
+(object-array 2 nil)")]
+    (is (= ["[B" "[Z" "[Ljava.lang.Object;" "int?"] (mapv #(at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest alength-checks-array-hints-and-returns-int
   (let [r (checked "(let [^bytes body (byte-array 3)] (alength body))
 (let [^objects values (object-array 2)] (alength values))

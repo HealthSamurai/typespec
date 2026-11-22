@@ -3033,6 +3033,30 @@
                    :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:unknown}))
         (t/prim :int)))))
 
+(doseq [[head class-name] {'boolean-array "[Z" 'byte-array "[B" 'char-array "[C"
+                           'short-array "[S" 'int-array "[I" 'long-array "[J"
+                           'float-array "[F" 'double-array "[D" 'object-array "[Ljava.lang.Object;"}]
+  (defmethod special head [ctx node _]
+    (let [[size :as args] (args-of node)
+          [source :as types] (mapv #(eff ctx (infer ctx %)) args)
+          primitive? (not= 'object-array head)
+          expected-size (t/prim :number)]
+      (cond
+        (not (or (= 1 (count types)) (and primitive? (= 2 (count types)))))
+        (do (report! ctx node "TSP2554" (str head " expects " (if primitive? "one or two arguments" "one argument")))
+            t/unknown)
+
+        (some #{t/never} types) t/never
+
+        :else
+        (do (if (= 2 (count types))
+              (assignable! ctx size source expected-size)
+              (when-let [bad (some #(when-not (t/sub? (:env ctx) % expected-size)
+                                    (unsupported-sequence-member ctx %))
+                                   (t/members (:env ctx) source))]
+                (report! ctx size "TSP2345" (str head " expects a size or a seqable value, got " (t/show bad)))))
+            (t/class-type class-name))))))
+
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))

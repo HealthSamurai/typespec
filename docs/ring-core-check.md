@@ -88,3 +88,12 @@ clojure -Sdeps "$ring_deps" -M:check check --root "$ring_root"
 56 предупреждений**. Проверены пять реализаций `body-size-in-bytes`, включая
 `extend` на `(Class/forName "[B")`. В отдельной копии исходников подмена
 `(alength bs)` строкой дала `TSP2322` в `content_length.clj:17:22`.
+
+## Массивы в `ring.middleware.session.cookie`
+
+Конструктор `(byte-array data)` передаёт класс `[B` в вызов `Cipher.doFinal`.
+Тип виден на исходниках через `type-at`.
+
+```sh
+clojure -Sdeps "$ring_deps" -M:check type-at src/ring/middleware/session/cookie.clj:55:31 --root "$ring_root"
+```

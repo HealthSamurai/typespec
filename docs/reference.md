@@ -195,6 +195,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `conj` on a vector | grows both known length bounds by the number of appended values and preserves fixed positions. [F330](../features/F330-tuples-and-nonempty.md) |
 | `pop` on a vector | removes the last element, preserving the types of positions in the remaining prefix. A known empty alternative triggers `TSP330-02`. [F330](../features/F330-tuples-and-nonempty.md) |
 | `peek` on a vector | reads the final position when known. An empty vector returns `nil`. [F330](../features/F330-tuples-and-nonempty.md) |
+| `last` | uses the final position's type when known. A positive lower length bound guarantees that the last element exists. [F330](../features/F330-tuples-and-nonempty.md) |
 | `drop-last` | subtracts a known non-negative integral drop count from the length bounds, with a floor of zero. The one-argument form drops one element. Fixed positions in the remaining prefix retain their types. [F330](../features/F330-tuples-and-nonempty.md) |
 | `map`, `mapv` | check the callback against input element types and use the shortest input's length for the result. `map` returns a sequence and `mapv` returns a vector. [F330](../features/F330-tuples-and-nonempty.md) |
 | `filter`, `filterv`, `remove` | narrow the output element type using a checked predicate and preserve the input's upper length bound. The result can be empty. [F330](../features/F330-tuples-and-nonempty.md) |

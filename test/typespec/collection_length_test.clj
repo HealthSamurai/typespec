@@ -431,6 +431,24 @@
     (is (= ["\"tail\"" "nil?" "nil?" "nil?" "\"kept\""]
            (mapv #(at r %) (range 2 7))))))
 
+(deftest last-uses-length-and-known-sequence-positions
+  (let [r (checked "(last (reverse [\"kept\" 1]))
+(last [])
+(last nil)
+(last \"a\")
+(last 42)
+(last)
+(s/def ::versions (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/fdef latest :args (s/cat :versions ::versions) :ret string?)
+(defn latest [versions] (last (sort versions)))
+(s/fdef maybe-empty :args (s/cat :xs (s/coll-of string? :kind seq? :max-count 3)) :ret string?)
+(defn maybe-empty [xs] (last xs))")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [12 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"kept\"" "nil?" "nil?" "java.lang.Character"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

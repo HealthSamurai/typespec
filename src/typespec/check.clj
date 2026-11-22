@@ -2791,7 +2791,7 @@
         (positional-type ctx ty i)
         t/unknown))))
 
-(doseq [h '[last rand-nth ffirst]]
+(doseq [h '[rand-nth ffirst]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)]
       (indexed (elem-type ctx (infer ctx c))))))
@@ -2943,13 +2943,14 @@
     (let [size (count (:val member))] [size size])
     :else (length/bounds member)))
 
-(defn- last-position-type [ctx member]
+(defn- last-position-type [ctx member unbounded-result]
   (let [[lo hi] (sequence-member-bounds member)
         element (elem-type ctx member)]
     (cond
       (or (= 0 hi) (= t/never element)) t/nil-t
       (:items member) (peek (:items member))
       (pos? lo) element
+      (nil? hi) (unbounded-result element)
       :else (t/union element t/nil-t))))
 
 (defmethod special 'peek [ctx node _]
@@ -2962,8 +2963,26 @@
               (for [member (t/members (:env ctx) source)]
                 (cond
                   (#{:nil :never} (:t member)) member
-                  (vector-member? member) (last-position-type ctx member)
+                  (vector-member? member) (last-position-type ctx member #(t/union % t/nil-t))
                   :else (indexed (elem-type ctx member)))))
+       (t/assumption source)))))
+
+(defmethod special 'last [ctx node _]
+  (let [args (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "last expects 1 argument") t/unknown)
+
+      (report-invalid-sequence-args! ctx 'last args types) t/unknown
+
+      :else
+      (t/with-assumption
+       (apply t/union
+              (for [member (t/members (:env ctx) source)]
+                (if (#{:nil :never} (:t member))
+                  member
+                  (last-position-type ctx member indexed))))
        (t/assumption source)))))
 
 (defn- trim-tail-type [ctx kind member n]

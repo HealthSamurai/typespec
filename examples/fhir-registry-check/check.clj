@@ -15,8 +15,9 @@
         resource-path "probe/json_resource_type.clj"
         write-path "probe/json_resource_write.clj"
         prerelease-path "probe/prerelease_parts.clj"
-        paths #{version-path lookup-path resource-path write-path prerelease-path "probe/package_names.clj"}
-        checked (check/check-files (into files (map parse/parse-file) paths) opts)
+        paths #{version-path lookup-path resource-path write-path prerelease-path
+                "probe/package_names.clj" "probe/latest_nonempty.clj"}
+        checked (check/check-files (into files (map parse/parse-file) paths) (assoc opts :strict-nil true))
         diagnostics (sort-by :file (filter #(paths (:file %)) (:diagnostics checked)))]
     (assert (= [[resource-path 11 :error "TSP2322"]
                 [write-path 12 :error "TSP2322"]

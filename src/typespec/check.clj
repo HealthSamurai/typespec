@@ -2928,7 +2928,7 @@
       (empty? args) (infer ctx f)
       :else (or (partial-function ctx node f args) t/unknown))))
 
-(doseq [h '[map keep mapcat pmap]]
+(doseq [h '[keep mapcat pmap]]
   (defmethod special h [ctx node _]
     (let [[f & colls] (args-of node)
           els (mapv #(elem-type ctx (infer ctx %)) colls)]
@@ -2938,32 +2938,38 @@
               ret (case h keep (t/remove-nil (:env ctx) ret) mapcat (elem-type ctx ret) ret)]
           (coll-of :seq ret))))))
 
-(defmethod special 'mapv [ctx node _]
-  (let [[f & colls] (args-of node)
-        sources (mapv #(eff ctx (infer ctx %)) colls)]
-    (cond
-      (empty? colls)
-      (do (when f (infer ctx f))
-          (report! ctx node "TSP2554" "mapv expects a function and at least one collection")
-          t/unknown)
+(doseq [[head kind] {'map :seq 'mapv :vector}]
+  (defmethod special head [ctx node _]
+    (let [[f & colls] (args-of node)
+          sources (mapv #(eff ctx (infer ctx %)) colls)]
+      (cond
+        (and f (= 'map head) (empty? colls))
+        (do (infer ctx f) t/unknown)
 
-      (some #{t/never} sources)
-      (do (infer ctx f) t/never)
+        (empty? colls)
+        (do (when f (infer ctx f))
+            (report! ctx node "TSP2554" (if (= 'map head)
+                                         "map expects at least one argument"
+                                         "mapv expects a function and at least one collection"))
+            t/unknown)
 
-      (report-invalid-sequence-args! ctx 'mapv colls sources)
-      (do (infer ctx f) t/unknown)
+        (some #{t/never} sources)
+        (do (infer ctx f) t/never)
 
-      :else
-      (let [parts (mapv #(sequence-summary ctx %) sources)
-            minimum (apply min (map :lower parts))
-            known-maxima (seq (keep :upper parts))
-            maximum (when known-maxima (apply min known-maxima))
-            element (if (= 0 maximum)
-                      (do (infer ctx f) t/never)
-                      (apply-fn-node ctx f (mapv :element parts)))]
-        (t/with-assumption
-         (length/with-bounds (coll-of :vector element) minimum maximum)
-         (some t/assumption sources))))))
+        (report-invalid-sequence-args! ctx head colls sources)
+        (do (infer ctx f) t/unknown)
+
+        :else
+        (let [parts (mapv #(sequence-summary ctx %) sources)
+              minimum (apply min (map :lower parts))
+              known-maxima (seq (keep :upper parts))
+              maximum (when known-maxima (apply min known-maxima))
+              element (if (= 0 maximum)
+                        (do (infer ctx f) t/never)
+                        (apply-fn-node ctx f (mapv :element parts)))]
+          (t/with-assumption
+           (length/with-bounds (coll-of kind element) minimum maximum)
+           (some t/assumption sources)))))))
 
 (defmethod special 'map-indexed [ctx node _]
   (let [[f coll :as args] (args-of node)]

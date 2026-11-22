@@ -259,6 +259,26 @@
     (is (= "(s/coll-of int? :kind vector? :max-count 2)"
            (main/type-at r "length.clj" 20 16)))))
 
+(deftest map-keeps-length-without-changing-the-transducer-form
+  (let [r (checked "(map inc [1 2])
+(map str [1 2 3] [4])
+(map str nil)
+(map str)
+(map)
+(map identity 42)
+(s/fdef limited :args (s/cat :xs (s/coll-of int?)))
+(defn limited [xs] (map + xs [1 2]))")]
+    (is (= [[6 "TSP2554"] [7 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"
+            "(s/coll-of string? :kind seq? :min-count 1 :max-count 1)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "t/unknown"]
+           (mapv #(at r %) (range 2 6))))
+    (is (= "(s/coll-of int? :kind seq? :max-count 2)"
+           (main/type-at r "length.clj" 9 20)))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

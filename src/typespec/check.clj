@@ -2338,6 +2338,14 @@
        (or (t/assumption source) (t/assumption key-type)))
       t/unknown)))
 
+(defn- read-string-key [ctx source k not-found]
+  (let [{:keys [status type]} (lookup-key ctx source k)]
+    (case status
+      :req (if (t/nilable? (:env ctx) source) (t/union type not-found) type)
+      :opt (t/union type not-found)
+      (:nil :absent) not-found
+      t/unknown)))
+
 (defmethod special 'get [ctx node _]
   (let [[m k default] (args-of node)
         mty (infer ctx m)]
@@ -2348,8 +2356,15 @@
       (let [source (eff ctx mty)
             key-type (eff ctx (infer ctx k))
             not-found (if default (infer ctx default) t/nil-t)]
-        (if (some #{t/never} [source key-type not-found])
+        (cond
+          (some #{t/never} [source key-type not-found])
           t/never
+
+          (and (= :lit (:t key-type)) (string? (:val key-type)) (seq (map-members ctx source)))
+          (t/with-assumption (read-string-key ctx source (:val key-type) not-found)
+                             (or (t/assumption source) (t/assumption key-type)))
+
+          :else
           (read-map-of ctx source key-type not-found))))))
 
 (defn- numeric-path-value [ctx ty index]

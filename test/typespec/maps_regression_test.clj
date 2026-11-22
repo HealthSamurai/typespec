@@ -73,6 +73,26 @@
              ["(get m k :missing)" t/nil-t string-key #{fallback}]]]
       (is (= expected (alternatives (infer-type source {'m map-type 'k key-type}))) source))))
 
+(deftest get-reads-literal-string-keys-from-structural-maps
+  (let [name-type (t/prim :string)
+        status-type (t/prim :keyword)
+        fallback (t/lit :missing)
+        complete (assoc (map-type {"name" name-type "present-null" t/nil-t}
+                                  {"status" status-type}) :complete-keys? true)
+        open (map-type {"name" name-type} {})]
+    (doseq [[source ty expected]
+            [["(get m \"name\" :missing)" complete #{name-type}]
+             ["(get m \"present-null\" :missing)" complete #{t/nil-t}]
+             ["(get m \"absent\" :missing)" complete #{fallback}]
+             ["(get m \"absent\")" complete #{t/nil-t}]
+             ["(get m \"status\" :missing)" complete #{status-type fallback}]
+             ["(get m \"name\" :missing)" (t/union complete t/nil-t) #{name-type fallback}]
+             ["(let [k \"name\"] (get m k))" open #{name-type}]
+             ["(get m \"unknown\")" open #{t/unknown}]]]
+      (is (= expected (alternatives (infer-type source {'m ty}))) source))
+    (is (= (t/lit "StructureDefinition")
+           (infer-type "(get {\"resourceType\" \"StructureDefinition\"} \"resourceType\")")))))
+
 (deftest defaults-replace-absence-not-nil
   (doseq [source ["(get m :x 42)" "(:x m 42)"]]
     (testing source

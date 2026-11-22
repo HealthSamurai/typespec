@@ -2996,6 +2996,43 @@
                                 :else (elem-type ctx m)))
                         members)))))
 
+(defn- array-argument-status [ty]
+  (case (:t ty)
+    (:any :never) :proved
+    (:unknown :var :rigid :ivar) :inconclusive
+    :nil :nil
+    :class (if-let [^Class cls (t/load-class (:name ty))]
+             (cond
+               (.isArray cls) :proved
+               (.isAssignableFrom cls (t/load-class "[B")) :inconclusive
+               :else :mismatch)
+             :inconclusive)
+    :mismatch))
+
+(defmethod special 'alength [ctx node _]
+  (let [[arg :as args] (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "alength expects one argument") t/unknown)
+
+      (= t/never source) t/never
+
+      :else
+      (let [members (group-by array-argument-status (t/members (:env ctx) source))]
+        (cond
+          (seq (:mismatch members))
+          (report! ctx arg "TSP2345"
+                   (str "alength expects a JVM array, got " (t/show (first (:mismatch members)))))
+
+          (seq (:nil members))
+          (report! ctx arg "TSP2531" "alength argument may be nil")
+
+          (seq (:inconclusive members))
+          (report! ctx arg "TSP210-01" "alength argument is not known to be a JVM array"
+                   :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:unknown}))
+        (t/prim :int)))))
+
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))

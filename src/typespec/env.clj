@@ -25,9 +25,14 @@
   [node]
   (first (filter #(= :sym (:op %)) (:meta node))))
 
+(def ^:private array-hint-classes
+  {'booleans "[Z" 'bytes "[B" 'chars "[C" 'shorts "[S" 'ints "[I"
+   'longs "[J" 'floats "[F" 'doubles "[D" 'objects "[Ljava.lang.Object;"})
+
 (defn hint-type [file node]
   (when-let [tn (tag-node node)]
-    (when-let [c (t/resolve-class (:imports file) (:val tn))]
+    (when-let [c (or (array-hint-classes (:val tn))
+                     (t/resolve-class (:imports file) (:val tn)))]
       (t/platform (t/class-type c) (str (:val tn))))))
 
 (defn- function-arities [forms]

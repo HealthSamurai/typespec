@@ -449,6 +449,20 @@
     (is (= ["\"kept\"" "nil?" "nil?" "java.lang.Character"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest alength-checks-array-hints-and-returns-int
+  (let [r (checked "(let [^bytes body (byte-array 3)] (alength body))
+(let [^objects values (object-array 2)] (alength values))
+(alength [:not-an-array])
+(alength nil)
+(alength)
+(defn unchecked [values] (alength values))" {})]
+    (is (= ["int?" "int?"] (mapv #(at r %) [2 3])))
+    (is (= [[4 "TSP2345"] [5 "TSP2531"] [6 "TSP2554"] [7 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [r (checked "(defn size [^bytes body] (if (some? body) (alength body) 0))")]
+    (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))))
+
 (deftest pmap-and-doall-preserve-bounds-and-original-shape
   (let [r (checked "(doall 1 [:head \"tail\"])
 (doall nil)

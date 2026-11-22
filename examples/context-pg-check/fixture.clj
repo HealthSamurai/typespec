@@ -43,7 +43,7 @@
                :codes (into (sorted-map) (frequencies (map (juxt :severity :code) ds)))
                :trust (:trust result)}}))
 
-(defn run-tree-check [& [edit-source]]
+(defn run-tree-check [& [edit-source probes]]
   (let [root (.getParentFile (io/file (.toURI (pg-resource))))
         manifest (into (sorted-map) (edn/read-string (slurp "manifest.edn")))
         paths (into {}
@@ -59,7 +59,7 @@
                            (parse/parse-string (str "upstream/src/" path)
                                                (if edit-source (edit-source path source) source)))))
                      manifest)
-        result (check-parsed parsed "contracts")
+        result (check-parsed (into parsed probes) "contracts")
         ds (:diagnostics result)]
     {:diagnostics ds
      :types (:types result)

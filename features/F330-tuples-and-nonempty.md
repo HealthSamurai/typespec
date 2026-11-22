@@ -63,6 +63,10 @@ flags: strict-nil
 `map-indexed` сохраняет границы длины с входа. Проверка `http --accept`
 передаёт их через `map-indexed` и `interpose` в примере по образцу `breadcrumb`.
 
+`filterv` сохраняет верхнюю границу длины. Результат может быть пустым
+даже при непустом входе. Проверка `pg` закрепляет эту гарантию при выборе
+миграций по имени файла.
+
 ```clojure example
 (ns example (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 

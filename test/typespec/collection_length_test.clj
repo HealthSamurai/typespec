@@ -279,6 +279,28 @@
     (is (= "(s/coll-of int? :kind seq? :max-count 2)"
            (main/type-at r "length.clj" 9 20)))))
 
+(deftest filterv-keeps-an-upper-bound-and-allows-empty-results
+  (let [r (checked "(filterv some? [nil 2 3])
+(filterv string? [1 2])
+(filterv some? nil)
+(filterv some? 42)
+(filterv some?)
+(s/def ::file string?)
+(s/def ::migration (s/keys :req-un [::file]))
+(s/def ::migrations (s/coll-of ::migration :kind vector? :min-count 1 :max-count 3))
+(s/def ::selected (s/coll-of ::migration :kind vector? :max-count 3))
+(s/fdef select-file :args (s/cat :file string? :migrations ::migrations) :ret ::selected)
+(defn select-file [file migrations] (filterv #(= file (:file %)) migrations))
+(s/fdef unchecked-first :args (s/cat :file string? :migrations ::migrations) :ret ::migration)
+(defn unchecked-first [file migrations] (first (filterv #(= file (:file %)) migrations)))")]
+    (is (= [[5 "TSP2345"] [6 "TSP2554"] [14 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind vector? :max-count 3)"
+            "(s/coll-of t/never :kind vector? :max-count 0)"
+            "(s/coll-of t/never :kind vector? :max-count 0)"]
+           (mapv #(at r %) [2 3 4])))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

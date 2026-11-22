@@ -2,7 +2,8 @@
 (require '[fixture :as fixture]
          '[clojure.edn :as edn]
          '[clojure.string :as str]
-         '[typespec.main :as main])
+         '[typespec.main :as main]
+         '[typespec.parse :as parse])
 
 (defn expect! [label expected actual]
   (when-not (= expected actual)
@@ -99,7 +100,12 @@
         (expect! "implicit close rejects an Object bound in free-port"
                  [[:error "TSP2339" "upstream/src/pg/docker.clj" 8 64]]
                  (mapv location (remove original (:diagnostics mutated))))
-        (println "WITH-OPEN PASS: all 9 pg sources checked with the resource mutation."))))
+        (println "WITH-OPEN PASS: all 9 pg sources checked with the resource mutation."))
+      (let [path "probe/migration_files.clj"
+            checked (fixture/run-tree-check nil [(parse/parse-file path)])]
+        (expect! "filterv keeps the migration count upper bound from Spec"
+                 [] (filterv #(= path (:file %)) (:diagnostics checked)))
+        (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

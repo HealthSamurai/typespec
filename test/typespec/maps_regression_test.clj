@@ -221,6 +221,27 @@
   (is (= t/unknown (infer-type "(assoc-in {} [:a 0] 1)")))
   (is (= t/unknown (infer-type "(update-in {} ks identity)"))))
 
+(deftest typed-map-path-writes-preserve-shape-and-check-the-leaf-contract
+  (let [updated (infer-type "(let [path [:routes (if flag :get :post)]]
+                              (assoc-in {:routes {:sibling :kept}} path \"handler\"))"
+                            {'flag (t/prim :boolean)})
+        branches (alternatives updated)]
+    (is (= #{#{:sibling :get} #{:sibling :post}}
+           (set (map #(set (keys (get-in % [:req :routes :req]))) branches))))
+    (is (= #{(t/lit :kept)} (set (map #(get-in % [:req :routes :req :sibling]) branches)))))
+  (is (= (t/prim :int) (infer-type "(let [path [:route :count]]
+                                    (get-in (update-in {:route {:count 3}} path inc) path))")))
+  (let [schema (parse/parse-string "schema.clj" "(ns schema (:require [clojure.spec.alpha :as s]))
+(s/def ::handler string?)
+(s/def ::path (s/tuple #{:routes} #{::handler}))")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [schema :as schema]))
+(s/fdef put-handler :args (s/cat :path ::schema/path) :ret any?)
+(defn put-handler [path] (assoc-in {} path 42))")
+        diagnostics (:diagnostics (check/check-files [client schema] {}))]
+    (is (= [["client.clj" 3 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest literal-key-path-writes-check-types-from-spec
   (let [file (parse/parse-string "nested.clj"
                                 "(ns nested (:require [clojure.spec.alpha :as s]))

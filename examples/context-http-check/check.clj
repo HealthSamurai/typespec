@@ -66,6 +66,13 @@
       (assert (= "(s/nilable :probe.cookie/value)" inferred) (str "Unexpected get-cookie result: " inferred)))
     (println "GET-IN PASS: cookie lookups use the Spec map-of and a Spec tuple path")))
 
+(defn- check-route-write! [files]
+  (let [path "probe/route_write.clj"
+        checked (check/check-files (conj files (parse/parse-file path)) {})
+        diagnostics (filter #(= path (:file %)) (:diagnostics checked))]
+    (assert (empty? diagnostics) (pr-str diagnostics))
+    (println "PATH WRITE PASS: assoc-in and update-in preserve the Spec route path")))
+
 (defn- check-yaml-extensions! [files]
   (let [path "probe/yaml-codec.clj"
         declaration (->> (slurp (io/resource "clj_yaml/core.clj"))
@@ -185,6 +192,7 @@
               "Expected the cache dereference and swap! to retain the atom's map type")
       (check-probes! parsed)
       (check-cookie-path! parsed)
+      (check-route-write! parsed)
       (check-yaml-extensions! parsed)
       (check-mcp-dispatch! parsed)
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))

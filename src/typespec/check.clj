@@ -2509,6 +2509,10 @@
           t/unknown))
       (if missing? (t/union ty not-found) ty))))
 
+(defn- path-key-nodes [path]
+  (when (and (= :vector (:op path)) (empty? (:directives path)) (not (env/tag-node path)))
+    (:children path)))
+
 (defmethod special 'get-in [ctx node _]
   (let [[m path default & extra :as arguments] (args-of node)
         mty (infer ctx m)]
@@ -2518,8 +2522,7 @@
           t/unknown)
       (let [path-type (eff ctx (infer ctx path))
             not-found (if default (infer ctx default) t/nil-t)
-            key-nodes (when (and (= :vector (:op path)) (empty? (:directives path)) (not (env/tag-node path)))
-                        (:children path))]
+            key-nodes (path-key-nodes path)]
         (if (some #{t/never} [mty path-type not-found])
           t/never
           (t/with-assumption
@@ -2552,19 +2555,34 @@
                          :else member))))
 
 (defn- literal-map-keys [node]
-  (when (and (= :vector (:op node)) (empty? (:directives node)) (not (env/tag-node node))
-             (every? literal-map-key-node? (:children node)))
-    (:children node)))
+  (let [keys (path-key-nodes node)]
+    (when (every? literal-map-key-node? keys) keys)))
+
+(def ^:private map-path-budget 256)
+
+(defn- fixed-map-write-paths [ctx path path-type]
+  (let [env (:env ctx)
+        key-nodes (concat (path-key-nodes path) (repeat path))
+        choices (fn [node ty]
+                  (let [keys (t/members env (eff ctx ty))]
+                    (when (every? #(and (= :lit (:t %)) (or (keyword? (:val %)) (string? (:val %)))) keys)
+                      (mapv (fn [key] [node (:val key)]) keys))))
+        paths (mapv #(mapv choices key-nodes (:items %)) (t/members env path-type))]
+    (when (every? #(and (seq %) (every? seq %)) paths)
+      (let [variants (fn [steps]
+                       (reduce (fn [prefixes keys]
+                                 (for [prefix prefixes, key keys] (conj prefix key)))
+                               [[]] steps))
+            result (vec (take (inc map-path-budget) (mapcat variants paths)))]
+        (when (<= (count result) map-path-budget) result)))))
 
 (defn- path-writes
-  "Find the previous leaf and rebuild each possible root after a literal map-path write."
-  [ctx root keys]
+  "Find the previous leaf and rebuild each possible root after a map-path write."
+  [ctx root keys budget]
   (let [env (:env ctx)
-        budget (volatile! 256)
         unchecked [t/unknown (constantly t/unknown)]]
-    (letfn [(walk [ty [key & more]]
-              (let [k (:val key)
-                    members (vec (take (inc @budget) (t/members env (eff ctx ty))))]
+    (letfn [(walk [ty [[key k] & more]]
+              (let [members (vec (take (inc @budget) (t/members env (eff ctx ty))))]
                 (if (neg? (vswap! budget - (count members)))
                   [unchecked]
                   (into []
@@ -2604,29 +2622,35 @@
 
 (defn- write-path [ctx node update?]
   (let [[m path value & args :as arguments] (args-of node)
-        mty (infer ctx m)
-        keys (literal-map-keys path)]
-    (cond
-      (or (nil? value) (and (not update?) (seq args)))
+        mty (infer ctx m)]
+    (if (or (nil? value) (and (not update?) (seq args)))
       (do (run! #(infer ctx %) (rest arguments))
           (report! ctx node "TSP2554" (str (if update? "update-in" "assoc-in") " is called with " (count arguments) " argument(s)"))
           t/unknown)
-
-      (seq keys)
-      (let [writes (path-writes ctx mty keys)
+      (let [path-type (eff ctx (infer ctx path))
+            paths (fixed-map-write-paths ctx path path-type)
+            arg-types (mapv #(infer ctx %) args)
+            budget (volatile! map-path-budget)
+            writes (vec (for [keys paths
+                              [previous rebuild] (path-writes ctx mty keys budget)]
+                          [(second (peek keys)) previous rebuild]))
             vty (if (and update? (seq writes))
-                  (apply-fn-node ctx value (into [(apply t/union (map first writes))] (map #(infer ctx %) args)))
-                  (do (run! #(infer ctx %) args) (infer ctx value)))
-            k (:val (last keys))
-            spec (when (get-in (:env ctx) [:specs k]) (t/ref-t k))
-            stored (if (and spec (not (t/sub? (:env ctx) (eff ctx vty) spec)))
-                     spec
-                     (dissoc vty :fresh))]
-        (when (seq writes) (check-key-value! ctx k value vty))
-        (if (= t/never vty) t/never (apply t/union (map #((second %) stored) writes))))
-
-      :else
-      (do (run! #(infer ctx %) (rest arguments)) t/unknown))))
+                  (apply-fn-node ctx value (into [(apply t/union (map second writes))] arg-types))
+                  (infer ctx value))]
+        (cond
+          (some #{t/never} (into [mty path-type vty] arg-types)) t/never
+          (nil? paths) t/unknown
+          :else
+          (let [env (:env ctx)
+                stored (into {} (for [k (distinct (map first writes))]
+                                  (let [spec (when (get-in env [:specs k]) (t/ref-t k))]
+                                    (check-key-value! ctx k value vty)
+                                    [k (if (and spec (not (t/sub? env (eff ctx vty) spec)))
+                                         spec
+                                         (dissoc vty :fresh))])))]
+            (t/with-assumption
+             (apply t/union (map (fn [[k _ rebuild]] (rebuild (get stored k))) writes))
+             (or (t/assumption mty) (t/assumption path-type)))))))))
 
 (defmethod special 'assoc-in [ctx node _] (write-path ctx node false))
 (defmethod special 'update-in [ctx node _] (write-path ctx node true))

@@ -186,6 +186,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `keys`, `vals` | preserve key and value types from `s/map-of` and maps whose entries are known. An empty input returns `nil`. [F310](../features/F310-maps-and-destructuring.md) |
 | `get` with a computed key | uses the `s/map-of` value type when the key type can match. A missing key returns the supplied default or `nil`. [F310](../features/F310-maps-and-destructuring.md) |
 | `get` with a known string key | reads the field type and uses the default for absence. A present `nil` remains `nil`. [F310](../features/F310-maps-and-destructuring.md) |
+| `get` on a vector | uses fixed positions and bounds for known integer indices. A computed index uses the element type and includes the default or `nil` if the position may be absent. [F331](../features/F331-fixed-vector-positions.md) |
 | `sort`, `sort-by` | preserve the input element type and known length bounds in the sorted sequence, including calls with an explicit comparator. `sort-by` checks the key function. [F330](../features/F330-tuples-and-nonempty.md) |
 | `reverse` | preserves the element type and known length bounds. Fixed positions retain their types in reverse order. [F330](../features/F330-tuples-and-nonempty.md) |
 | `drop-last` | subtracts a known non-negative integral drop count from the length bounds, with a floor of zero. The one-argument form drops one element. Fixed positions in the remaining prefix retain their types. [F330](../features/F330-tuples-and-nonempty.md) |

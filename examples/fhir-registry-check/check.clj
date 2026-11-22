@@ -13,11 +13,13 @@
   (let [version-path "probe/version_keys.clj"
         lookup-path "probe/latest_version.clj"
         resource-path "probe/json_resource_type.clj"
-        paths #{version-path lookup-path resource-path "probe/package_names.clj"}
+        prerelease-path "probe/prerelease_parts.clj"
+        paths #{version-path lookup-path resource-path prerelease-path "probe/package_names.clj"}
         checked (check/check-files (into files (map parse/parse-file) paths) opts)
         diagnostics (sort-by :file (filter #(paths (:file %)) (:diagnostics checked)))]
     (assert (= [[resource-path 11 :error "TSP2322"]
                 [lookup-path 16 :error "TSP2322"]
+                [prerelease-path 10 :error "TSP2322"]
                 [version-path 13 :error "TSP2322"]]
                (mapv (juxt :file (comp :row :pos) :severity :code) diagnostics))
             (str "Expected only the incorrect numeric return contracts to fail: " (pr-str diagnostics)))))
@@ -76,9 +78,13 @@
              (main/type-at result "src/fhir/registry/index.clj" 274 22))
           "Expected group-by in reindex-tgz to keep each group's non-empty vector type")
   (when (= mode "contracts")
-    (let [latest-type (main/type-at result "src/fhir/registry/semver.clj" 81 3)]
+    (let [semver-file "src/fhir/registry/semver.clj"
+          latest-type (main/type-at result semver-file 81 3)
+          prerelease-type (main/type-at result semver-file 45 24)]
       (assert (= "(s/nilable string?)" latest-type)
-              (str "Expected semver/latest to retain the version type through sort, got " latest-type))))
+              (str "Expected semver/latest to retain the version type through sort, got " latest-type))
+      (assert (= "(s/nilable string?)" prerelease-type)
+              (str "Expected compare-pre-release to retain the vector element type, got " prerelease-type))))
   ;; Never overwrite the historical baseline or reviewed expectation.
   (.mkdirs (io/file output))
   (spit (io/file output "summary.edn") (str (pr-str summary) "\n"))

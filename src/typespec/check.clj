@@ -2346,6 +2346,40 @@
       (:nil :absent) not-found
       t/unknown)))
 
+(defn- vector-member? [member]
+  (or (= :vector (:kind member))
+      (and (= :prim (:t member)) (= :vector (:name member)))))
+
+(defn- vector-element-at [member index]
+  (cond
+    (= :absent (length/position member index)) t/never
+    (:items member) (nth (:items member) (int index))
+    :else (or (:of member) t/unknown)))
+
+(defn- read-vector-index [ctx vectors key-type not-found]
+  (let [env (:env ctx)
+        keys (t/members env key-type)]
+    (apply t/union
+           (for [member vectors
+                 key keys]
+             (cond
+               (= :nil (:t member)) not-found
+               (or (= :never (:t member)) (= :never (:t key))) t/never
+
+               (= :lit (:t key))
+               (if (integer? (:val key))
+                 ;; Clojure vectors use Number.intValue for lookup, including wraparound.
+                 (let [index (.intValue ^Number (:val key))
+                       element (vector-element-at member index)]
+                   (if (= :present (length/position member index)) element (t/union element not-found)))
+                 not-found)
+
+               (or (= :double (:name key))
+                   (disjoint-scalars? env key (t/prim :int))
+                   (= 0 (second (length/bounds member)))) not-found
+
+               :else (t/union (or (:of member) t/unknown) not-found))))))
+
 (defmethod special 'get [ctx node _]
   (let [[m k default] (args-of node)
         mty (infer ctx m)]
@@ -2355,14 +2389,18 @@
         (read-key ctx mty (:val k) k))
       (let [source (eff ctx mty)
             key-type (eff ctx (infer ctx k))
-            not-found (if default (infer ctx default) t/nil-t)]
+            not-found (if default (infer ctx default) t/nil-t)
+            members (t/members (:env ctx) source)
+            assumption (or (t/assumption source) (t/assumption key-type))]
         (cond
           (some #{t/never} [source key-type not-found])
           t/never
 
-          (and (= :lit (:t key-type)) (string? (:val key-type)) (seq (map-members ctx source)))
-          (t/with-assumption (read-string-key ctx source (:val key-type) not-found)
-                             (or (t/assumption source) (t/assumption key-type)))
+          (and (= :lit (:t key-type)) (string? (:val key-type)) (some #(= :map (:t %)) members))
+          (t/with-assumption (read-string-key ctx source (:val key-type) not-found) assumption)
+
+          (and (some vector-member? members) (every? #(or (vector-member? %) (#{:nil :never} (:t %))) members))
+          (t/with-assumption (read-vector-index ctx members key-type not-found) assumption)
 
           :else
           (read-map-of ctx source key-type not-found))))))
@@ -2374,10 +2412,7 @@
            (for [member (t/members env ty)]
              (case (:t member)
                :coll (case (:kind member)
-                       :vector (cond (or (not (<= 0 index Integer/MAX_VALUE))
-                                         (= :absent (length/position member index))) t/never
-                                     (:items member) (get (:items member) (int index) t/never)
-                                     :else (:of member))
+                       :vector (if (<= 0 index Integer/MAX_VALUE) (vector-element-at member index) t/never)
                        :set (:of member)
                        ;; A kindless coll-of can be a map whose entries fit the
                        ;; element spec. get returns the value of an entry there.

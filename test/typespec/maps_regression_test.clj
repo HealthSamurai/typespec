@@ -93,6 +93,25 @@
     (is (= (t/lit "StructureDefinition")
            (infer-type "(get {\"resourceType\" \"StructureDefinition\"} \"resourceType\")")))))
 
+(deftest get-reads-vector-indices-with-clojure-presence-semantics
+  (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
+    (let [expected (get [nil :one] index :missing)
+          expected (if (nil? expected) t/nil-t (t/lit expected))
+          source (str "(get [nil :one] " (pr-str index) " :missing)")]
+      (is (= expected (infer-type source)) source)))
+  (let [element (t/prim :string)
+        vector-type {:t :coll :kind :vector :of element :min-count 1 :max-count 2}
+        optional (t/union vector-type t/nil-t)
+        fallback (t/lit :missing)
+        locals {'parts vector-type 'idx (t/prim :int)}]
+    (is (= element (infer-type "(get parts 0 :missing)" locals)))
+    (is (= #{element fallback}
+           (alternatives (infer-type "(get parts 1 :missing)" locals))))
+    (is (= fallback (infer-type "(get parts 2 :missing)" locals)))
+    (is (= #{element t/nil-t}
+           (alternatives (infer-type "(get parts idx)" (assoc locals 'parts optional)))))
+    (is (= fallback (infer-type "(get parts idx :missing)" (assoc locals 'idx (t/prim :double)))))))
+
 (deftest defaults-replace-absence-not-nil
   (doseq [source ["(get m :x 42)" "(:x m 42)"]]
     (testing source

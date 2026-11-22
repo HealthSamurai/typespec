@@ -175,6 +175,21 @@
     (is (= #{(t/prim :int) (t/lit :missing)}
            (alternatives (infer-type "(get-in m [\"name\"] :missing)" {'m by-name}))))))
 
+(deftest get-in-uses-computed-keys-from-known-types
+  (let [cookie (map-type {:value (t/union t/nil-t (t/prim :string))} {})
+        request (map-type {:cookies {:t :map-of :k (t/prim :string) :v cookie}} {})
+        expected #{t/nil-t (t/prim :string) (t/lit :missing)}]
+    (is (= expected (alternatives (infer-type "(get-in request [:cookies k :value] :missing)"
+                                             {'request request 'k (t/prim :string)}))))
+    (is (= (t/lit :missing) (infer-type "(get-in request [:cookies k :value] :missing)"
+                                      {'request request 'k (t/prim :keyword)}))))
+  (is (= #{(t/lit "first") (t/lit "last")}
+         (alternatives (infer-type "(get-in [\"first\" :skipped \"last\"] [i] :missing)"
+                                   {'i (t/union (t/lit 0) (t/lit 2))}))))
+  (is (= #{t/nil-t (t/lit :missing)}
+         (alternatives (infer-type "(get-in {:field nil} [k] :missing)"
+                                   {'k (t/union (t/lit :field) (t/lit :other))})))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

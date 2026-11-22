@@ -54,6 +54,15 @@
     (println "BUTLAST PASS: copying a route prefix preserves its length bounds")
     (println "NTH PASS: finite indices select only the operation parts allowed by Spec")))
 
+(defn- check-cookie-path! [files]
+  (let [checked (check/check-files (conj files (parse/parse-file "probe/cookie_path.clj")) {})
+        source "src/http.clj"
+        diagnostics (filter #(and (= source (:file %)) (= 41 (get-in % [:pos :row]))) (:diagnostics checked))]
+    (assert (empty? diagnostics) (pr-str diagnostics))
+    (let [inferred (main/type-at checked source 41 3)]
+      (assert (= "(s/nilable :probe.cookie/value)" inferred) (str "Unexpected get-cookie result: " inferred)))
+    (println "GET-IN PASS: get-cookie uses the value type of the Spec map-of")))
+
 (defn- check-yaml-extensions! [files]
   (let [path "probe/yaml-codec.clj"
         declaration (->> (slurp (io/resource "clj_yaml/core.clj"))
@@ -172,6 +181,7 @@
                        [[18 14] [26 11]]))
               "Expected the cache dereference and swap! to retain the atom's map type")
       (check-probes! parsed)
+      (check-cookie-path! parsed)
       (check-yaml-extensions! parsed)
       (check-mcp-dispatch! parsed)
       (println "ACCEPTANCE PASS: 8 SHA-256 verified; 8 parsed; 0 failed; 1757 lines; all namespaces unloaded; trust 0/0/0; exact reviewed diagnostics")))

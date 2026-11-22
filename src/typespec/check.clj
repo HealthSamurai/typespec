@@ -2472,19 +2472,41 @@
                (:class :unknown :var :rigid :ivar) t/unknown
                t/never)))))
 
-(defn- path-value [ctx ty keys not-found]
-  (loop [ty ty, keys (seq keys), missing? false]
-    (if (and keys (not= :never (:t ty)))
-      (let [[key & more] keys
+(defn- literal-path-key? [value]
+  (or (keyword? value) (string? value) (integer? value)))
+
+(defn- literal-path-step [ctx source node value]
+  (if (integer? value)
+    {:type (numeric-path-value ctx source value)
+     :optional? (not (every? #(and (= :vector (:kind %)) (<= 0 value Integer/MAX_VALUE)
+                                   (= :present (length/position % value)))
+                            (t/members (:env ctx) source)))}
+    (key-info ctx source value node true)))
+
+(defn- computed-path-step [ctx source node key-type]
+  (let [env (:env ctx)
+        keys (t/members env key-type)]
+    (cond
+      (every? #(#{:map-of :nil :never} (:t %)) (t/members env source))
+      {:type (read-map-of ctx source key-type t/never) :optional? true}
+
+      (every? #(and (= :lit (:t %)) (literal-path-key? (:val %))) keys)
+      (let [steps (mapv #(literal-path-step ctx source node (:val %)) keys)]
+        {:type (apply t/union (map :type steps))
+         :optional? (boolean (some :optional? steps))}))))
+
+(defn- path-value [ctx ty steps not-found]
+  (loop [ty ty, steps (seq steps), missing? false]
+    (if (and steps (not= :never (:t ty)))
+      (let [[[key key-type] & more] steps
             current (eff ctx ty)
-            {:keys [type optional?]} (if (= :num (:op key))
-                                       (let [i (:val key)]
-                                         {:type (numeric-path-value ctx current i)
-                                          :optional? (not (every? #(and (= :vector (:kind %)) (<= 0 i Integer/MAX_VALUE)
-                                                                          (= :present (length/position % i)))
-                                                                  (t/members (:env ctx) current)))})
-                                       (key-info ctx current (:val key) key true))]
-        (recur type more (or missing? optional?)))
+            key-type (eff ctx key-type)]
+        (if-let [{:keys [type optional?]} (if (and (literal-node? key) (literal-path-key? (:val key)))
+                                         (literal-path-step ctx current key (:val key))
+                                         (computed-path-step ctx current key key-type))]
+          (recur (t/with-assumption type (or (t/assumption current) (t/assumption key-type)))
+                 more (or missing? optional?))
+          t/unknown))
       (if missing? (t/union ty not-found) ty))))
 
 (defmethod special 'get-in [ctx node _]
@@ -2497,9 +2519,12 @@
           (report! ctx node "TSP2554" (str "get-in is called with " (count arguments) " argument(s)"))
           t/unknown)
 
-      (and (#{:vector :nil} (:op path)) (empty? (:directives path)) (not (env/tag-node path))
-           (every? #(and (literal-node? %) (or (#{:kw :str} (:op %)) (integer? (:val %)))) keys))
-      (path-value ctx mty keys (if default (infer ctx default) t/nil-t))
+      (and (#{:vector :nil} (:op path)) (empty? (:directives path)) (not (env/tag-node path)))
+      (let [types (:items (infer ctx path))
+            not-found (if default (infer ctx default) t/nil-t)]
+        (if (or (= t/never not-found) (some #{t/never} types))
+          t/never
+          (path-value ctx mty (map vector keys types) not-found)))
 
       :else (do (infer ctx path) (some->> default (infer ctx)) t/unknown))))
 

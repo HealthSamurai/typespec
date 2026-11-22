@@ -315,7 +315,7 @@
     (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"] [11 "TSP2554"]]
            (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))
-    (is (= ["(s/coll-of string? :kind vector?)" "int?" "int?"]
+    (is (= ["(s/coll-of string? :kind vector? :min-count 1)" "int?" "int?"]
            (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7])))))
 
 (deftest reduce-kv-checks-the-accumulator-only-when-stepping

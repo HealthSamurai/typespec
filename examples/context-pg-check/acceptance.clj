@@ -92,6 +92,9 @@
       (expect! "into keeps the separator counted in join-vec"
                "(s/coll-of t/unknown :kind vector? :min-count 1)"
                (main/type-at tree "upstream/src/dsql/pg.clj" 116 32))
+      (expect! "conj counts the closing fragment in pg/coalesce"
+               "(s/coll-of t/unknown :kind vector? :min-count 1)"
+               (main/type-at tree "upstream/src/dsql/pg.clj" 1038 7))
       (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")
@@ -113,11 +116,12 @@
                  [] (filterv #(= path (:file %)) diagnostics))
         (expect! "into preserves the SQL fragment count inferred from concat"
                  [] (filterv #(= fragments (:file %)) diagnostics))
-        (expect! "vec preserves the SQL fragment count after drop-last"
+        (expect! "vec and conj track SQL fragment counts after drop-last"
                  [] (filterv #(= coalesce (:file %)) diagnostics))
         (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec.")
         (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec.")
-        (println "VEC PASS: converting trimmed SQL fragments preserves their length bounds."))))
+        (println "VEC PASS: converting trimmed SQL fragments preserves their length bounds.")
+        (println "CONJ PASS: appending the closing fragment restores the original length bounds."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

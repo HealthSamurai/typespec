@@ -7,3 +7,7 @@
 (s/fdef trim-fragments :args (s/cat :parts ::input) :ret ::result)
 (defn trim-fragments [parts]
   (-> parts drop-last vec))
+
+(s/fdef close-fragments :args (s/cat :parts ::input) :ret ::input)
+(defn close-fragments [parts]
+  (-> parts drop-last vec (conj ")")))

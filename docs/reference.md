@@ -192,6 +192,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `reverse` | preserves the element type and known length bounds. Fixed positions retain their types in reverse order. [F330](../features/F330-tuples-and-nonempty.md) |
 | `(into vector source)` | adds the length bounds of the target vector and the source. [F330](../features/F330-tuples-and-nonempty.md) |
 | `vec` | converts the source to a vector while preserving length bounds and the types of known positions. [F330](../features/F330-tuples-and-nonempty.md) |
+| `conj` on a vector | grows both known length bounds by the number of appended values and preserves fixed positions. [F330](../features/F330-tuples-and-nonempty.md) |
 | `drop-last` | subtracts a known non-negative integral drop count from the length bounds, with a floor of zero. The one-argument form drops one element. Fixed positions in the remaining prefix retain their types. [F330](../features/F330-tuples-and-nonempty.md) |
 | `map`, `mapv` | check the callback against input element types and use the shortest input's length for the result. `map` returns a sequence and `mapv` returns a vector. [F330](../features/F330-tuples-and-nonempty.md) |
 | `filter`, `filterv`, `remove` | narrow the output element type using a checked predicate and preserve the input's upper length bound. The result can be empty. [F330](../features/F330-tuples-and-nonempty.md) |

@@ -1286,6 +1286,18 @@
             ty)
     (:platform ty) (assoc :platform true)))
 
+(defn- vector-member? [member]
+  (or (= :vector (:kind member))
+      (and (= :prim (:t member)) (= :vector (:name member)))))
+
+(defn- widen-vector-growth [env ty]
+  (when (= :union (:t ty))
+    (let [members (t/members env ty)]
+      (when (every? vector-member? members)
+        (t/with-assumption
+         {:t :coll :kind :vector :of (widen (apply t/union (map #(or (:of %) t/unknown) members)))}
+         (t/assumption ty))))))
+
 (defn- map-edits [ctx head args]
   (case head
     assoc (when (and (seq args) (even? (count args)))
@@ -1939,7 +1951,11 @@
                          _ (infer-body (assoc (bind-loop ts calls) :quiet true) body)
                          next-ts (if (every? #(= (count ts) (count %)) @calls)
                                    (mapv (fn [i ty]
-                                           (widen (apply t/union ty (map #(nth % i) @calls))))
+                                           (let [joined (widen (apply t/union ty (map #(nth % i) @calls)))]
+                                             ;; Repeated vector appends may grow the shape on every back edge.
+                                             (or (when (and (>= n 2) (not= ty joined))
+                                                   (widen-vector-growth (:env ctx) joined))
+                                                 joined)))
                                          (range (count ts)) ts)
                                    (vec (repeat (count ts) t/unknown)))]
                      (cond (= ts next-ts) ts
@@ -2348,10 +2364,6 @@
       :opt (t/union type not-found)
       (:nil :absent) not-found
       t/unknown)))
-
-(defn- vector-member? [member]
-  (or (= :vector (:kind member))
-      (and (= :prim (:t member)) (= :vector (:name member)))))
 
 (defn- vector-element-at [member index]
   (cond
@@ -3238,10 +3250,11 @@
       (if (some #(= "clojure.lang.Reduced" (:name %)) (t/members (:env ctx) ret)) t/unknown ret))
     t/unknown))
 
-(defn- join-accumulator [acc step]
+(defn- join-accumulator [ctx acc step]
   (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
     (update (dissoc acc :items :min-count :max-count) :of t/union (:of step))
-    (t/union acc step)))
+    (let [joined (t/union acc step)]
+      (or (widen-vector-growth (:env ctx) joined) joined))))
 
 (defn- reduction-accumulator [ctx f seed inputs empty-call?]
   (loop [acc seed iterations 0]
@@ -3252,7 +3265,7 @@
         (t/sub? (:env ctx) step acc) acc
         (= :unknown (:t step)) nil
         (= iterations 7) nil
-        :else (recur (join-accumulator acc (widen (dissoc step :fresh))) (inc iterations))))))
+        :else (recur (join-accumulator ctx acc (widen (dissoc step :fresh))) (inc iterations))))))
 
 (defmethod special 'reduce [ctx node _]
   (let [[f a b & more :as args] (args-of node)]
@@ -3365,15 +3378,41 @@
               may-be-empty? (t/union initial step)
               :else step)))))))
 
+(defn- append-to-vectors [ctx target vectors source]
+  (let [{:keys [lower upper element]} (sequence-summary ctx source)]
+    (t/with-assumption
+     (if (= 0 upper)
+       (dissoc target :fresh)
+       (apply t/union
+              (for [vector-type vectors
+                    :let [[target-min target-max] (length/bounds vector-type)
+                          elements (t/union (elem-type ctx vector-type) element)
+                          result (length/with-bounds (coll-of :vector elements)
+                                                     (+' target-min lower)
+                                                     (when (and target-max upper) (+' target-max upper)))]]
+                (cond-> result
+                  (and (:items vector-type) (:items source))
+                  (assoc :items (into (:items vector-type) (:items source)))))))
+     (or (t/assumption target) (t/assumption source)))))
+
 (defmethod special 'conj [ctx node _]
   (let [[c & xs] (args-of node)
         cty (infer ctx c)
-        xts (map #(infer ctx %) xs)
-        m (first (remove #(= :nil (:t %)) (t/members (:env ctx) cty)))]
-    (if (= :coll (:t m))
-      (assoc (if (seq xs) (dissoc m :items :min-count :max-count) m)
-             :of (apply t/union (:of m) (map #(widen (dissoc % :fresh)) xts)))
-      cty)))
+        xts (map #(dissoc (infer ctx %) :fresh) xs)
+        members (t/members (:env ctx) cty)
+        m (first (remove #(= :nil (:t %)) members))]
+    (cond
+      (nil? c) (length/with-bounds (t/tuple []) 0 0)
+      (= t/never cty) t/never
+      (empty? xs) cty
+      (every? vector-member? members)
+      (let [items (vec xts)]
+        (if (some #{t/never} items)
+          t/never
+          (append-to-vectors ctx cty members (t/tuple items))))
+      (= :coll (:t m)) (assoc (dissoc m :items :min-count :max-count)
+                             :of (apply t/union (:of m) (map widen xts)))
+      :else cty)))
 
 (defn- transducer-element [ctx ty]
   (t/with-assumption
@@ -3430,20 +3469,6 @@
                  :any t/any
                  t/unknown))))))
 
-(defn- into-vectors [ctx target vectors source]
-  (let [{:keys [lower upper element]} (sequence-summary ctx source)]
-    (t/with-assumption
-     (if (= 0 upper)
-       (dissoc target :fresh)
-       (apply t/union
-              (for [vector-type vectors
-                    :let [[target-min target-max] (length/bounds vector-type)
-                          elements (t/union (elem-type ctx vector-type) element)]]
-                (length/with-bounds (coll-of :vector elements)
-                                    (+' target-min lower)
-                                    (when (and target-max upper) (+' target-max upper))))))
-     (or (t/assumption target) (t/assumption source)))))
-
 (defmethod special 'into [ctx node _]
   (let [[to second-arg from :as args] (args-of node)]
     (case (count args)
@@ -3453,7 +3478,7 @@
               source (eff ctx (infer ctx second-arg))
               members (t/members (:env ctx) target)]
           (cond (some #{t/never} [target source]) t/never
-                (every? vector-member? members) (into-vectors ctx target members source)
+                (every? vector-member? members) (append-to-vectors ctx target members source)
                 (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector (elem-type ctx source))
                 (and (= :set (:op to)) (empty? (:children to))) (coll-of :set (elem-type ctx source))
                 (some #(or (:items %) (length/constrained? %)) members)

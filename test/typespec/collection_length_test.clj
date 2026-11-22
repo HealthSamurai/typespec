@@ -364,6 +364,35 @@
             "\"tail\"" "nil?" "t/never"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest conj-grows-vectors-with-known-lengths-and-positions
+  (let [r (checked "(conj)
+(conj [1] \"word\")
+(get (conj [1] nil :tail) 1 :missing)
+(get (conj [1] nil :tail) 2)
+(get (into [1] [nil :tail]) 2)
+(conj [1] (throw (Exception.)))
+(s/def ::parts (s/coll-of string? :kind vector? :min-count 2 :max-count 4))
+(s/fdef close-fragments :args (s/cat :parts ::parts) :ret ::parts)
+(defn close-fragments [parts] (-> parts drop-last vec (conj \")\")))")]
+    (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of t/never :kind vector? :max-count 0)"
+            "(s/coll-of (t/or int? string?) :kind vector? :min-count 2 :max-count 2)"
+            "nil?" ":tail" ":tail" "t/never"]
+           (mapv #(at r %) (range 2 8))))))
+
+(deftest vector-growth-keeps-loop-and-reducer-types
+  (let [r (checked "(s/fdef loop-label :args (s/cat :flag boolean?) :ret string?)
+(defn loop-label [flag]
+  (loop [pieces [] label \"ready\"]
+    (if flag
+      (recur (conj pieces label) label)
+      (str/upper-case label))))
+(s/fdef append-if :args (s/cat :flags (s/coll-of boolean? :kind vector?))
+  :ret (s/coll-of string? :kind vector?))
+(defn append-if [flags]
+  (reduce (fn [acc flag] (if flag (conj acc \"next\") acc)) [] flags))")]
+    (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

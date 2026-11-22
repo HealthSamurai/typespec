@@ -36,6 +36,11 @@ flags: strict-nil
 сохраняется, когда она известна для всех аргументов. Проверка `pg --accept`
 закрепляет минимальную длину в `join-vec` и SQL-обработчиках.
 
+`group-by` выводит `s/map-of`, где каждая существующая группа имеет тип
+`(s/coll-of T :kind vector? :min-count 1)`. Чтение группы по ключу
+учитывает возможное отсутствие ключа. Пустой вход даёт пустую карту.
+Проверка `get-ig` закрепляет тип групп в `reindex-tgz`.
+
 ```clojure example
 (ns example (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 

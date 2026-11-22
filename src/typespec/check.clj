@@ -2969,7 +2969,10 @@
             some (t/union (t/remove-nil (:env ctx) ret) t/nil-t)
             run! t/nil-t
             (max-key min-key) el
-            group-by {:t :map-of :k (widen ret) :v (coll-of :vector el)}))))))
+            group-by (if (= t/never el)
+                       empty-map-shape
+                       {:t :map-of :k (widen ret)
+                        :v (length/with-bounds (coll-of :vector el) 1 nil)})))))))
 
 (defn- collection-count [ctx node type]
   (cond

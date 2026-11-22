@@ -96,6 +96,27 @@
             "(s/coll-of string? :kind seq? :min-count 2)"]
            (mapv (fn [[row col]] (main/type-at r "length.clj" row col)) [[8 21] [10 22]])))))
 
+(deftest group-by-preserves-nonempty-values-and-optional-keys
+  (let [r (checked "(s/def ::name string?)
+(s/def ::package (s/keys :req-un [::name]))
+(s/def ::packages (s/coll-of ::package :kind vector?))
+(s/def ::group (s/coll-of ::package :kind vector? :min-count 1))
+(s/def ::index (s/map-of string? ::group))
+(s/fdef by-name :args (s/cat :packages ::packages) :ret ::index)
+(defn by-name [packages] (group-by :name packages))
+(s/fdef checked-first :args (s/cat :packages ::packages) :ret (s/nilable ::package))
+(defn checked-first [packages]
+  (when-let [group (get-in (by-name packages) [\"example\"])]
+    (first group)))
+(s/fdef unchecked-first :args (s/cat :packages ::packages) :ret ::package)
+(defn unchecked-first [packages] (first (get-in (group-by :name packages) [\"example\"])))
+(get (group-by (fn [_] :found) nil) :found :missing)
+(get (group-by (fn [_] :found) []) :found :missing)")]
+    (is (= [[14 "TSP2322"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "::package" (main/type-at r "length.clj" 12 5)))
+    (is (= [":missing" ":missing"] (mapv #(at r %) [15 16])))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

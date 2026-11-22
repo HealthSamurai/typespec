@@ -58,6 +58,9 @@
                                         :parse-error (get-in r [:parse :error])
                                         :diagnostics (frequencies (map (juxt :severity :code) fds))}))) reads)}]
   (assert (empty? loaded) "Upstream namespace unexpectedly loaded")
+  (assert (= "(s/map-of t/unknown (s/coll-of t/unknown :kind vector? :min-count 1))"
+             (main/type-at result "src/fhir/registry/index.clj" 274 22))
+          "Expected group-by in reindex-tgz to keep each group's non-empty vector type")
   ;; Never overwrite the historical baseline or reviewed expectation.
   (.mkdirs (io/file output))
   (spit (io/file output "summary.edn") (str (pr-str summary) "\n"))

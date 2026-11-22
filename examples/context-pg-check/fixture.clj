@@ -62,6 +62,7 @@
         result (check-parsed parsed "contracts")
         ds (:diagnostics result)]
     {:diagnostics ds
+     :types (:types result)
      :summary {:files (count parsed)
                :forms (reduce + (map (comp count :forms) parsed))
                :upstream-loaded (vec (filter find-ns (map :ns parsed)))

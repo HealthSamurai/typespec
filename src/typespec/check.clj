@@ -2731,11 +2731,61 @@
           res (coll-of (get '{vec :vector set :set} h :seq) el)]
       (if (= 'butlast h) (t/union res t/nil-t) res))))
 
-(doseq [h '[take drop take-last drop-last partition-all]]
+(doseq [h '[take drop take-last drop-last]]
   (defmethod special h [ctx node _]
     (let [[n c] (args-of node)]
       (infer ctx n)
       (coll-of :seq (elem-type ctx (infer ctx c))))))
+
+(defn- partition-count [size step]
+  (when (some? size)
+    (cond
+      (zero? size) 0
+      (and step (pos? step)) (inc (quot (dec size) step)))))
+
+(defn- partition-all-type [ctx source size step]
+  (t/with-assumption
+   (apply t/union
+          (for [member (t/members (:env ctx) source)
+                :let [[lo hi] (if (= :nil (:t member)) [0 0] (length/bounds member))
+                      minimum (or (partition-count lo step) (min 1 lo))
+                      maximum (partition-count hi step)
+                      chunk (cond
+                              (= 0 hi) t/never
+                              (and size (not (pos? size))) (length/with-bounds (coll-of :seq t/never) 0 0)
+                              :else (length/with-bounds (coll-of :seq (elem-type ctx member))
+                                                        (if size 1 0)
+                                                        (cond (and size hi) (min size hi) size size :else hi)))]]
+            (length/with-bounds (coll-of :seq chunk) minimum maximum)))
+   (t/assumption source)))
+
+(defmethod special 'partition-all [ctx node _]
+  (let [[n step-or-coll coll :as args] (args-of node)
+        types (mapv #(infer ctx %) args)
+        arity (count args)]
+    (cond
+      (not (#{1 2 3} arity))
+      (do (report! ctx node "TSP2554" "partition-all expects 1, 2 or 3 arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [env (:env ctx)
+            value (fn [ty]
+                    (let [v (:val (t/resolve-t env ty))]
+                      (when (integer? v) v)))]
+        (assignable! ctx n (first types) (t/prim :number))
+        (when coll
+          (assignable! ctx step-or-coll (second types) (t/prim :number)))
+        (if (= 1 arity)
+          t/unknown
+          (let [source (eff ctx (peek types))
+                size (value (first types))
+                step (if coll (value (second types)) size)]
+            (if-let [invalid (unsupported-sequence-member ctx source)]
+              (do (report! ctx (last args) "TSP2345" (str "partition-all cannot sequence " (t/show invalid)))
+                  t/unknown)
+              (partition-all-type ctx source size step))))))))
 
 (def ^:private comp-identity
   (t/parse-type {:fail #(throw (ex-info "Invalid comp identity signature" {:form %}))}

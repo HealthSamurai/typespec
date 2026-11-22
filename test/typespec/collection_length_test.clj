@@ -18,6 +18,28 @@
 (defn- codes [r] (mapv :code (:diagnostics r)))
 (defn- at [r row] (main/type-at r "length.clj" row 1))
 
+(deftest partition-all-preserves-nested-types-and-bounds
+  (let [r (checked "(s/def ::chunk (s/coll-of int? :kind seq? :min-count 1 :max-count 2))
+(s/fdef chunks :args (s/cat :xs (s/coll-of int?)) :ret (s/coll-of ::chunk :kind seq?))
+(defn chunks [xs] (partition-all 2 xs))
+(first (first (partition-all 2 [1])))
+(nth (first (partition-all 2 [1])) 1)
+(partition-all 3 2 [1 2 3 4 5])
+(partition-all 2 nil)
+(partition-all 0 [1])
+(partition-all 2 1 [(inc \"bad\")])
+(partition-all 2 \"bad\" [])
+(partition-all 2 3 42)
+(partition-all)")]
+    (is (= [[6 "TSP330-02"] [10 "TSP2345"] [11 "TSP2345"] [12 "TSP2345"] [13 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?"
+            "(s/coll-of (s/coll-of int? :kind seq? :min-count 1 :max-count 3) :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of (s/coll-of t/never :kind seq? :max-count 0) :kind seq? :min-count 1)"]
+           (mapv #(at r %) [5 7 8 9])))))
+
 (deftest bounds-from-spec-cross-namespace-boundaries
   (let [schema (parse/parse-string "schema.clj"
                  "(ns schema (:require [clojure.spec.alpha :as s]))

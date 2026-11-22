@@ -75,6 +75,11 @@
                                        (<= 1166 (:row pos) 1189))
                               [(:row pos) (:col pos)])))
                     vec))
+      (expect! "partition-all keeps the SQL groups nested and bounded"
+               (repeat 3 (str "(t/or (s/coll-of (s/coll-of t/unknown :kind seq? :min-count 1 :max-count 2) "
+                              ":kind seq? :min-count 1) (s/coll-of t/never :kind seq? :max-count 0))"))
+               (mapv (fn [[row col]] (main/type-at tree "upstream/src/dsql/pg.clj" row col))
+                     [[1093 12] [1125 12] [1153 10]]))
       (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")

@@ -18,6 +18,13 @@ flags: strict-nil
 без гарантии `counted?` из `:count` следует нижняя граница, как
 в проверке через `bounded-count` в Clojure Spec.
 
+`(partition-all n coll)` и `(partition-all n step coll)` возвращают
+последовательность групп, каждая из которых сохраняет тип элемента входа.
+При известном положительном целом `n` размер группы составляет от одного
+до `n` с учётом длины исходной коллекции. Известные длина входа и
+положительный целый шаг дают границы числа групп. `pg --accept` проверяет
+типы трёх вызовов `(partition-all 2 pairs)` в SQL-обработчиках.
+
 ```clojure example
 (ns example (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 

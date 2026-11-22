@@ -301,6 +301,25 @@
             "(s/coll-of t/never :kind vector? :max-count 0)"]
            (mapv #(at r %) [2 3 4])))))
 
+(deftest filter-and-remove-keep-the-upper-bound-and-narrow-elements
+  (let [r (checked "(filter some? [nil 2 3])
+(remove nil? [nil 2 3])
+(filter string? [1 2])
+(remove nil? [nil nil])
+(filter some?)
+(remove nil?)
+(filter some? 42)
+(remove)")]
+    (is (= [[8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind seq? :max-count 3)"
+            "(s/coll-of int? :kind seq? :max-count 3)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "t/unknown" "t/unknown"]
+           (mapv #(at r %) (range 2 8))))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

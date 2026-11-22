@@ -3025,27 +3025,36 @@
                    (filter-types ctx f el) [el el])]
     [ret yes no]))
 
-(defmethod special 'filterv [ctx node _]
-  (let [[f coll :as args] (args-of node)]
-    (if (not= 2 (count args))
-      (do (run! #(infer ctx %) args)
-          (report! ctx node "TSP2554" "filterv expects 2 arguments")
-          t/unknown)
-      (let [source (eff ctx (infer ctx coll))]
-        (if (= t/never source)
-          (do (infer ctx f) t/never)
-          (if-let [invalid (unsupported-sequence-member ctx source)]
-            (do (infer ctx f)
-                (report! ctx coll "TSP2345" (str "filterv cannot sequence " (t/show invalid)))
-                t/unknown)
-            (let [{:keys [element upper]} (sequence-summary ctx source)
-                  selected (if (= 0 upper)
-                             (do (infer ctx f) t/never)
-                             (second (apply-predicate ctx f element true)))
-                  maximum (if (= t/never selected) 0 upper)]
-              (t/with-assumption
-               (length/with-bounds {:t :coll :kind :vector :of (dissoc selected :fresh)} 0 maximum)
-               (t/assumption source)))))))))
+(doseq [[head kind] {'filter :seq 'remove :seq 'filterv :vector}]
+  (defmethod special head [ctx node _]
+    (let [[f coll :as args] (args-of node)
+          arity (count args)]
+      (cond
+        (and (= arity 1) (= kind :seq))
+        (do (infer ctx f) t/unknown)
+
+        (not= arity 2)
+        (do (run! #(infer ctx %) args)
+            (report! ctx node "TSP2554" (str head (if (= kind :seq) " expects 1 or 2 arguments" " expects 2 arguments")))
+            t/unknown)
+
+        :else
+        (let [source (eff ctx (infer ctx coll))]
+          (if (= t/never source)
+            (do (infer ctx f) t/never)
+            (if-let [invalid (unsupported-sequence-member ctx source)]
+              (do (infer ctx f)
+                  (report! ctx coll "TSP2345" (str head " cannot sequence " (t/show invalid)))
+                  t/unknown)
+              (let [{:keys [element upper]} (sequence-summary ctx source)
+                    selected (if (= 0 upper)
+                               (do (infer ctx f) t/never)
+                               (let [[_ yes no] (apply-predicate ctx f element true)]
+                                 (if (= 'remove head) no yes)))
+                    maximum (if (= t/never selected) 0 upper)]
+                (t/with-assumption
+                 (length/with-bounds {:t :coll :kind kind :of (dissoc selected :fresh)} 0 maximum)
+                 (t/assumption source))))))))))
 
 (defn- reordered-sequence [ctx source reorder-items]
   (t/with-assumption
@@ -3099,18 +3108,16 @@
             (do (when key-fn (apply-fn-node ctx key-fn [(elem-type ctx source)]))
                 (reordered-sequence ctx source nil))))))))
 
-(doseq [h '[filter remove take-while drop-while group-by some every? not-any? run! max-key min-key]]
+(doseq [h '[take-while drop-while group-by some every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
           c (last more)]
       (if (nil? c)
         (do (infer ctx f) t/unknown)
         (let [el (elem-type ctx (infer ctx c))
-              [ret yes no] (apply-predicate ctx f el (#{'filter 'remove 'take-while} h))
-              result (fn [kind selected] {:t :coll :kind kind :of (dissoc selected :fresh)})]
+              [ret yes] (apply-predicate ctx f el (= 'take-while h))]
           (case h
-            (filter take-while) (result :seq yes)
-            remove (result :seq no)
+            take-while {:t :coll :kind :seq :of (dissoc yes :fresh)}
             drop-while (coll-of :seq el)
             (every? not-any?) (t/prim :boolean)
             some (t/union (t/remove-nil (:env ctx) ret) t/nil-t)

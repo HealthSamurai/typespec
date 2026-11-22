@@ -13,11 +13,13 @@
         response-path "probe/response.clj"
         cache-path "probe/atom-cache.clj"
         breadcrumb-path "probe/breadcrumb.clj"
+        parts-path "probe/http_parts.clj"
         paths #{endpoint-path response-path}
-        checked (check/check-files (into files (map parse/parse-file) (conj paths cache-path breadcrumb-path)) {})
+        checked (check/check-files (into files (map parse/parse-file) (conj paths cache-path breadcrumb-path parts-path)) {})
         probes (filter #(paths (:file %)) (:diagnostics checked))
         cache-probes (filter #(= cache-path (:file %)) (:diagnostics checked))
-        breadcrumb-probes (filter #(= breadcrumb-path (:file %)) (:diagnostics checked))]
+        breadcrumb-probes (filter #(= breadcrumb-path (:file %)) (:diagnostics checked))
+        parts-probes (filter #(= parts-path (:file %)) (:diagnostics checked))]
     (assert (= [[endpoint-path 10 :error "TSP2322"]
                 [endpoint-path 11 :error "TSP2322"]
                 [endpoint-path 15 :error "TSP2322"]
@@ -33,10 +35,13 @@
             (str "HTTP atom cache probe diagnostics changed: " (pr-str cache-probes)))
     (assert (empty? breadcrumb-probes)
             (str "Expected breadcrumb to satisfy its length contract: " (pr-str breadcrumb-probes)))
+    (assert (empty? parts-probes)
+            (str "Expected filtered HTTP parts to satisfy their length contracts: " (pr-str parts-probes)))
     (println "ENDPOINT PASS: direct and macro calls use the original HTTP Spec")
     (println "RESPONSE PASS: a string content-type passed and an integer was rejected after assoc-in")
     (println "ATOM PASS: all three operations reject numeric writes to the original icon cache")
-    (println "BREADCRUMB PASS: map-indexed and interpose preserve length information from Spec")))
+    (println "BREADCRUMB PASS: map-indexed and interpose preserve length information from Spec")
+    (println "FILTER PASS: filter and remove preserve the upper bounds for HTTP path and name parts")))
 
 (defn- check-yaml-extensions! [files]
   (let [path "probe/yaml-codec.clj"

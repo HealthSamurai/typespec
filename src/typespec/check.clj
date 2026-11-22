@@ -2838,13 +2838,16 @@
                   (length/with-bounds (coll-of :seq output) (interposed-length lo) (interposed-length hi))))
          (t/assumption source))))))
 
+(defn- sequence-member-bounds [member]
+  (cond
+    (= :nil (:t member)) [0 0]
+    (and (= :lit (:t member)) (string? (:val member)))
+    (let [size (count (:val member))] [size size])
+    :else (length/bounds member)))
+
 (defn- concat-fragment [ctx source]
   (let [parts (for [member (t/members (:env ctx) source)
-                    :let [[lo hi] (cond
-                                    (= :nil (:t member)) [0 0]
-                                    (and (= :lit (:t member)) (string? (:val member)))
-                                    (let [size (count (:val member))] [size size])
-                                    :else (length/bounds member))]]
+                    :let [[lo hi] (sequence-member-bounds member)]]
                 {:lower lo :upper hi
                  :element (if (= 0 hi) t/never (elem-type ctx member))})]
     {:lower (apply min (map :lower parts))
@@ -2951,7 +2954,36 @@
                    (filter-types ctx f el) [el el])]
     [ret yes no]))
 
-(doseq [h '[filter remove filterv take-while drop-while sort-by group-by some every? not-any? run! max-key min-key]]
+(defmethod special 'sort-by [ctx node _]
+  (let [[key-fn cmp-or-coll coll :as args] (args-of node)]
+    (if-not (#{2 3} (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "sort-by expects 2 or 3 arguments")
+          t/unknown)
+      (let [comparator (when coll (infer ctx cmp-or-coll))
+            source-node (or coll cmp-or-coll)
+            source (eff ctx (infer ctx source-node))
+            invalid (unsupported-sequence-member ctx source)]
+        (cond
+          (or (= t/never source) (= t/never comparator))
+          (do (infer ctx key-fn) t/never)
+
+          invalid
+          (do (infer ctx key-fn)
+              (report! ctx source-node "TSP2345" (str "sort-by cannot sequence " (t/show invalid)))
+              t/unknown)
+
+          :else
+          (do (apply-fn-node ctx key-fn [(elem-type ctx source)])
+              (t/with-assumption
+               (apply t/union
+                      (for [member (t/members (:env ctx) source)
+                            :let [element (elem-type ctx member)
+                                  [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))]]
+                        (length/with-bounds (coll-of :seq (if (= 0 hi) t/never element)) lo hi)))
+               (t/assumption source))))))))
+
+(doseq [h '[filter remove filterv take-while drop-while group-by some every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
           c (last more)]
@@ -2963,7 +2995,7 @@
           (case h
             (filter take-while) (result :seq yes)
             remove (result :seq no)
-            (drop-while sort-by) (coll-of :seq el)
+            drop-while (coll-of :seq el)
             filterv (result :vector yes)
             (every? not-any?) (t/prim :boolean)
             some (t/union (t/remove-nil (:env ctx) ret) t/nil-t)

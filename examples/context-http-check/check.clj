@@ -70,7 +70,8 @@
     (assert (empty? errors) (pr-str errors))
     (assert (= ":probe.call/name" (main/type-at checked "src/http/mcp.clj" 100 61))
             "Expected the tools/call method to see the required name from its Spec branch")
-    (println "MCP PASS: tools/call narrows the request from its Spec without a local guard")))
+    (println "MCP PASS: tools/call narrows the request from its Spec without a local guard")
+    (println "SORT-BY PASS: sorting MCP tools keeps the element type and length bounds from Spec")))
 
 (let [pin "e158b6b244c2b8e053de2a097d1071d9419adef9"
       manifest (into (sorted-map) (edn/read-string (slurp "manifest.edn")))

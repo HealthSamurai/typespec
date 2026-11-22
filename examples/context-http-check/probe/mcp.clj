@@ -1,4 +1,4 @@
-;; Supplemental Spec for the two request variants exercised by the MCP probe.
+;; Supplemental Spec for the MCP request variants and sorted tool list.
 (ns http.mcp
   (:require [clojure.spec.alpha :as s]))
 
@@ -17,3 +17,9 @@
 
 (s/def :probe/request (s/or :call :probe/call :list :probe/list))
 (s/fdef mcp-handler :args (s/cat :context any? :request :probe/request) :ret map?)
+
+(s/def :probe/tool (s/keys :req-un [:probe.call/name]))
+(s/def :probe/tools (s/coll-of :probe/tool :kind vector? :min-count 1 :max-count 3))
+(s/def :probe/sorted-tools (s/coll-of :probe/tool :kind seq? :min-count 1 :max-count 3))
+(s/fdef probe-sort-tools :args (s/cat :tools :probe/tools) :ret :probe/sorted-tools)
+(defn probe-sort-tools [tools] (sort-by :name tools))

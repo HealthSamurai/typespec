@@ -117,6 +117,36 @@
     (is (= "::package" (main/type-at r "length.clj" 12 5)))
     (is (= [":missing" ":missing"] (mapv #(at r %) [15 16])))))
 
+(deftest sort-by-preserves-element-types-and-lengths
+  (let [r (checked "(sort-by identity > [3 1 2])
+(sort-by identity [])
+(sort-by identity nil)
+(sort-by identity \"ba\")
+(sort-by identity 42)
+(sort-by identity)
+(sort-by identity > [1] :extra)
+(sort-by identity (throw (Exception.)) [1])
+(sort-by #(inc %) [\"bad\"])
+(s/def ::name string?)
+(s/def ::tool (s/keys :req-un [::name]))
+(s/def ::tools (s/coll-of ::tool :kind vector? :min-count 1 :max-count 3))
+(s/def ::ordered (s/coll-of ::tool :kind seq? :min-count 1 :max-count 3))
+(s/fdef ordered :args (s/cat :tools ::tools) :ret ::ordered)
+(defn ordered [tools] (sort-by :name tools))
+(s/fdef first-tool :args (s/cat :tools ::tools) :ret ::tool)
+(defn first-tool [tools] (first (sort-by :name tools)))
+(s/fdef maybe-first :args (s/cat :tools (s/nilable ::tools)) :ret ::tool)
+(defn maybe-first [tools] (first (sort-by :name tools)))")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2554"] [10 "TSP2345"] [20 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of java.lang.Character :kind seq? :min-count 2 :max-count 2)"
+            "t/never"]
+           (mapv #(at r %) [2 3 4 5 9])))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

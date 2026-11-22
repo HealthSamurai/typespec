@@ -54,6 +54,9 @@
       (prn coverage)
       (expect! "production source coverage" {:files 9 :forms 351} (select-keys coverage [:files :forms]))
       (expect! "all production namespaces remain unloaded" [] (:upstream-loaded coverage))
+      (expect! "create-array passes a String array to JDBC"
+               "[Ljava.lang.String;"
+               (main/type-at tree "upstream/src/pg.clj" 137 67))
       (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
       (expect! "whole-tree diagnostic counts"
                {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 1 [:error "TSP330-02"] 1

@@ -1295,6 +1295,15 @@
     (when-not (or (contains? (:aliases (:file ctx)) n) (known-ns? ctx n))
       (t/resolve-class (:imports (:file ctx)) n))))
 
+(defn- class-symbol-name [ctx node]
+  (let [{:keys [file env]} ctx
+        sym (:val node)]
+    (when (and (= :sym (:op node)) (empty? (:directives node)) (not (env/tag-node node))
+               (not (t/primitives (str sym))) (not (contains? (:locals ctx) sym))
+               (not (contains? (:refers file) sym))
+               (not (contains? (get-in env [:ns-defs (:ns file)]) sym)))
+      (t/resolve-class (:imports file) sym))))
+
 (defn- probe [ctx f]
   (binding [*types* nil *diags* (atom []) *trust* (atom {:cast 0 :any 0 :ignore 0})
             *ignores* (atom []) *rets* (atom (when *rets* @*rets*))]
@@ -3057,6 +3066,34 @@
                 (report! ctx size "TSP2345" (str head " expects a size or a seqable value, got " (t/show bad)))))
             (t/class-type class-name))))))
 
+(defmethod special 'into-array [ctx node _]
+  (let [[component :as args] (args-of node)
+        types (mapv #(eff ctx (infer ctx %)) args)
+        source (peek types)]
+    (cond
+      (not (#{1 2} (count args)))
+      (do (report! ctx node "TSP2554" "into-array expects one or two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      (report-invalid-sequence-args! ctx 'into-array [(peek args)] [source]) t/unknown
+
+      :else
+      (if-let [^Class cls (when (= 2 (count args))
+                            (some-> (class-symbol-name ctx component) t/load-class))]
+        (let [component-type (t/class-type (.getName cls))
+              expected (t/union component-type t/nil-t)
+              elements (keep (fn [member]
+                               (let [element (if-let [items (:items member)]
+                                               (apply t/union items)
+                                               (elem-type ctx member))]
+                                 (when-not (#{:unknown :any :never} (:t element)) element)))
+                             (t/members (:env ctx) source))]
+          (when (and (seq elements) (not (#{:int :double} (:name component-type))))
+            (assignable! ctx (peek args) (apply t/union elements) expected))
+          (t/class-type (.getName (.arrayType cls))))
+        t/unknown))))
+
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))
@@ -4067,25 +4104,17 @@
            (java.lang.reflect.Modifier/isFinal (.getModifiers b)))))
 
 (defn- class-dispatch-filter [ctx dispatch]
-  (let [{:keys [file env]} ctx
-        sym (:val dispatch)]
-    (cond
-      (and (= :nil (:op dispatch)) (literal-node? dispatch))
-      (fn [leaf]
-        (let [nil-type (nil-part env leaf)]
-          (when-not (= t/never nil-type) nil-type)))
-
-      (and (= :sym (:op dispatch)) (empty? (:directives dispatch)) (not (env/tag-node dispatch))
-           (not (contains? (:locals ctx) sym))
-           (not (contains? (:refers file) sym))
-           (not (contains? (get-in env [:ns-defs (:ns file)]) sym)))
-      (when-let [class-name (t/resolve-class (:imports file) sym)]
-        (when-let [^Class target (t/load-class class-name)]
-          (when-not (.isPrimitive target)
-            (fn [leaf]
-              (let [receiver (dispatch-leaf-class leaf)]
-                (when-not (and receiver (disjoint-dispatch-classes? target receiver))
-                  (first (instance-parts ctx class-name leaf)))))))))))
+  (if (and (= :nil (:op dispatch)) (literal-node? dispatch))
+    (fn [leaf]
+      (let [nil-type (nil-part (:env ctx) leaf)]
+        (when-not (= t/never nil-type) nil-type)))
+    (when-let [class-name (class-symbol-name ctx dispatch)]
+      (when-let [^Class target (t/load-class class-name)]
+        (when-not (.isPrimitive target)
+          (fn [leaf]
+            (let [receiver (dispatch-leaf-class leaf)]
+              (when-not (and receiver (disjoint-dispatch-classes? target receiver))
+                (first (instance-parts ctx class-name leaf))))))))))
 
 (defn- narrow-dispatch-params [ctx types {:keys [arity index key default kind]} dispatch]
   (let [class? (= :class kind)
@@ -4230,11 +4259,7 @@
   (when (and (empty? (:directives target)) (not (env/tag-node target)))
     (case (:op target)
       :nil t/nil-t
-      :sym (let [sym (:val target)]
-             (when-not (or (t/primitives (str sym)) (contains? (:locals ctx) sym)
-                           (contains? (get-in ctx [:file :refers]) sym)
-                           (contains? (get-in ctx [:env :ns-defs (get-in ctx [:file :ns])]) sym))
-               (extension-receiver ctx target)))
+      :sym (some-> (class-symbol-name ctx target) t/class-type)
       :list (let [[head class-name & more] (:children target)
                   sym (:val head)]
               (when (and (= :sym (:op head)) (empty? (:directives head)) (not (env/tag-node head))

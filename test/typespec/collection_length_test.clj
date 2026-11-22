@@ -462,6 +462,17 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest into-array-uses-the-explicit-component-class
+  (let [r (checked "(into-array String [\"label\" nil])
+(alength (into-array java.io.File nil))
+(into-array String [42])
+(into-array String true)
+(let [String (class 42)] (into-array String [42]))")]
+    (is (= ["[Ljava.lang.String;" "int?" "t/unknown"] (mapv #(at r %) [2 3 6])))
+    (is (= [[4 "TSP2345"] [5 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest alength-checks-array-hints-and-returns-int
   (let [r (checked "(let [^bytes body (byte-array 3)] (alength body))
 (let [^objects values (object-array 2)] (alength values))

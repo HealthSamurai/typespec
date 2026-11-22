@@ -181,6 +181,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `slurp`, `spit` | check the minimum arity and infer `string?` and `nil?` respectively. Sources, targets, and options remain open to `IOFactory` extensions. |
 | `alength` | checks JVM array arguments and returns `int?`. Array hints such as `^bytes` and `^objects` carry their JVM types. |
 | `byte-array`, `object-array`, other primitive array constructors | infer the concrete JVM array class and check arity and known invalid size arguments. |
+| `(into-array Class values)` | infers the array class for an explicit reference component and checks known element types. |
 | `defrecord R [a b]` | nominal class + fields + open extra keys; `assoc` preserves `R`, `dissoc` of a field yields a map |
 | `defprotocol` | method `s/fdef` contracts check `reify`, `extend-type`, `extend-protocol`, and literal `extend` method maps across namespaces. `extend-protocol` and `extend` allow partial implementations. [F430](../features/F430-protocols.md) |
 | `defmulti` / `defmethod` | the shared `s/fdef` checks calls and method bodies across namespaces. String dispatch narrows by a required tag. `class` and `(comp class :key)` refine an argument or a field using JVM inheritance. [F440](../features/F440-multimethods.md) |

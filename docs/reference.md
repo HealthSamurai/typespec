@@ -193,6 +193,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `(into vector source)` | adds the length bounds of the target vector and the source. [F330](../features/F330-tuples-and-nonempty.md) |
 | `vec` | converts the source to a vector while preserving length bounds and the types of known positions. [F330](../features/F330-tuples-and-nonempty.md) |
 | `conj` on a vector | grows both known length bounds by the number of appended values and preserves fixed positions. [F330](../features/F330-tuples-and-nonempty.md) |
+| `pop` on a vector | removes the last element, preserving the types of positions in the remaining prefix. A known empty alternative triggers `TSP330-02`. [F330](../features/F330-tuples-and-nonempty.md) |
 | `drop-last` | subtracts a known non-negative integral drop count from the length bounds, with a floor of zero. The one-argument form drops one element. Fixed positions in the remaining prefix retain their types. [F330](../features/F330-tuples-and-nonempty.md) |
 | `map`, `mapv` | check the callback against input element types and use the shortest input's length for the result. `map` returns a sequence and `mapv` returns a vector. [F330](../features/F330-tuples-and-nonempty.md) |
 | `filter`, `filterv`, `remove` | narrow the output element type using a checked predicate and preserve the input's upper length bound. The result can be empty. [F330](../features/F330-tuples-and-nonempty.md) |
@@ -461,7 +462,7 @@ Numbers match TypeScript only where the meaning matches.
 | `TSP295-01` | recursive spec cycle without a structural transition |
 | `TSP295-02` | recursive spec lacks a proven finite base |
 | `TSP330-01` | collection length does not satisfy the declared bounds or tuple length |
-| `TSP330-02` | constant `nth` index may be out of bounds without a default |
+| `TSP330-02` | constant `nth` index may be out of bounds without a default, or `pop` has a known empty vector alternative |
 | `TSP410-01` | the length or positions of an `apply` tail could not be verified |
 | `TSP430-01` | method or arity conflicts with its protocol declaration |
 | `TSP430-02` | an implementation is missing a protocol method or arity |

@@ -393,6 +393,24 @@
   (reduce (fn [acc flag] (if flag (conj acc \"next\") acc)) [] flags))")]
     (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))))
 
+(deftest pop-preserves-vector-prefix-and-rejects-known-empty-branches
+  (let [r (checked "(get (pop [\"kept\" :tail]) 0)
+(pop [nil])
+(pop nil)
+(pop [])
+(pop)
+(s/fdef maybe-pop :args (s/cat :flag boolean?) :ret vector?)
+(defn maybe-pop [flag] (pop (if flag [] [1])))
+(s/def ::input (s/coll-of string? :kind vector? :min-count 1 :max-count 2))
+(s/def ::result (s/coll-of string? :kind vector? :min-count 2 :max-count 3))
+(s/fdef joined-fragments :args (s/cat :parts ::input) :ret ::result)
+(defn joined-fragments [parts] (pop (into [] (concat parts [\"name\" \",\"]))))")]
+    (is (= [[5 "TSP330-02"] [6 "TSP2554"] [8 "TSP330-02"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"kept\"" "(s/coll-of t/never :kind vector? :max-count 0)" "nil?" "t/never"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

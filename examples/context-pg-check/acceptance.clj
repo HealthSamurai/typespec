@@ -56,13 +56,14 @@
       (expect! "all production namespaces remain unloaded" [] (:upstream-loaded coverage))
       (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
       (expect! "whole-tree diagnostic counts"
-               {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 1
+               {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 1 [:error "TSP330-02"] 1
                 [:warning "TSP210-01"] 79 [:warning "TSP7020"] 10
                 [:warning "TSP7023"] 1 [:warning "TSP7031"] 3}
                (:codes coverage))
       (expect! "whole-tree error locations"
                (frequencies (conj (vec (filter #(= :error (first %)) expected))
-                                  [:error "TSP2531" "upstream/src/pg/docker.clj" 72 55]))
+                                  [:error "TSP2531" "upstream/src/pg/docker.clj" 72 55]
+                                  [:error "TSP330-02" "upstream/src/dsql/pg.clj" 116 8]))
                (frequencies (map location (filter #(= :error (:severity %)) (:diagnostics tree)))))
       (expect! "checked conditional step in mk-table-constraint" true
                (contains? (set (map location (:diagnostics tree)))
@@ -95,7 +96,7 @@
       (expect! "conj counts the closing fragment in pg/coalesce"
                "(s/coll-of t/unknown :kind vector? :min-count 1)"
                (main/type-at tree "upstream/src/dsql/pg.clj" 1038 7))
-      (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")
+      (println "PASS: all 9 pinned pg production sources (351 forms, 4 expected errors, 93 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")
                      (str/replace-first source "[socket (java.net.ServerSocket. 0)]"
@@ -110,7 +111,8 @@
       (let [path "probe/migration_files.clj"
             fragments "probe/sql_fragment_vector.clj"
             coalesce "probe/coalesce_vector.clj"
-            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce]))
+            join "probe/sql_fragment_pop.clj"
+            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce join]))
             diagnostics (:diagnostics checked)]
         (expect! "filterv keeps the migration count upper bound from Spec"
                  [] (filterv #(= path (:file %)) diagnostics))
@@ -118,10 +120,13 @@
                  [] (filterv #(= fragments (:file %)) diagnostics))
         (expect! "vec and conj track SQL fragment counts after drop-last"
                  [] (filterv #(= coalesce (:file %)) diagnostics))
+        (expect! "pop keeps the SQL fragment bounds after removing the separator"
+                 [] (filterv #(= join (:file %)) diagnostics))
         (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec.")
         (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec.")
         (println "VEC PASS: converting trimmed SQL fragments preserves their length bounds.")
-        (println "CONJ PASS: appending the closing fragment restores the original length bounds."))))
+        (println "CONJ PASS: appending the closing fragment restores the original length bounds.")
+        (println "POP PASS: removing the final separator keeps the remaining SQL fragment bounds."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

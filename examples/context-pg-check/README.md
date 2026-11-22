@@ -54,10 +54,12 @@ Single-file regression on JDK 27, using the contracts mode:
 - `pg` absent before and after checking; trust counters `cast/any/ignore = 0/0/0`.
 
 The production-tree check verifies all nine hashes and **351 top-level forms**.
-It checks three errors at their exact locations. The two `pg.clj` errors
+It checks four errors at their exact locations. The two `pg.clj` errors
 are also covered by the single-file regression. The third, `TSP2531` at
 `pg/docker.clj:72:55`, covers a failed Docker result whose absent `:output`
-can reach `str/split` as `nil`. It pins the warning counts by diagnostic
+can reach `str/split` as `nil`. `TSP330-02` at `dsql/pg.clj:116:8` catches
+an empty accumulator passed to `pop` in `join-vec`. Calling the pinned
+`join-vec` with empty input reproduced the exception. The check pins warning counts by diagnostic
 code (**93 total**) and verifies warnings inside the conditional step in
 `mk-table-constraint` and the reducers in `mk-columns` and `mk-options`.
 The reducers now report five unknown arguments to `name` at their source

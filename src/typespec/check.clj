@@ -2943,6 +2943,39 @@
     (let [size (count (:val member))] [size size])
     :else (length/bounds member)))
 
+(defn- trim-tail-type [ctx kind member n]
+  (let [element (elem-type ctx member)
+        [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))
+        minimum (if n (max 0 (-' lo n)) 0)
+        maximum (if (and n hi) (max 0 (-' hi n)) hi)
+        items (when (and n (:items member)) (subvec (:items member) 0 (int maximum)))
+        output (cond (= 0 maximum) t/never
+                     items (apply t/union items)
+                     :else element)]
+    (cond-> (length/with-bounds (coll-of kind output) minimum maximum)
+      items (assoc :items items))))
+
+(defmethod special 'pop [ctx node _]
+  (let [args (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (if (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "pop expects 1 argument") t/unknown)
+      (let [members (t/members (:env ctx) source)
+            empty-vector? #(and (vector-member? %) (= 0 (second (length/bounds %))))]
+        (when (some empty-vector? members)
+          (report! ctx (first args) "TSP330-02"
+                   (if (every? empty-vector? members) "pop cannot remove from an empty vector"
+                       "pop may receive an empty vector")))
+        (t/with-assumption
+         (apply t/union
+                (for [member members]
+                  (cond
+                    (#{:nil :never} (:t member)) member
+                    (empty-vector? member) t/never
+                    (vector-member? member) (trim-tail-type ctx :vector member 1)
+                    :else t/unknown)))
+         (t/assumption source))))))
+
 (defmethod special 'drop-last [ctx node _]
   (let [[n-node coll :as args] (args-of node)
         types (mapv #(eff ctx (infer ctx %)) args)]
@@ -2962,17 +2995,7 @@
           (do (report! ctx (peek args) "TSP2345" (str "drop-last cannot sequence " (t/show invalid))) t/unknown)
           (t/with-assumption
            (apply t/union
-                  (for [member (t/members (:env ctx) source)
-                        :let [element (elem-type ctx member)
-                              [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))
-                              minimum (if n (max 0 (-' lo n)) 0)
-                              maximum (if (and n hi) (max 0 (-' hi n)) hi)
-                              items (when (and n (:items member)) (subvec (:items member) 0 (int maximum)))
-                              output (cond (= 0 maximum) t/never
-                                           items (apply t/union items)
-                                           :else element)]]
-                    (cond-> (length/with-bounds (coll-of :seq output) minimum maximum)
-                      items (assoc :items items))))
+                  (map #(trim-tail-type ctx :seq % n) (t/members (:env ctx) source)))
            (t/assumption source)))))))
 
 (defn- sequence-summary [ctx source]

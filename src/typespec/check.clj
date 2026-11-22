@@ -2838,6 +2838,39 @@
                   (length/with-bounds (coll-of :seq output) (interposed-length lo) (interposed-length hi))))
          (t/assumption source))))))
 
+(defn- concat-fragment [ctx source]
+  (let [parts (for [member (t/members (:env ctx) source)
+                    :let [[lo hi] (cond
+                                    (= :nil (:t member)) [0 0]
+                                    (and (= :lit (:t member)) (string? (:val member)))
+                                    (let [size (count (:val member))] [size size])
+                                    :else (length/bounds member))]]
+                {:lower lo :upper hi
+                 :element (if (= 0 hi) t/never (elem-type ctx member))})]
+    {:lower (apply min (map :lower parts))
+     :upper (when (every? :upper parts) (apply max (map :upper parts)))
+     :element (apply t/union (map :element parts))}))
+
+(defmethod special 'concat [ctx node _]
+  (let [args (args-of node)
+        sources (mapv #(eff ctx (infer ctx %)) args)]
+    (if (some #{t/never} sources)
+      t/never
+      (let [invalid (seq (keep (fn [[arg source]]
+                                 (when-let [member (unsupported-sequence-member ctx source)]
+                                   [arg member]))
+                               (map vector args sources)))]
+        (if invalid
+          (do (doseq [[arg member] invalid]
+                (report! ctx arg "TSP2345" (str "concat cannot sequence " (t/show member))))
+              t/unknown)
+          (let [parts (mapv #(concat-fragment ctx %) sources)]
+            (t/with-assumption
+             (length/with-bounds (coll-of :seq (apply t/union (map :element parts)))
+                                 (reduce +' 0 (map :lower parts))
+                                 (when (every? :upper parts) (reduce +' 0 (map :upper parts))))
+             (some t/assumption sources))))))))
+
 (def ^:private comp-identity
   (t/parse-type {:fail #(throw (ex-info "Invalid comp identity signature" {:form %}))}
                 '(t/all [a] [a :-> a])))

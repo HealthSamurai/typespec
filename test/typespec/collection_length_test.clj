@@ -66,6 +66,36 @@
             "t/unknown"]
            (mapv #(at r %) [2 3 4 5 6 11])))))
 
+(deftest concat-combines-element-types-and-length-bounds
+  (let [r (checked "(concat)
+(concat nil [] [\"sql\"] [1 2])
+(clojure.core/concat \"id\" \"\")
+(concat (throw (Exception.)) [])
+(concat nil 42 [1] :separator)
+(s/fdef optional :args (s/cat :xs (s/nilable (s/coll-of int? :kind vector? :min-count 2 :max-count 3))))
+(defn optional [xs] (concat xs [\"x\"]))
+(s/fdef unbounded :args (s/cat :xs (s/coll-of string? :kind vector? :min-count 1)))
+(defn unbounded [xs] (concat xs [\"x\"]))
+(s/def ::fragments (s/coll-of string? :kind vector? :min-count 1 :max-count 2))
+(s/def ::sql (s/coll-of string? :kind seq? :min-count 3 :max-count 4))
+(s/fdef fragments :args (s/cat :acc ::fragments) :ret ::sql)
+(defn fragments [acc] (concat acc [\"name\" \",\"]))
+(s/fdef bad-content :args (s/cat :acc ::fragments) :ret ::sql)
+(defn bad-content [acc] (concat acc [\"name\" 42]))
+(s/fdef bad-length :args (s/cat :acc ::fragments) :ret ::sql)
+(defn bad-length [acc] (concat acc [\"name\"]))")]
+    (is (= [[6 "TSP2345"] [6 "TSP2345"] [16 "TSP2322"] [18 "TSP330-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of (t/or string? int?) :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of java.lang.Character :kind seq? :min-count 2 :max-count 2)"
+            "t/never"]
+           (mapv #(at r %) [2 3 4 5])))
+    (is (= ["(s/coll-of (t/or int? string?) :kind seq? :min-count 1 :max-count 4)"
+            "(s/coll-of string? :kind seq? :min-count 2)"]
+           (mapv (fn [[row col]] (main/type-at r "length.clj" row col)) [[8 21] [10 22]])))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

@@ -84,6 +84,10 @@
                (repeat 3 "(s/coll-of t/unknown :kind seq? :min-count 2 :max-count 2)")
                (mapv (fn [[row col]] (main/type-at tree "upstream/src/dsql/pg.clj" row col))
                      [[1102 52] [1134 52] [1162 50]]))
+      (expect! "concat preserves the minimum number of fragments in join-vec and SQL handlers"
+               (mapv #(str "(s/coll-of t/unknown :kind seq? :min-count " % ")") [1 2 1 2])
+               (mapv (fn [[row col]] (main/type-at tree "upstream/src/dsql/pg.clj" row col))
+                     [[116 43] [1091 5] [1121 5] [1151 4]]))
       (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")

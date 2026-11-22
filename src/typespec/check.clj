@@ -2495,7 +2495,7 @@
         {:type (apply t/union (map :type steps))
          :optional? (boolean (some :optional? steps))}))))
 
-(defn- path-value [ctx ty steps not-found]
+(defn- path-value [ctx ty path steps not-found]
   (loop [ty ty, steps (seq steps), missing? false]
     (if (and steps (not= :never (:t ty)))
       (let [[[key key-type] & more] steps
@@ -2503,7 +2503,7 @@
             key-type (eff ctx key-type)]
         (if-let [{:keys [type optional?]} (if (and (literal-node? key) (literal-path-key? (:val key)))
                                          (literal-path-step ctx current key (:val key))
-                                         (computed-path-step ctx current key key-type))]
+                                         (computed-path-step ctx current (or key path) key-type))]
           (recur (t/with-assumption type (or (t/assumption current) (t/assumption key-type)))
                  more (or missing? optional?))
           t/unknown))
@@ -2511,22 +2511,27 @@
 
 (defmethod special 'get-in [ctx node _]
   (let [[m path default & extra :as arguments] (args-of node)
-        mty (infer ctx m)
-        keys (:children path)]
-    (cond
-      (or (nil? path) (seq extra))
+        mty (infer ctx m)]
+    (if (or (nil? path) (seq extra))
       (do (run! #(infer ctx %) (rest arguments))
           (report! ctx node "TSP2554" (str "get-in is called with " (count arguments) " argument(s)"))
           t/unknown)
-
-      (and (#{:vector :nil} (:op path)) (empty? (:directives path)) (not (env/tag-node path)))
-      (let [types (:items (infer ctx path))
-            not-found (if default (infer ctx default) t/nil-t)]
-        (if (or (= t/never not-found) (some #{t/never} types))
+      (let [path-type (eff ctx (infer ctx path))
+            not-found (if default (infer ctx default) t/nil-t)
+            key-nodes (when (and (= :vector (:op path)) (empty? (:directives path)) (not (env/tag-node path)))
+                        (:children path))]
+        (if (some #{t/never} [mty path-type not-found])
           t/never
-          (path-value ctx mty (map vector keys types) not-found)))
-
-      :else (do (infer ctx path) (some->> default (infer ctx)) t/unknown))))
+          (t/with-assumption
+           (apply t/union
+                  (for [{:keys [items] :as member} (t/members (:env ctx) path-type)]
+                    (cond
+                      (= :nil (:t member)) mty
+                      (= :never (:t member)) t/never
+                      (some #{t/never} items) t/never
+                      items (path-value ctx mty path (map vector (concat key-nodes (repeat nil)) items) not-found)
+                      :else t/unknown)))
+           (t/assumption path-type)))))))
 
 (defn- assoc-map-key [m k ty]
   (-> m (dissoc :fresh) (assoc-in [:req k] ty) (update :opt dissoc k)))

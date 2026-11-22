@@ -190,6 +190,20 @@
          (alternatives (infer-type "(get-in {:field nil} [k] :missing)"
                                    {'k (t/union (t/lit :field) (t/lit :other))})))))
 
+(deftest get-in-follows-fixed-paths-stored-as-values
+  (doseq [[source expected]
+          [["(let [path [:a 0 :b]] (get-in {:a [{:b nil}]} path :missing))" t/nil-t]
+           ["(let [path [:a 1 :b]] (get-in {:a [{:b nil}]} path :missing))" (t/lit :missing)]
+           ["(let [path (if flag [:a :b] [:c])] (get-in {:a {:b 1} :c \"text\"} path :missing))"
+            (t/union (t/lit 1) (t/lit "text"))]
+           ["(let [path (if flag [:a] nil)] (get-in :root path :missing))"
+            (t/union (t/lit :root) (t/lit :missing))]
+           ["(let [path []] (get-in :root path :missing))" (t/lit :root)]
+           ["(get-in :root path :missing)" t/unknown]]]
+    (is (= (alternatives expected)
+           (alternatives (infer-type source {'flag (t/prim :boolean) 'path (t/prim :vector)})))
+        source)))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

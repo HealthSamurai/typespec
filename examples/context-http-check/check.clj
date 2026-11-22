@@ -55,13 +55,16 @@
     (println "NTH PASS: finite indices select only the operation parts allowed by Spec")))
 
 (defn- check-cookie-path! [files]
-  (let [checked (check/check-files (conj files (parse/parse-file "probe/cookie_path.clj")) {})
+  (let [typed-path "probe/cookie_by_path.clj"
+        checked (check/check-files (into files (map parse/parse-file) ["probe/cookie_path.clj" typed-path]) {})
         source "src/http.clj"
-        diagnostics (filter #(and (= source (:file %)) (= 41 (get-in % [:pos :row]))) (:diagnostics checked))]
+        diagnostics (filter #(or (= typed-path (:file %))
+                                 (and (= source (:file %)) (= 41 (get-in % [:pos :row]))))
+                            (:diagnostics checked))]
     (assert (empty? diagnostics) (pr-str diagnostics))
     (let [inferred (main/type-at checked source 41 3)]
       (assert (= "(s/nilable :probe.cookie/value)" inferred) (str "Unexpected get-cookie result: " inferred)))
-    (println "GET-IN PASS: get-cookie uses the value type of the Spec map-of")))
+    (println "GET-IN PASS: cookie lookups use the Spec map-of and a Spec tuple path")))
 
 (defn- check-yaml-extensions! [files]
   (let [path "probe/yaml-codec.clj"

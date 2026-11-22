@@ -550,6 +550,43 @@
       (is (= [["TSP2531" 12]] (mapv (juxt :code (comp :row :pos)) (:diagnostics r)))
           (pr-str (:diagnostics r))))))
 
+(deftest empty-predicate-refines-both-branches
+  (doseq [opts [{} {:strict-nil true}]]
+    (let [r (checked "(s/def ::names (s/coll-of string? :kind vector? :max-count 3))
+(s/fdef label :args (s/cat :xs (s/nilable ::names)) :ret string?)
+(defn label [xs] (if (empty? xs) \"none\" (first xs)))
+(s/fdef head :args (s/cat :xs ::names) :ret (s/nilable string?))
+(defn head [xs] (when-not (clojure.core/empty? xs) (first xs)))
+(s/fdef captured :args (s/cat :xs ::names) :ret any?)
+(defn captured [xs]
+  (let [alias xs
+        nothing? (empty? alias)]
+    (if nothing?
+      xs
+      xs)))
+(let [xs nil] (if (empty? xs) :empty (subs 42 0)))
+(let [xs [:item]] (if (empty? xs) (subs 42 0) (first xs)))
+(s/fdef nullable :args (s/cat :xs (s/coll-of (s/nilable string?) :kind vector? :max-count 2)) :ret string?)
+(defn nullable [xs] (if (empty? xs) \"none\" (first xs)))
+(s/fdef shadowed :args (s/cat :xs ::names) :ret string?)
+(defn shadowed [xs]
+  (let [empty? (fn [_] false)]
+    (if (empty? xs) \"none\" (first xs))))
+(s/fdef rebound :args (s/cat :xs ::names) :ret string?)
+(defn rebound [xs]
+  (with-redefs [clojure.core/empty? (fn [_] false)]
+    (if (empty? xs) \"none\" (first xs))))
+(s/fdef via-binding :args (s/cat :xs ::names) :ret string?)
+(defn via-binding [xs] (if-let [nothing? (empty? xs)] \"none\" (first xs)))
+(let [xs [:item]] (if-some [nothing? (empty? xs)] nothing? (subs 42 0)))" opts)]
+      (is (= [[17 "TSP2322"] [20 "TSP2322"] [24 "TSP2322"]]
+             (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+          (pr-str (:diagnostics r)))
+      (is (= ["(s/coll-of string? :kind vector? :max-count 0)"
+              "(s/coll-of string? :kind vector? :min-count 1 :max-count 3)"]
+             (mapv #(main/type-at r "length.clj" % 7) [12 13])))
+      (is (= [":empty" ":item"] (mapv #(at r %) [14 15]))))))
+
 (deftest tails-and-destructuring-preserve-position-and-presence
   (let [r (checked "(seq [])
 (first nil)

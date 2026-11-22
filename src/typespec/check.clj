@@ -630,7 +630,7 @@
   (let [head (builtin-head ctx node)]
     (when (or (primitive-predicates head)
               (guard-call ctx node)
-              (#{'some? 'nil? 'seq 'not 'and 'or '= 'not= 'contains? 'instance?
+              (#{'some? 'nil? 'seq 'empty? 'not 'and 'or '= 'not= 'contains? 'instance?
                  'clojure.spec.alpha/valid? 'clojure.spec.alpha/invalid?} head))
       {:test node
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
@@ -642,20 +642,14 @@
                                :let [ty (truth-part (:env ctx) leaf truthy?)]]
                            (when-not (= :never (:t ty)) ty)))))
 
-(defn- seq-contexts [ctx node]
+(defn- emptiness-contexts [ctx node some?]
   (let [[source & extra] (rest (:children node))]
-    (when (and (= 'seq (builtin-head ctx node)) source (empty? extra))
-      (refine-path ctx source
-                   (fn [member]
-                     (case (:t member)
-                       :nil [nil member]
-                       :never [nil nil]
-                       :coll (let [[lo hi] (length/bounds member)]
-                               [(when-not (= 0 hi)
-                                  (length/with-bounds member (max 1 lo) hi))
-                                (when (zero? lo)
-                                  (length/with-bounds member 0 0))])
-                       [member member]))))))
+    (when (and source (empty? extra))
+      (case (builtin-head ctx node)
+        seq (some-> (refine-path ctx source #(count-parts 0 %)) rseq vec)
+        empty? (when (and (not some?) (not (:guards-disabled? ctx)))
+                 (refine-path ctx source #(count-parts 0 %)))
+        nil))))
 
 (defn- narrow
   "Truth and falsity contexts. A nil context denotes an unreachable path."
@@ -695,7 +689,7 @@
           [ctx ctx])
 
       (and (= 'not h) (= 1 (count args))) (vec (reverse (narrow ctx a)))
-      (= 'seq h) (or (seq-contexts ctx test) [ctx ctx])
+      (#{'empty? 'seq} h) (or (emptiness-contexts ctx test false) [ctx ctx])
       (= 'and h) (logical-contexts ctx args true)
       (= 'or h) (logical-contexts ctx args false)
 
@@ -2026,7 +2020,7 @@
         ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
-        [tc fc] (or (seq-contexts ctx init) [ctx ctx])]
+        [tc fc] (or (emptiness-contexts ctx init some?) [ctx ctx])]
     [(if (or (nil? tc) (= :never (:t positive))) t/never
          (infer (bind-pattern tc p (dissoc positive :fresh)) then))
      (if (or (nil? fc) (= :never (:t negative))) t/never (if else (infer fc else) t/nil-t))]))
@@ -2040,7 +2034,7 @@
         ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
-        [tc fc] (or (seq-contexts ctx init) [ctx ctx])]
+        [tc fc] (or (emptiness-contexts ctx init some?) [ctx ctx])]
     (t/union (if (or (nil? tc) (= :never (:t positive))) t/never
                  (infer-body (bind-pattern tc p (dissoc positive :fresh)) body))
              (if (or (nil? fc) (= :never (:t negative))) t/never t/nil-t))))

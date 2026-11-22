@@ -112,7 +112,8 @@
             fragments "probe/sql_fragment_vector.clj"
             coalesce "probe/coalesce_vector.clj"
             join "probe/sql_fragment_pop.clj"
-            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce join]))
+            tail "probe/column_tail.clj"
+            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce join tail]))
             diagnostics (:diagnostics checked)]
         (expect! "filterv keeps the migration count upper bound from Spec"
                  [] (filterv #(= path (:file %)) diagnostics))
@@ -122,11 +123,14 @@
                  [] (filterv #(= coalesce (:file %)) diagnostics))
         (expect! "pop keeps the SQL fragment bounds after removing the separator"
                  [] (filterv #(= join (:file %)) diagnostics))
+        (expect! "peek uses the final position of the SQL fragment vector"
+                 [] (filterv #(= tail (:file %)) diagnostics))
         (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec.")
         (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec.")
         (println "VEC PASS: converting trimmed SQL fragments preserves their length bounds.")
         (println "CONJ PASS: appending the closing fragment restores the original length bounds.")
-        (println "POP PASS: removing the final separator keeps the remaining SQL fragment bounds."))))
+        (println "POP PASS: removing the final separator keeps the remaining SQL fragment bounds.")
+        (println "PEEK PASS: reading the final fragment preserves its positional type."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

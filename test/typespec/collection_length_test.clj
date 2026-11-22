@@ -411,6 +411,26 @@
     (is (= ["\"kept\"" "(s/coll-of t/never :kind vector? :max-count 0)" "nil?" "t/never"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest peek-reads-the-last-known-vector-position
+  (let [r (checked "(peek [1 \"tail\"])
+(peek [])
+(peek nil)
+(peek [1 nil])
+(peek (pop [\"kept\" :tail]))
+(peek)
+(s/def ::parts (s/tuple int? string?))
+(s/fdef last-fragment :args (s/cat :parts ::parts) :ret string?)
+(defn last-fragment [parts] (peek parts))
+(s/fdef bounded :args (s/cat :xs (s/coll-of string? :kind vector? :min-count 1)) :ret string?)
+(defn bounded [xs] (peek xs))
+(s/fdef maybe-empty :args (s/cat :xs (s/coll-of string? :kind vector? :max-count 2)) :ret string?)
+(defn maybe-empty [xs] (peek xs))")]
+    (is (= [[7 "TSP2554"] [14 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"tail\"" "nil?" "nil?" "nil?" "\"kept\""]
+           (mapv #(at r %) (range 2 7))))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

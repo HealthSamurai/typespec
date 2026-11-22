@@ -473,6 +473,20 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest aget-uses-the-jvm-component-and-checks-indices
+  (let [r (checked "(aget (byte-array [1]) 0)
+(aget (char-array [\\a]) 0)
+(aget (into-array String [\"value\" nil]) 0)
+(defn guarded [^\"[[I\" array] (when-some [row (aget array 0)] (aget row 0)))
+(defn unchecked [^\"[[I\" array] (aget array 0 0))
+(aget [1] 0)
+(aget (int-array [1]) :bad)
+(aget)" {})]
+    (is (= ["int?" "java.lang.Character" "(s/nilable string?)"] (mapv #(at r %) [2 3 4])))
+    (is (= [[6 "TSP2531"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest alength-checks-array-hints-and-returns-int
   (let [r (checked "(let [^bytes body (byte-array 3)] (alength body))
 (let [^objects values (object-array 2)] (alength values))

@@ -118,7 +118,8 @@
             tail "probe/column_tail.clj"
             pair "probe/sql_pair_length.clj"
             columns "probe/select_columns.clj"
-            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce join tail pair columns]))
+            jdbc-array "probe/jdbc_array_read.clj"
+            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce join tail pair columns jdbc-array]))
             diagnostics (:diagnostics checked)]
         (expect! "filterv keeps the migration count upper bound from Spec"
                  [] (filterv #(= path (:file %)) diagnostics))
@@ -134,6 +135,9 @@
                  [] (filterv #(= pair (:file %)) diagnostics))
         (expect! "select-keys projects the columns from the Spec tuple"
                  [] (filterv #(= columns (:file %)) diagnostics))
+        (expect! "aget keeps the nullable String component and rejects a numeric return contract"
+                 [[12 :error "TSP2322"]]
+                 (mapv (juxt (comp :row :pos) :severity :code) (filter #(= jdbc-array (:file %)) diagnostics)))
         (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec.")
         (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec.")
         (println "VEC PASS: converting trimmed SQL fragments preserves their length bounds.")
@@ -141,7 +145,8 @@
         (println "POP PASS: removing the final separator keeps the remaining SQL fragment bounds.")
         (println "PEEK PASS: reading the final fragment preserves its positional type.")
         (println "COUNT PASS: comparing the pair length proves the second fragment is present.")
-        (println "SELECT KEYS PASS: the Spec column tuple determines the projected row."))))
+        (println "SELECT KEYS PASS: the Spec column tuple determines the projected row.")
+        (println "AGET PASS: reading a JDBC String array preserves its component type."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

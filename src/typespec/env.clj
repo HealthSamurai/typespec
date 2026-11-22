@@ -20,10 +20,13 @@
         (let [s (resolve-sym file (:val h))]
           (if (= "clojure.core" (namespace s)) (symbol (name s)) s))))))
 
+(defn- array-descriptor-node? [node]
+  (and (= :str (:op node)) (.startsWith ^String (:val node) "[")))
+
 (defn tag-node
-  "The type hint of a node: ^String x, ^long x."
+  "The type hint of a node, including string-valued JVM array descriptors."
   [node]
-  (first (filter #(= :sym (:op %)) (:meta node))))
+  (first (filter #(or (= :sym (:op %)) (array-descriptor-node? %)) (:meta node))))
 
 (def ^:private array-hint-classes
   {'booleans "[Z" 'bytes "[B" 'chars "[C" 'shorts "[S" 'ints "[I"
@@ -32,6 +35,7 @@
 (defn hint-type [file node]
   (when-let [tn (tag-node node)]
     (when-let [c (or (array-hint-classes (:val tn))
+                    (when (and (array-descriptor-node? tn) (t/load-class (:val tn))) (:val tn))
                      (t/resolve-class (:imports file) (:val tn)))]
       (t/platform (t/class-type c) (str (:val tn))))))
 

@@ -3018,6 +3018,22 @@
              :inconclusive)
     :mismatch))
 
+(defn- checked-array-members [ctx node head source]
+  (let [members (t/members (:env ctx) source)
+        by-status (group-by array-argument-status members)]
+    (cond
+      (seq (:mismatch by-status))
+      (report! ctx node "TSP2345"
+               (str head " expects a JVM array, got " (t/show (first (:mismatch by-status)))))
+
+      (seq (:nil by-status))
+      (report! ctx node "TSP2531" (str head " argument may be nil"))
+
+      (seq (:inconclusive by-status))
+      (report! ctx node "TSP210-01" (str head " argument is not known to be a JVM array")
+               :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:unknown}))
+    members))
+
 (defmethod special 'alength [ctx node _]
   (let [[arg :as args] (args-of node)
         [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
@@ -3028,19 +3044,42 @@
       (= t/never source) t/never
 
       :else
-      (let [members (group-by array-argument-status (t/members (:env ctx) source))]
-        (cond
-          (seq (:mismatch members))
-          (report! ctx arg "TSP2345"
-                   (str "alength expects a JVM array, got " (t/show (first (:mismatch members)))))
+      (do (checked-array-members ctx arg 'alength source)
+          (t/prim :int)))))
 
-          (seq (:nil members))
-          (report! ctx arg "TSP2531" "alength argument may be nil")
+(defn- array-read-type [member]
+  (case (:t member)
+    (:nil :never) t/never
+    :any t/any
+    :class (if-let [^Class component (some-> (t/load-class (:name member)) (.getComponentType))]
+             (let [name (.getName component)
+                   elem (t/class-type (if (= "char" name) "java.lang.Character" name))]
+               (if (.isPrimitive component) elem (t/union elem t/nil-t)))
+             t/unknown)
+    t/unknown))
 
-          (seq (:inconclusive members))
-          (report! ctx arg "TSP210-01" "alength argument is not known to be a JVM array"
-                   :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:unknown}))
-        (t/prim :int)))))
+(defmethod special 'aget [ctx node _]
+  (let [[array & indices :as args] (args-of node)
+        [source & index-types :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (< (count types) 2)
+      (do (report! ctx node "TSP2554" "aget expects an array and at least one index") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [index-type (if (= 2 (count args))
+                         (t/union (t/prim :number) (t/class-type "java.lang.Character"))
+                         (t/prim :number))]
+        (doseq [[idx ty] (map vector indices index-types)]
+          (assignable! ctx idx ty index-type))
+        (t/with-assumption
+         (loop [current source, receiver array, [idx & more] indices]
+           (let [element (apply t/union (map array-read-type (checked-array-members ctx receiver 'aget current)))]
+             (if (and (seq more) (not (#{:unknown :any :never} (:t element))))
+               (recur element idx more)
+               element)))
+         (t/assumption source))))))
 
 (doseq [[head class-name] {'boolean-array "[Z" 'byte-array "[B" 'char-array "[C"
                            'short-array "[S" 'int-array "[I" 'long-array "[J"

@@ -114,7 +114,8 @@
             join "probe/sql_fragment_pop.clj"
             tail "probe/column_tail.clj"
             pair "probe/sql_pair_length.clj"
-            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce join tail pair]))
+            columns "probe/select_columns.clj"
+            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce join tail pair columns]))
             diagnostics (:diagnostics checked)]
         (expect! "filterv keeps the migration count upper bound from Spec"
                  [] (filterv #(= path (:file %)) diagnostics))
@@ -128,13 +129,16 @@
                  [] (filterv #(= tail (:file %)) diagnostics))
         (expect! "an ordered count guard proves the second SQL fragment is present"
                  [] (filterv #(= pair (:file %)) diagnostics))
+        (expect! "select-keys projects the columns from the Spec tuple"
+                 [] (filterv #(= columns (:file %)) diagnostics))
         (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec.")
         (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec.")
         (println "VEC PASS: converting trimmed SQL fragments preserves their length bounds.")
         (println "CONJ PASS: appending the closing fragment restores the original length bounds.")
         (println "POP PASS: removing the final separator keeps the remaining SQL fragment bounds.")
         (println "PEEK PASS: reading the final fragment preserves its positional type.")
-        (println "COUNT PASS: comparing the pair length proves the second fragment is present."))))
+        (println "COUNT PASS: comparing the pair length proves the second fragment is present.")
+        (println "SELECT KEYS PASS: the Spec column tuple determines the projected row."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

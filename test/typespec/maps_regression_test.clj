@@ -318,6 +318,20 @@
     (is (= (alternatives expected)
            (alternatives (infer-type source {'flag (t/prim :boolean)}))) source)))
 
+(deftest select-keys-uses-the-shape-of-the-key-sequence
+  (let [row (map-type {:id (t/prim :int)} {"name" (t/prim :string)})
+        columns (t/tuple [(t/lit :id) (t/lit "name")])
+        projected (infer-type "(select-keys row columns)" {'row row 'columns columns})]
+    (is (= (:req row) (:req projected)))
+    (is (= (:opt row) (:opt projected)))
+    (is (true? (:complete-keys? projected))))
+  (let [projected (infer-type "(let [columns [(if flag :id :name)]]
+                                (select-keys {:id 1 :name \"Ada\"} columns))"
+                              {'flag (t/prim :boolean)})]
+    (is (= #{{:id (t/lit 1)} {:name (t/lit "Ada")}} (set (map :req (alternatives projected))))))
+  (is (= (map-type {} {}) (select-keys (infer-type "(select-keys {:id 1} nil)") [:req :opt :t])))
+  (is (= t/unknown (infer-type "(select-keys {:id 1} keys)" {'keys (t/prim :vector)}))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

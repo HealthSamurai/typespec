@@ -2554,27 +2554,28 @@
                          (assoc (dissoc member :items :min-count :max-count) :of t/unknown)
                          :else member))))
 
-(defn- literal-map-keys [node]
-  (let [keys (path-key-nodes node)]
-    (when (every? literal-map-key-node? keys) keys)))
-
 (def ^:private map-path-budget 256)
 
-(defn- map-path-key-type? [ty]
-  (case (:t ty)
-    :lit (or (keyword? (:val ty)) (string? (:val ty)))
-    :prim (#{:keyword :string} (:name ty))
-    false))
+(defn- literal-map-key-type? [ty]
+  (and (= :lit (:t ty)) (or (keyword? (:val ty)) (string? (:val ty)))))
 
-(defn- fixed-map-write-paths [ctx path path-type]
+(defn- map-path-key-type? [ty]
+  (or (literal-map-key-type? ty)
+      (and (= :prim (:t ty)) (#{:keyword :string} (:name ty)))))
+
+(defn- fixed-map-key-sequences [ctx path path-type supported-key?]
   (let [env (:env ctx)
         key-nodes (concat (path-key-nodes path) (repeat path))
         choices (fn [node ty]
                   (let [keys (t/members env (eff ctx ty))]
-                    (when (every? map-path-key-type? keys)
+                    (when (every? supported-key? keys)
                       (mapv (fn [key-type] [node key-type]) keys))))
-        paths (mapv #(mapv choices key-nodes (:items %)) (t/members env path-type))]
-    (when (every? #(and (seq %) (every? seq %)) paths)
+        paths (mapv (fn [member]
+                      (if (= :nil (:t member))
+                        []
+                        (when-let [items (:items member)] (mapv choices key-nodes items))))
+                    (t/members env path-type))]
+    (when (every? #(and (some? %) (every? seq %)) paths)
       (let [variants (fn [steps]
                        (reduce (fn [prefixes keys]
                                  (for [prefix prefixes, key keys] (conj prefix key)))
@@ -2648,7 +2649,8 @@
           (report! ctx node "TSP2554" (str (if update? "update-in" "assoc-in") " is called with " (count arguments) " argument(s)"))
           t/unknown)
       (let [path-type (eff ctx (infer ctx path))
-            paths (fixed-map-write-paths ctx path path-type)
+            paths (fixed-map-key-sequences ctx path path-type map-path-key-type?)
+            paths (when (every? seq paths) paths)
             arg-types (mapv #(infer ctx %) args)
             budget (volatile! map-path-budget)
             writes (vec (for [keys paths
@@ -2763,20 +2765,30 @@
               ms)
       t/unknown)))
 
+(defn- project-map-keys [ctx source keys]
+  (reduce (fn [shape [node key-type]]
+            (let [k (:val key-type)
+                  {:keys [type optional? declared?]} (key-info ctx source k node)]
+              (if (= t/never type)
+                shape
+                (assoc-in shape [(if (or optional? (not declared?)) :opt :req) k] type))))
+          empty-map-shape keys))
+
 (defmethod special 'select-keys [ctx node _]
-  (let [[m ks] (args-of node)
-        mty (infer ctx m)]
-    (if-let [keys (literal-map-keys ks)]
-      (if (= t/never mty)
-        t/never
-        (reduce (fn [shape node]
-                  (let [k (:val node)
-                        {:keys [type optional? declared?]} (key-info ctx mty k node)]
-                    (if (= t/never type)
-                      shape
-                      (assoc-in shape [(if (or optional? (not declared?)) :opt :req) k] type))))
-                empty-map-shape keys))
-      (do (infer ctx ks) t/unknown))))
+  (let [args (args-of node)
+        [mty keys-type :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count args))
+      (do (report! ctx node "TSP2554" "select-keys expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (if-let [paths (fixed-map-key-sequences ctx (second args) keys-type literal-map-key-type?)]
+        (t/with-assumption
+         (apply t/union (map #(project-map-keys ctx mty %) paths))
+         (or (t/assumption mty) (t/assumption keys-type)))
+        t/unknown))))
 
 ;; collections
 

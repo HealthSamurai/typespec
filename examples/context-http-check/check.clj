@@ -12,10 +12,12 @@
   (let [endpoint-path "probe/endpoint.clj"
         response-path "probe/response.clj"
         cache-path "probe/atom-cache.clj"
+        breadcrumb-path "probe/breadcrumb.clj"
         paths #{endpoint-path response-path}
-        checked (check/check-files (into files (map parse/parse-file) (conj paths cache-path)) {})
+        checked (check/check-files (into files (map parse/parse-file) (conj paths cache-path breadcrumb-path)) {})
         probes (filter #(paths (:file %)) (:diagnostics checked))
-        cache-probes (filter #(= cache-path (:file %)) (:diagnostics checked))]
+        cache-probes (filter #(= cache-path (:file %)) (:diagnostics checked))
+        breadcrumb-probes (filter #(= breadcrumb-path (:file %)) (:diagnostics checked))]
     (assert (= [[endpoint-path 10 :error "TSP2322"]
                 [endpoint-path 11 :error "TSP2322"]
                 [endpoint-path 15 :error "TSP2322"]
@@ -29,9 +31,12 @@
     (assert (= [[10 :error "TSP2345"] [11 :error "TSP2345"] [12 :error "TSP2345"]]
                (mapv (juxt (comp :row :pos) :severity :code) cache-probes))
             (str "HTTP atom cache probe diagnostics changed: " (pr-str cache-probes)))
+    (assert (empty? breadcrumb-probes)
+            (str "Expected breadcrumb to satisfy its length contract: " (pr-str breadcrumb-probes)))
     (println "ENDPOINT PASS: direct and macro calls use the original HTTP Spec")
     (println "RESPONSE PASS: a string content-type passed and an integer was rejected after assoc-in")
-    (println "ATOM PASS: all three operations reject numeric writes to the original icon cache")))
+    (println "ATOM PASS: all three operations reject numeric writes to the original icon cache")
+    (println "BREADCRUMB PASS: map-indexed and interpose preserve length information from Spec")))
 
 (defn- check-yaml-extensions! [files]
   (let [path "probe/yaml-codec.clj"

@@ -2976,11 +2976,13 @@
             invalid (do (infer ctx f)
                         (report! ctx coll "TSP2345" (str "map-indexed cannot sequence " (t/show invalid)))
                         t/unknown)
-            :else (let [element (elem-type ctx source)
-                        result (apply-fn-node ctx f [(t/prim :int) element])]
-                    (if (= t/never element)
-                      (length/with-bounds (coll-of :seq t/never) 0 0)
-                      (coll-of :seq result)))))
+            :else (let [{:keys [lower upper element]} (sequence-summary ctx source)
+                        result (if (= 0 upper)
+                                 (do (infer ctx f) t/never)
+                                 (apply-fn-node ctx f [(t/prim :int) element]))]
+                    (t/with-assumption
+                     (length/with-bounds (coll-of :seq result) lower upper)
+                     (t/assumption source)))))
       (do (run! #(infer ctx %) args)
           (report! ctx node "TSP2554" "map-indexed expects 1 or 2 arguments")
           t/unknown))))

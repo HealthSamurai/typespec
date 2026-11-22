@@ -219,10 +219,11 @@
 (let [map-indexed str] (map-indexed :left :right))
 (first (map-indexed str []))
 (s/def ::entry (s/tuple string? int?))
-(s/fdef labels :args (s/cat :xs (s/coll-of ::entry)) :ret (s/coll-of string? :kind seq?))
+(s/fdef labels :args (s/cat :xs (s/coll-of ::entry :min-count 1 :max-count 3))
+  :ret (s/coll-of string? :kind seq? :min-count 1 :max-count 3))
 (defn labels [xs] (map-indexed (fn [i [label n]] (str (+ i n) (str/upper-case label))) xs))")]
     (is (empty? (codes result)) (pr-str (:diagnostics result)))
-    (is (= ["(s/coll-of string? :kind seq?)"
+    (is (= ["(s/coll-of string? :kind seq? :min-count 1 :max-count 1)"
             "(s/coll-of string? :kind vector?)"
             "(s/coll-of t/never :kind seq? :max-count 0)"
             "(s/coll-of t/never :kind seq? :max-count 0)"

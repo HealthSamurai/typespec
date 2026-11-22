@@ -165,6 +165,12 @@ checks all eight production files. The original `"tools/call"` method
 infers the required string name at `http/mcp.clj:100:61` from its dispatch
 value.
 
+Acceptance checks the `map?` type of both `@cache` and the `swap!` update
+in the original `uui/heroicons.clj`. The [atom cache probe](probe/atom-cache.clj)
+reads the same Var from another namespace. It verifies the old and new
+snapshot types and rejects numeric writes through `reset-vals!`,
+`swap-vals!`, and `compare-and-set!`.
+
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,
 then deliberately edit the expected file in a separate review step. There

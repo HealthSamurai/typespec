@@ -30,6 +30,7 @@
     typespec.solver-test
     typespec.generic-integration-test
     typespec.contextual-callback-test
+    typespec.atom-test
     typespec.function-composition-test
     typespec.literal-contract-test
     typespec.generic-extern-test

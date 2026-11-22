@@ -346,7 +346,13 @@
                                                (parse/node->data sig-node true)))})))
 
          (and (#{'def 'defonce} h) (= :sym (:op (second (:children form)))))
-         (update-in acc [:root-definitions (qualify (:val (second (:children form))))] (fnil inc 0))
+         (let [target (second (:children form))
+               sym (qualify (:val target))
+               init (definition-initializer form)]
+           (cond-> (update-in acc [:root-definitions sym] (fnil inc 0))
+             (and (= :list (:op init)) (= 'atom (t/core-name file (:val (first (:children init)))))
+                  (not-any? #(or (= :dynamic (:val %)) (:dynamic (parse/node->data %))) (:meta target)))
+             (assoc-in [:atom-initializers sym] {:file file :node init})))
 
          :else acc)))
    acc (:forms file)))
@@ -392,6 +398,8 @@
         env (assoc names :specs (:specs acc) :opaque-fdefs (:opaque-fdefs acc)
                    :macros macros :root-definitions (:root-definitions acc)
                    :protocols (:protocols acc)
+                   :atom-initializers (into {} (filter (fn [[sym]] (= 1 (get-in acc [:root-definitions sym]))))
+                                            (:atom-initializers acc))
                    :multimethod-dispatches (into {}
                                                  (for [[sym [dispatch :as declarations]] (:multimethod-dispatches acc)
                                                        :when (and dispatch (= 1 (count declarations))

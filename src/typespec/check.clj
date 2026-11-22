@@ -1054,11 +1054,21 @@
       {:t :fn :arities (apply mapv (fn [& ars] (assoc (first ars) :ret (apply t/union (map :ret ars))))
                                (map :arities signatures))})))
 
+(defn- infer-with-expected [ctx node expected]
+  (let [ty (when (and expected (= 'atom (builtin-head ctx node)))
+             (t/resolve-t (:env ctx) expected))]
+    (infer (cond-> ctx (= :atom (:t ty)) (assoc :atom-content (:of ty))) node)))
+
 (defn- infer-call-arguments [ctx call-node arg-nodes fits]
   (let [pending? (fn [i arg]
                    (and (callback-node? ctx arg)
                         (some #(callback-signature ctx (argument-type ctx % arg-nodes i)) fits)))
-        types (mapv (fn [i arg] (when-not (pending? i arg) (infer ctx arg))) (range) arg-nodes)
+        types (mapv (fn [i arg]
+                      (when-not (pending? i arg)
+                        (let [params (when (= 'atom (builtin-head ctx arg))
+                                       (map #(argument-type ctx % arg-nodes i) fits))]
+                          (infer-with-expected ctx arg (when (and (seq params) (apply = params)) (first params))))))
+                    (range) arg-nodes)
         candidates (when (some nil? types)
                      (let [possible (filter #(every? (fn [[_ [code]]] (= "TSP210-01" code))
                                                     (arg-problems ctx % arg-nodes types call-node)) fits)]
@@ -1300,7 +1310,7 @@
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
   [ctx sym]
-  (when-let [v (get-in (:env ctx) [:vars sym])]
+  (if-let [v (get-in (:env ctx) [:vars sym])]
     (let [infer-return? (and (= :hints (:source v)) (some #(= :unknown (:t (:ret %))) (:arities (:type v))))
           shape-candidate? (and (#{:hints :sig :fdef} (:source v))
                                 (= 1 (get-in ctx [:env :root-definitions sym]))
@@ -1335,7 +1345,13 @@
                             (:arities (:type v)) (:arities (:parts v)))
                   ty (assoc (:type v) :arities ars)]
               (swap! *rets* assoc sym ty)
-              ty))))))
+              ty))))
+    (when-let [{:keys [file node]} (get-in ctx [:env :atom-initializers sym])]
+      (or (get @*rets* sym)
+          (do (swap! *rets* assoc sym t/unknown)
+              (let [ty (quietly {:env (:env ctx) :file file :opts (:opts ctx) :locals {} :load-time? true} node)]
+                (swap! *rets* assoc sym ty)
+                ty))))))
 
 (defn- why-of [ctx init ty]
   (cond
@@ -1414,17 +1430,20 @@
            (when (and expr (empty? more)) (body-initializers ctx expr)))
     nil))
 
-(defn infer-body [ctx forms]
-  (loop [[form & more] forms, ctx ctx, result t/nil-t]
-    (if form
-      (let [reachable? (not= :never (:t result))
-            ;; Keep diagnostics for later forms without adding dead loop edges.
-            inferred (infer (cond-> ctx (not reachable?) (dissoc :recur-types)) form)
-            result (if reachable? inferred result)
-            initialized (when (not= :never (:t result))
-                          (seq (body-initializers ctx form)))]
-        (recur more (cond-> ctx initialized (update :initialized-vars (fnil into #{}) initialized)) result))
-      result)))
+(defn infer-body
+  ([ctx forms] (infer-body ctx forms nil))
+  ([ctx forms expected]
+   (loop [[form & more] forms, ctx ctx, result t/nil-t]
+     (if form
+       (let [reachable? (not= :never (:t result))
+             ;; Keep diagnostics for later forms without adding dead loop edges.
+             inferred (infer-with-expected (cond-> ctx (not reachable?) (dissoc :recur-types))
+                                           form (when-not (seq more) expected))
+             result (if reachable? inferred result)
+             initialized (when (not= :never (:t result))
+                           (seq (body-initializers ctx form)))]
+         (recur more (cond-> ctx initialized (update :initialized-vars (fnil into #{}) initialized)) result))
+       result))))
 
 (defn- fn-bodies [node]
   (if (= :fn-lit (:op node))
@@ -1508,7 +1527,7 @@
 
 (defn- apply-type
   "Result of calling a function type with these argument types; mismatches are reported at `at`."
-  [ctx ftype arg-types at label]
+  [ctx ftype arg-types at label & [require-match?]]
   (if (= :all (:t ftype))
     (call-generic ctx at label ftype nil arg-types)
     (if-let [fits (seq (matching-arities ftype (count arg-types)))]
@@ -1533,12 +1552,13 @@
               (report! ctx at "TSP2345" (str label " takes " (show-ref ctx p) ", but gets " (show-ref ctx a)))))))
       (cond (and vague? (next (distinct (map :ret ok)))) t/unknown
             (seq ok) (specialize-map-return ctx ar (first arg-types))
+            require-match? t/unknown
             :else (:ret ar)))
     (if (seq (:arities ftype))
       (do (report! ctx at "TSP2554" (str label " is called with " (count arg-types) " argument(s)")) t/unknown)
       t/unknown))))
 
-(defn apply-fn-node [ctx fnode arg-types]
+(defn apply-fn-node [ctx fnode arg-types & [require-match?]]
   (case (:op fnode)
     :kw (read-key ctx (first arg-types) (:val fnode) fnode)
     :set (t/union (first arg-types) t/nil-t)
@@ -1546,7 +1566,7 @@
                (infer ctx fnode {:t :fn :arities [{:params arg-types :ret t/unknown}]})
                (infer ctx fnode))
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)]
-      (apply-type ctx ty arg-types fnode (parse/unparse fnode)))))
+      (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?))))
 
 (defn- function-shape [ctx ty]
   (let [ty (t/resolve-t (:env ctx) (eff ctx ty))]
@@ -2398,16 +2418,48 @@
 (defmethod special 'assoc-in [ctx node _] (write-path ctx node false))
 (defmethod special 'update-in [ctx node _] (write-path ctx node true))
 
+(defn- assoc-entries [ctx base entries]
+  (reduce (fn [ty [[k v] [kt vt]]]
+            (when (= :kw (:op k)) (check-key-value! ctx (:val k) v vt))
+            (let [env (:env ctx)
+                  members (t/members env ty)
+                  add (fn [base shape]
+                        (cond
+                          (= :map-of (:t shape))
+                          (if (and (t/sub? env kt (:k shape)) (t/sub? env vt (:v shape)))
+                            base
+                            (-> shape (update :k t/union (widen kt)) (update :v t/union (widen vt))))
+                          (= :vector (:kind shape))
+                          (let [index (:val kt)
+                                present? (and (= :lit (:t kt)) (integer? index)
+                                              (= :present (length/position shape index)))]
+                            (assignable! ctx k kt (t/prim :int))
+                            (if (and (:items shape) present?)
+                              (t/tuple (assoc (:items shape) (int index) vt))
+                              (-> (cond-> (dissoc shape :items) (not present?) (dissoc :max-count))
+                                  (update :of t/union (widen vt)))))
+                          (= (t/prim :vector) shape)
+                          (do (assignable! ctx k kt (t/prim :int)) base)
+                          (= :kw (:op k))
+                          (assoc-key-type ctx base (:val k) (key-type ctx (:val k) vt))
+                          (= :nil (:t shape)) (t/prim :map)
+                          :else (forget-map-keys ctx base)))]
+              (if (and (next members)
+                       (some #(or (= :map-of (:t %)) (= :vector (:kind %)) (= (t/prim :vector) %)) members))
+                (apply t/union (map #(add % %) members))
+                (add ty (first members)))))
+          base entries))
+
 (defmethod special 'assoc [ctx node _]
   (let [[m & kvs] (args-of node)
-        mty (infer ctx m)]
-    (reduce (fn [ty [k v]]
-              (let [vty (infer ctx v)]
-                (if (= :kw (:op k))
-                  (do (check-key-value! ctx (:val k) v vty)
-                      (assoc-key-type ctx ty (:val k) (key-type ctx (:val k) vty)))
-                  (do (infer ctx k) (forget-map-keys ctx ty)))))
-            mty (partition 2 kvs))))
+        base (infer ctx m)
+        pairs (partition 2 kvs)
+        types (mapv (fn [[k v]]
+                      (let [vt (infer ctx v)
+                            kt (if (= :kw (:op k)) (t/lit (:val k)) (infer ctx k))]
+                        [kt vt]))
+                    pairs)]
+    (assoc-entries ctx base (map vector pairs types))))
 
 (defmethod special 'dissoc [ctx node _]
   (let [[m & ks] (args-of node)
@@ -2944,6 +2996,122 @@
           (report! ctx node "TSP2554" "into expects zero to three arguments")
           t/unknown))))
 
+(defn- initial-atom-content [ty]
+  (case (:t ty)
+    :map (t/prim :map)
+    :coll (if (and (= :never (:t (:of ty))) (:kind ty))
+            (t/prim (:kind ty))
+            (dissoc ty :items :min-count :max-count :fresh))
+    :union (apply t/union (map initial-atom-content (:types ty)))
+    (widen (dissoc ty :fresh))))
+
+(defn- atom-contents [ctx node ty]
+  (let [members (t/members (:env ctx) (eff ctx ty))
+        atoms (filter #(= :atom (:t %)) members)]
+    (when (and (seq atoms) (every? #(#{:atom :nil} (:t %)) members))
+      (when (some #(= :nil (:t %)) members)
+        (assignable! ctx node ty (t/class-type "clojure.lang.Atom")))
+      (vec (distinct (map :of atoms))))))
+
+(defn- atom-write! [ctx node actual content]
+  (binding [t/*strict-shapes* true]
+    (let [resolved (t/resolve-t (:env ctx) content)]
+      (if (= :unknown (:t resolved))
+        (unchecked-hof! ctx node "atom content type is not checked" :atom-content)
+        (assignable! ctx node actual content)))))
+
+(defmethod special 'atom [ctx node _]
+  (let [[init & options] (args-of node)
+        content (:atom-content ctx)
+        ctx (dissoc ctx :atom-content)]
+    (if init
+      (let [ty (infer-with-expected ctx init content)]
+        (run! #(infer ctx %) options)
+        (when content (atom-write! ctx init ty content))
+        (when (odd? (count options))
+          (report! ctx node "TSP2554" "atom expects key/value options after its initializer"))
+        (if (= t/never ty) t/never {:t :atom :of (or content (initial-atom-content ty))}))
+      (do (report! ctx node "TSP2554" "atom expects an initializer") t/unknown))))
+
+(defmethod special 'deref [ctx node _]
+  (let [[target & options :as args] (args-of node)
+        ty (when target (infer ctx target))
+        contents (when ty (atom-contents ctx target ty))]
+    (run! #(infer ctx %) options)
+    (cond
+      (= t/never ty) t/never
+      (and (seq contents) (empty? options)) (apply t/union contents)
+      (or (not (#{1 3} (count args))) (seq contents))
+      (do (report! ctx node "TSP2554" (if (seq contents) "deref of an atom expects one argument" "deref expects 1 or 3 arguments"))
+          t/unknown)
+      :else t/unknown)))
+
+(defn- atom-write-contents [ctx target ty values?]
+  (or (atom-contents ctx target ty)
+      (let [expected (t/class-type (if values? "clojure.lang.IAtom2" "clojure.lang.IAtom"))]
+        (when (= :mismatch (:status (t/sub-result (:env ctx) (eff ctx ty) expected)))
+          (assignable! ctx target ty expected))
+        nil)))
+
+(defn- atom-value-pairs [contents after]
+  (apply t/union (for [before (or (seq contents) [t/unknown])]
+                   (t/tuple [before (or after before)]))))
+
+(doseq [op '[reset! reset-vals! compare-and-set!]]
+  (defmethod special op [ctx node _]
+    (let [args (args-of node)
+          compare? (= 'compare-and-set! op)
+          values? (= 'reset-vals! op)
+          arity (if compare? 3 2)
+          types (mapv #(infer ctx %) args)]
+      (cond
+        (not= arity (count args))
+        (do (report! ctx node "TSP2554" (str op " expects " arity " arguments")) t/unknown)
+
+        (some #{t/never} types) t/never
+
+        :else
+        (let [contents (atom-write-contents ctx (first args) (first types) values?)
+              actual (peek types)]
+          ;; The old value in compare-and-set! is an identity test. Only the new value is written.
+          (doseq [content contents] (atom-write! ctx (last args) actual content))
+          (cond compare? (t/prim :boolean)
+                values? (atom-value-pairs contents (dissoc actual :fresh))
+                (seq contents) (apply t/union contents)
+                :else t/unknown))))))
+
+(doseq [op '[swap! swap-vals!]]
+  (defmethod special op [ctx node _]
+    (let [[target f & args :as all] (args-of node)
+          values? (= 'swap-vals! op)]
+      (if-not f
+        (do (run! #(infer ctx %) all)
+            (report! ctx node "TSP2554" (str op " expects an atom and an update function"))
+            t/unknown)
+        (let [ty (infer ctx target)
+              contents (atom-write-contents ctx target ty values?)
+              arg-types (mapv #(infer ctx %) args)]
+          (if (seq contents)
+            (let [current (apply t/union contents)
+                  before (count @*diags*)
+                  assoc? (= 'assoc (builtin-head ctx {:op :list :children [f]}))
+                  result (if assoc?
+                           (if (and (seq args) (even? (count args)))
+                             (let [accepted (t/union (t/prim :map) (t/prim :vector) t/nil-t)]
+                               (assignable! ctx f current accepted)
+                               (assoc-entries ctx current (map vector (partition 2 args) (partition 2 arg-types))))
+                             (do (report! ctx f "TSP2554" (str "assoc in " op " expects key/value arguments")) t/never))
+                           (apply-fn-node ctx f (into [current] arg-types) true))]
+              (if (or (= t/never result) (some #{t/never} arg-types))
+                t/never
+                (do (when (or (not= :unknown (:t result)) (= before (count @*diags*)))
+                      (doseq [content contents] (atom-write! ctx f result content)))
+                    (if values? (atom-value-pairs contents nil) current))))
+            (do (infer ctx f)
+                (cond (or (= t/never ty) (some #{t/never} arg-types)) t/never
+                      values? (atom-value-pairs nil nil)
+                      :else t/unknown))))))))
+
 (defmethod special 'new [ctx node _]
   (let [[cls & args] (args-of node)]
     (run! #(infer ctx %) args)
@@ -3053,7 +3221,7 @@
                      (not (t/sub? env ret-hint (:ret declared))) (not (t/sub? env (:ret declared) ret-hint)))
             (report! ctx (env/tag-node params) "TSP2322"
                      (str "hint " (t/show ret-hint) " contradicts the signature: " (t/show (:ret declared)))))
-          (let [rty (infer-body ctx' body)]
+          (let [rty (infer-body ctx' body (:ret declared))]
             (when (seq body) (check-return! ctx' (last body) rty (:ret declared)))))))
     t/unknown))
 

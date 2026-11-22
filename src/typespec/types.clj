@@ -288,6 +288,31 @@
       (every? (fn [target] (some #(arity-sub? env % target) sa)) ta)
       :else (inconclusive! :unsupported-function))))
 
+(defn- atom-content-shape [env content]
+  (let [budget (volatile! 1024)
+        opaque? (volatile! false)]
+    (letfn [(opaque [] (vreset! opaque? true) nil)
+            (shape [node active]
+              (cond
+                (neg? (vswap! budget dec)) (opaque)
+                (or (assumption node) (::unchecked-contract (meta node))) (opaque)
+                (= :unknown (:t node)) (opaque)
+                (= :ref (:t node))
+                (let [name (:name node)]
+                  (if-let [target (when-not (active name) (get-in env [:specs name :type]))]
+                    (shape target (conj active name))
+                    (opaque)))
+                (= :union (:t node)) (update node :types #(into #{} (map (fn [part] (shape part active))) %))
+                :else (walk/walk #(shape % active) identity
+                                 (if (keyword? (:t node)) (dissoc node :as :fresh) node))))]
+      (let [result (shape content #{})]
+        (when-not @opaque? result)))))
+
+(defn- atom-sub? [env actual expected]
+  (let [a (atom-content-shape env (:of actual))
+        b (atom-content-shape env (:of expected))]
+    (if (and a b) (= a b) (inconclusive! :atom-content))))
+
 (defn- sub1? [env s t]
   (let [st (:t s) tt (:t t)]
     (cond
@@ -295,6 +320,7 @@
       ;; opaque components. Comparing revisions must account for those gaps.
       (and *contract-subtyping* (or (= :unknown st) (= :unknown tt)))
       (inconclusive! (or (:contract-reason s) (:contract-reason t) :unknown))
+      (= :atom st tt) (atom-sub? env s t)
       (and (= (strip s) (strip t))
            (or (not *contract-subtyping*) (not (#{:map :coll} st)))) true
       (#{:any :unknown} tt) true
@@ -328,6 +354,8 @@
                      false)
       (= :class st) (case tt
                       :class (class-sub? (:name s) (:name t))
+                      :atom (and (class-sub? (:name s) "clojure.lang.Atom")
+                                 (inconclusive! :atom-content))
                       :prim (class-is-prim? (:name s) (:name t))
                       :coll (cond
                               (and (:items t) (class-is-prim? (:name s) :vector))
@@ -339,11 +367,13 @@
       (= :map st) (case tt
                     :map (map-sub? env s t)
                     :prim (contains? #{:map :coll} (:name t))
-                    :map-of (every? (fn [[k v]]
-                                     (or (= :never (:t v))
-                                         (and (sub? env (lit k) (:k t))
-                                              (sub? env v (:v t)))))
-                                   (concat (:req s) (:opt s)))
+                    :map-of (and (every? (fn [[k v]]
+                                           (or (= :never (:t v))
+                                               (and (sub? env (lit k) (:k t))
+                                                    (sub? env v (:v t)))))
+                                         (concat (:req s) (:opt s)))
+                                 (or (not *strict-shapes*) (:complete-keys? s)
+                                     (inconclusive! :unsupported)))
                     :class (prim-is-class? :map (:name t))
                     false)
       (= :map-of st) (case tt
@@ -352,6 +382,7 @@
                        :map (empty? (:req t))
                        :class (prim-is-class? :map (:name t))
                        false)
+      (= :atom st) (and (= :class tt) (class-sub? "clojure.lang.Atom" (:name t)))
       (= :coll st) (case tt
                      :coll (if-let [positions (:items t)]
                              (cond (:items s) (and (= (:kind s) (:kind t))
@@ -476,6 +507,7 @@
       :lit (pr-str (:val t))
       :ref (show-kw (:name t))
       :class (:name t)
+      :atom (str "(t/atom " (show (:of t)) ")")
       :union (let [ts (:types t)
                    others (remove #(= :nil (:t %)) ts)
                    core (cond (= 1 (count others)) (show (first others))
@@ -789,6 +821,7 @@
       (seq? form)
       (case (type-form-op ctx (first form))
         :t/all (parse-all ctx form)
+        :t/atom (if (= 2 (count form)) {:t :atom :of (p (second form))} (fail))
         :quote (p (second form))
         :s/nilable (vary-meta (union (p (second form)) nil-t) assoc ::shape-form 's/nilable)
         :s/or (vary-meta (apply union (map p (take-nth 2 (drop 2 form))))

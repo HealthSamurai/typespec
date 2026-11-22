@@ -41,6 +41,7 @@
                       :map (-> ty
                                (update :req #(update-vals % child))
                                (update :opt #(update-vals % child)))
+                      :atom (update ty :of child)
                       :coll (if-let [items (:items ty)]
                               (let [items (mapv child items)]
                                 (assoc ty :items items :of (apply t/union items)))

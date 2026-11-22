@@ -11,9 +11,11 @@
 (defn- check-probes! [files]
   (let [endpoint-path "probe/endpoint.clj"
         response-path "probe/response.clj"
+        cache-path "probe/atom-cache.clj"
         paths #{endpoint-path response-path}
-        checked (check/check-files (into files (map parse/parse-file) paths) {})
-        probes (filter #(paths (:file %)) (:diagnostics checked))]
+        checked (check/check-files (into files (map parse/parse-file) (conj paths cache-path)) {})
+        probes (filter #(paths (:file %)) (:diagnostics checked))
+        cache-probes (filter #(= cache-path (:file %)) (:diagnostics checked))]
     (assert (= [[endpoint-path 10 :error "TSP2322"]
                 [endpoint-path 11 :error "TSP2322"]
                 [endpoint-path 15 :error "TSP2322"]
@@ -24,8 +26,12 @@
     (assert (str/includes? (:message (nth probes 0)) "value of :method: :trace"))
     (assert (str/includes? (:message (nth probes 1)) "value of :middleware:"))
     (assert (= (mapv :message (take 2 probes)) (mapv :message (subvec (vec probes) 2 4))))
+    (assert (= [[10 :error "TSP2345"] [11 :error "TSP2345"] [12 :error "TSP2345"]]
+               (mapv (juxt (comp :row :pos) :severity :code) cache-probes))
+            (str "HTTP atom cache probe diagnostics changed: " (pr-str cache-probes)))
     (println "ENDPOINT PASS: direct and macro calls use the original HTTP Spec")
-    (println "RESPONSE PASS: a string content-type passed and an integer was rejected after assoc-in")))
+    (println "RESPONSE PASS: a string content-type passed and an integer was rejected after assoc-in")
+    (println "ATOM PASS: all three operations reject numeric writes to the original icon cache")))
 
 (defn- check-yaml-extensions! [files]
   (let [path "probe/yaml-codec.clj"
@@ -137,6 +143,10 @@
               "Expected the subscriber call inside future to be analyzed")
       (assert (= "int?" (main/type-at result "src/uui.clj" 120 15))
               "Expected an integer index in the breadcrumb map-indexed callback")
+      (assert (= ["map?" "map?"]
+                 (mapv (fn [[row col]] (main/type-at result "src/uui/heroicons.clj" row col))
+                       [[18 14] [26 11]]))
+              "Expected the cache dereference and swap! to retain the atom's map type")
       (check-probes! parsed)
       (check-yaml-extensions! parsed)
       (check-mcp-dispatch! parsed)

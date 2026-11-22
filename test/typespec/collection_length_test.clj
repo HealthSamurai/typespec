@@ -508,6 +508,43 @@
     (is (= "(t/or (s/coll-of string? :kind vector? :min-count 1 :max-count 1) (s/coll-of string? :kind vector? :min-count 3 :max-count 3))"
            (main/type-at r "length.clj" 5 5)))))
 
+(deftest ordered-count-comparisons-refine-both-branches
+  (doseq [opts [{} {:strict-nil true}]]
+    (let [r (checked "(s/def ::names (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/fdef split :args (s/cat :xs ::names) :ret any?)
+(defn split [xs]
+  (let [alias xs
+        short? (< (count alias) 2)]
+    (if short?
+      xs
+      xs)))
+(s/fdef choices :args (s/cat :xs ::names) :ret string?)
+(defn choices [xs]
+  (str (str/upper-case (if (<= (count xs) 1) (first xs) (second xs)))
+       (str/upper-case (if (> (count xs) 1) (second xs) (first xs)))
+       (str/upper-case (if (>= (count xs) 2) (second xs) (first xs)))
+       (str/upper-case (if (< 1 (count xs)) (second xs) (first xs)))
+       (str/upper-case (if (<= 2 (count xs)) (second xs) (first xs)))
+       (str/upper-case (if (> 2 (count xs)) (first xs) (second xs)))
+       (str/upper-case (if (>= 1 (count xs)) (first xs) (second xs)))))
+(let [xs nil] (if (> 0 (count xs)) (subs 42 0) :empty))
+(let [xs [1]] (if (<= (count xs) 9223372036854775807) :in-range (subs 42 0)))
+(s/fdef not-enough :args (s/cat :xs ::names) :ret string?)
+(defn not-enough [xs] (if (< (count xs) 3) (second xs) \"other\"))
+(s/fdef shadowed :args (s/cat :xs ::names) :ret string?)
+(defn shadowed [xs]
+  (let [< (fn [_ _] false)]
+    (if (< (count xs) 2) \"short\" (second xs))))
+(s/fdef nullable :args (s/cat :xs (s/nilable ::names)) :ret string?)
+(defn nullable [xs] (if (>= (count xs) 1) (first xs) \"empty\"))" opts)]
+      (is (= [[22 "TSP2322"] [25 "TSP2322"]]
+             (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+          (pr-str (:diagnostics r)))
+      (is (= ["(s/coll-of string? :kind vector? :min-count 1 :max-count 1)"
+              "(s/coll-of string? :kind vector? :min-count 2 :max-count 3)"]
+             (mapv #(main/type-at r "length.clj" % 7) [8 9])))
+      (is (= [":empty" ":in-range"] (mapv #(at r %) [19 20]))))))
+
 (deftest bounds-from-spec-cross-namespace-boundaries
   (let [schema (parse/parse-string "schema.clj"
                  "(ns schema (:require [clojure.spec.alpha :as s]))

@@ -541,11 +541,38 @@
            (if (and shorter longer) (t/union shorter longer) (or shorter longer))])))
     [member member]))
 
-(defn- count-equality-contexts [ctx expr size]
+(defn- count-source [ctx expr size]
   (let [[source & extra] (rest (:children expr))]
     (when (and (not (:guards-disabled? ctx)) (integer? size)
                (= 'count (builtin-head ctx expr)) source (empty? extra))
-      (refine-path ctx source #(count-parts size %)))))
+      source)))
+
+(defn- count-equality-contexts [ctx expr size]
+  (when-let [source (count-source ctx expr size)]
+    (refine-path ctx source #(count-parts size %))))
+
+(defn- count-order-parts [cutoff member]
+  (case (:t member)
+    :never [nil nil]
+    :nil (if (pos? cutoff) [member nil] [nil member])
+    :coll (let [[lo hi] (length/bounds member)]
+            (cond
+              (and hi (< hi cutoff)) [member nil]
+              (>= lo cutoff) [nil member]
+              :else [(length/with-bounds member lo (dec' cutoff))
+                     (length/with-bounds member cutoff hi)]))
+    [member member]))
+
+(defn- count-order-contexts [ctx op a b]
+  (let [[op measured bound] (if (literal-node? a)
+                              [({'< '> '> '< '<= '>= '>= '<=} op) b a]
+                              [op a b])]
+    (when (literal-node? bound)
+      (let [size (:val bound)]
+        (when-let [source (count-source ctx measured size)]
+          (let [cutoff (if (#{'<= '>} op) (inc' size) size)
+                branches (refine-path ctx source #(count-order-parts cutoff %))]
+            (if (#{'< '<=} op) branches (some-> branches rseq vec))))))))
 
 (defn- invalid-parts [ctx leaf]
   (if (#{:coll :map :map-of :fn} (:t leaf))
@@ -630,7 +657,7 @@
   (let [head (builtin-head ctx node)]
     (when (or (primitive-predicates head)
               (guard-call ctx node)
-              (#{'some? 'nil? 'seq 'empty? 'not 'and 'or '= 'not= 'contains? 'instance?
+              (#{'some? 'nil? 'seq 'empty? 'not 'and 'or '= 'not= '< '<= '> '>= 'contains? 'instance?
                  'clojure.spec.alpha/valid? 'clojure.spec.alpha/invalid?} head))
       {:test node
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
@@ -702,6 +729,9 @@
                                                      (equality-contexts ctx b (:val a))))
                          [ctx ctx])]
         (if (= '= h) branches (vec (reverse branches))))
+
+      (and (#{'< '<= '> '>=} h) (= 2 (count args)))
+      (or (count-order-contexts ctx h a b) [ctx ctx])
 
       (and (= 'contains? h) (= 2 (count args)) (= :kw (:op b)) (literal-node? b))
       (or (refine-path ctx a #(presence-parts (:val b) %)) [ctx ctx])

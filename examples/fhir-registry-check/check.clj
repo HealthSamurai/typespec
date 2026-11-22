@@ -9,7 +9,7 @@
 (import '[java.security MessageDigest] '[java.util HexFormat])
 (assert (>= (.feature (Runtime/version)) 25) "Use JDK >=25 (Java catalogue baseline)")
 
-(defn- check-version-keys! [files opts]
+(defn- check-version-order! [files opts]
   (let [path "probe/version_keys.clj"
         checked (check/check-files (conj files (parse/parse-file path)) opts)
         diagnostics (filter #(= path (:file %)) (:diagnostics checked))]
@@ -79,7 +79,7 @@
   (spit (io/file output "diagnostics.edn") (str (pr-str (vec ds)) "\n"))
   (assert (= 11 (:source-files summary) (:parsed-files summary)) "All 11 sources must parse")
   (assert (= {:cast 0 :any 0 :ignore 0} (:trust summary)) "Trust escape introduced")
-  (check-version-keys! parsed opts)
+  (check-version-order! parsed opts)
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))
   (doseq [d ds] (println (main/format-diag d)))

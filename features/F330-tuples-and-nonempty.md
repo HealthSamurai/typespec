@@ -46,6 +46,10 @@ flags: strict-nil
 имеет длину ноль. Проверка `http --accept` закрепляет границы из Spec
 при сортировке MCP-инструментов, а `get-ig` проверяет тип результата `semver/latest`.
 
+`reverse` сохраняет тип элементов и границы длины. Если позиции входа
+известны, их типы переносятся в обратном порядке. Проверка `get-ig`
+закрепляет длину после `reverse` поверх сортировки версий.
+
 ```clojure example
 (ns example (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 

@@ -2746,7 +2746,7 @@
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))
 
-(doseq [h '[reverse distinct shuffle butlast vec set doall]]
+(doseq [h '[distinct shuffle butlast vec set doall]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)
           el (elem-type ctx (infer ctx c))
@@ -2954,6 +2954,32 @@
                    (filter-types ctx f el) [el el])]
     [ret yes no]))
 
+(defn- reordered-sequence [ctx source reorder-items]
+  (t/with-assumption
+   (apply t/union
+          (for [member (t/members (:env ctx) source)
+                :let [element (elem-type ctx member)
+                      [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))
+                      result (length/with-bounds (coll-of :seq (if (= 0 hi) t/never element)) lo hi)]]
+            (if-let [items (and reorder-items (:items member))]
+              (assoc result :items (reorder-items items))
+              result)))
+   (t/assumption source)))
+
+(defmethod special 'reverse [ctx node _]
+  (let [args (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "reverse expects 1 argument") t/unknown)
+
+      (= t/never source) t/never
+
+      :else
+      (if-let [invalid (unsupported-sequence-member ctx source)]
+        (do (report! ctx (first args) "TSP2345" (str "reverse cannot sequence " (t/show invalid))) t/unknown)
+        (reordered-sequence ctx source (comp vec rseq))))))
+
 (doseq [[head minimum] {'sort 1 'sort-by 2}]
   (defmethod special head [ctx node _]
     (let [args (args-of node)
@@ -2978,13 +3004,7 @@
 
             :else
             (do (when key-fn (apply-fn-node ctx key-fn [(elem-type ctx source)]))
-                (t/with-assumption
-                 (apply t/union
-                        (for [member (t/members (:env ctx) source)
-                              :let [element (elem-type ctx member)
-                                    [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))]]
-                          (length/with-bounds (coll-of :seq (if (= 0 hi) t/never element)) lo hi)))
-                 (t/assumption source)))))))))
+                (reordered-sequence ctx source nil))))))))
 
 (doseq [h '[filter remove filterv take-while drop-while group-by some every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]

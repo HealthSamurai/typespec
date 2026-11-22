@@ -170,6 +170,31 @@
             "t/never"]
            (mapv #(at r %) [2 3 4 5 9])))))
 
+(deftest reverse-keeps-length-and-reverses-known-positions
+  (let [r (checked "(first (reverse [1 \"tail\"]))
+(nth (reverse [1 \"tail\"]) 1)
+(nth (reverse [1 \"tail\"]) 2 :missing)
+(reverse nil)
+(reverse [])
+(reverse \"ab\")
+(reverse 42)
+(reverse)
+(reverse [1] [])
+(reverse (throw (Exception.)))
+(s/def ::versions (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/def ::output (s/coll-of string? :kind seq? :min-count 1 :max-count 3))
+(s/fdef newest-first :args (s/cat :versions ::versions) :ret ::output)
+(defn newest-first [versions] (reverse (sort compare versions)))")]
+    (is (= [[8 "TSP2345"] [9 "TSP2554"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"tail\"" "1" ":missing"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of java.lang.Character :kind seq? :min-count 2 :max-count 2)"
+            "t/never"]
+           (mapv #(at r %) [2 3 4 5 6 7 11])))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

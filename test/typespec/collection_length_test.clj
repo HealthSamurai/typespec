@@ -147,6 +147,29 @@
             "t/never"]
            (mapv #(at r %) [2 3 4 5 9])))))
 
+(deftest sort-reads-the-collection-in-both-arities
+  (let [r (checked "(sort [3 1 2])
+(sort > [3 1])
+(sort (java.util.Comparator/reverseOrder) [\"b\" \"a\"])
+(sort nil)
+(sort > 42)
+(sort)
+(sort > [1] :extra)
+(sort (throw (Exception.)) [1])
+(s/def ::versions (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/def ::ordered (s/coll-of string? :kind seq? :min-count 1 :max-count 3))
+(s/fdef ordered :args (s/cat :versions ::versions) :ret ::ordered)
+(defn ordered [versions] (sort compare versions))")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"
+            "(s/coll-of string? :kind seq? :min-count 2 :max-count 2)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "t/never"]
+           (mapv #(at r %) [2 3 4 5 9])))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

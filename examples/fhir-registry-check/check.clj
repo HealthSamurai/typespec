@@ -61,6 +61,10 @@
   (assert (= "(s/map-of t/unknown (s/coll-of t/unknown :kind vector? :min-count 1))"
              (main/type-at result "src/fhir/registry/index.clj" 274 22))
           "Expected group-by in reindex-tgz to keep each group's non-empty vector type")
+  (when (= mode "contracts")
+    (let [latest-type (main/type-at result "src/fhir/registry/semver.clj" 81 3)]
+      (assert (= "(s/nilable string?)" latest-type)
+              (str "Expected semver/latest to retain the version type through sort, got " latest-type))))
   ;; Never overwrite the historical baseline or reviewed expectation.
   (.mkdirs (io/file output))
   (spit (io/file output "summary.edn") (str (pr-str summary) "\n"))

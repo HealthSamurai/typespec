@@ -487,6 +487,9 @@
   (and (#{:str :kw :num :bool :nil} (:op node)) (empty? (:directives node))
        (not (env/tag-node node))))
 
+(defn- literal-map-key-node? [node]
+  (and (#{:kw :str} (:op node)) (literal-node? node)))
+
 (defn- literal-type [v]
   (if (nil? v) t/nil-t (t/lit v)))
 
@@ -1287,7 +1290,7 @@
   (case head
     assoc (when (and (seq args) (even? (count args)))
             (let [pairs (partition 2 args)]
-              (when (every? #(and (= :kw (:op %)) (literal-node? %)) (map first pairs))
+              (when (every? literal-map-key-node? (map first pairs))
                 (let [edits (mapv (fn [[key value]] [(:val key) (quietly ctx value)]) pairs)]
                   (when (every? (fn [[k ty]]
                                   (and (not (t/assumption ty))
@@ -1295,7 +1298,7 @@
                                            (t/sub? (:env ctx) (eff ctx ty) (t/ref-t k)))))
                                 edits)
                     edits)))))
-    dissoc (when (every? #(and (= :kw (:op %)) (literal-node? %)) args)
+    dissoc (when (every? literal-map-key-node? args)
              (mapv (fn [key] [(:val key) nil]) args))
     nil))
 
@@ -2484,7 +2487,7 @@
 
 (defn- literal-map-keys [node]
   (when (and (= :vector (:op node)) (empty? (:directives node)) (not (env/tag-node node))
-             (every? #(and (#{:kw :str} (:op %)) (literal-node? %)) (:children node)))
+             (every? literal-map-key-node? (:children node)))
     (:children node)))
 
 (defn- path-writes
@@ -2565,7 +2568,8 @@
 (defn- assoc-entries [ctx base entries]
   (reduce (fn [ty [[k v] [kt vt]]]
             (when (= :kw (:op k)) (check-key-value! ctx (:val k) v vt))
-            (let [env (:env ctx)
+            (let [literal-key (when (or (= :kw (:op k)) (literal-map-key-node? k)) (:val k))
+                  env (:env ctx)
                   members (t/members env ty)
                   add (fn [base shape]
                         (cond
@@ -2584,8 +2588,8 @@
                                   (update :of t/union (widen vt)))))
                           (= (t/prim :vector) shape)
                           (do (assignable! ctx k kt (t/prim :int)) base)
-                          (= :kw (:op k))
-                          (assoc-key-type ctx base (:val k) (key-type ctx (:val k) vt))
+                          (some? literal-key)
+                          (assoc-key-type ctx base literal-key (key-type ctx literal-key vt))
                           (= :nil (:t shape)) (t/prim :map)
                           :else (forget-map-keys ctx base)))]
               (if (and (next members)
@@ -2609,11 +2613,15 @@
   (let [[m & ks] (args-of node)
         mty (infer ctx m)
         members (t/members (:env ctx) mty)]
-    (if (and (every? #(= :kw (:op %)) ks) (every? #(#{:map :nil} (:t %)) members))
+    (if (and (every? #(or (= :kw (:op %)) (literal-map-key-node? %)) ks)
+             (every? #(#{:map :nil} (:t %)) members))
       (apply t/union
              (for [member members]
                (if (= :map (:t member))
-                 (reduce #(-> %1 (update :req dissoc (:val %2)) (update :opt dissoc (:val %2)))
+                 (reduce (fn [shape node]
+                           (let [k (:val node)]
+                             (cond-> (-> shape (update :req dissoc k) (update :opt dissoc k))
+                               (and (string? k) (not (:complete-keys? shape))) (assoc-in [:opt k] t/never))))
                          (dissoc member :fresh) ks)
                  member)))
       (do (run! #(infer ctx %) ks) (forget-map-keys ctx mty)))))

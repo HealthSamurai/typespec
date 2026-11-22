@@ -112,6 +112,34 @@
            (alternatives (infer-type "(get parts idx)" (assoc locals 'parts optional)))))
     (is (= fallback (infer-type "(get parts idx :missing)" (assoc locals 'idx (t/prim :double)))))))
 
+(deftest string-key-edits-keep-required-fields-and-removals
+  (let [open (map-type {"url" (t/prim :string)} {"text" (t/prim :string)})]
+    (is (= (t/prim :int) (infer-type "(get (assoc nil \"size\" 42) \"size\")")))
+    (is (= (t/prim :int) (infer-type "(get (assoc {\"mode\" \"old\"} \"mode\" 42) \"mode\" :missing)")))
+    (is (= (t/lit "kept")
+           (infer-type "(get (dissoc {\"text\" \"old\" \"url\" \"kept\"} \"text\") \"url\")")))
+    (is (= (t/lit :missing)
+           (infer-type "(get (dissoc m \"text\") \"text\" :missing)" {'m open})))
+    (is (= t/nil-t (infer-type "(get (assoc (dissoc m \"text\") \"text\" nil) \"text\" :missing)" {'m open})))))
+
+(deftest string-key-edits-specialize-map-returns-across-namespaces
+  (let [api (parse/parse-string "prepare.clj"
+               "(ns prepare (:require [clojure.spec.alpha :as s]))
+(s/fdef resource :args (s/cat :m map?) :ret map?)
+(defn resource [m] (-> m (dissoc \"text\") (assoc \"_filename\" \"fixture.json\")))")
+        consumer (parse/parse-string "client.clj"
+                    "(ns client (:require [prepare :as prep] [clojure.spec.alpha :as s]))
+(s/fdef url :args (s/cat) :ret string?)
+(defn url [] (get (prep/resource {\"url\" \"urn:fixture\" \"text\" \"old\"}) \"url\"))
+(s/fdef filename :args (s/cat) :ret int?)
+(defn filename [] (get (prep/resource {\"text\" \"old\"}) \"_filename\"))
+(get (prep/resource {\"text\" \"old\"}) \"text\" :missing)")
+        result (check/check-files [consumer api] {:strict-nil true})]
+    (is (= [["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ":missing" (main/type-at result "client.clj" 6 1)))))
+
 (deftest defaults-replace-absence-not-nil
   (doseq [source ["(get m :x 42)" "(:x m 42)"]]
     (testing source

@@ -65,6 +65,10 @@ locations. The inferred accumulators resolve two downstream collection
 warnings at `str/join` and `ql/fast-join`. The upstream namespaces
 remain unloaded and the trust counters stay at zero in both checks.
 
+Acceptance also checks the entire tree with a temporary extra `(Object.)`
+binding in `free-port`'s `with-open`. The additional `TSP2339` points at
+the initializer in `pg/docker.clj:8:64`.
+
 Historical captured outputs in baseline.txt/contracts.txt: baseline **1 error / 10 warnings**, contracts **2 errors / 16 warnings**. These snapshots precede the precision pass and are not current expected-output tests.
 Both historical runs covered 451 source lines and 54 top-level forms. The
 checker skips `comment`/`defmacro` bodies and discarded forms. Dependencies

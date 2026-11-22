@@ -1387,7 +1387,7 @@
                           (or (core/stdlib-tagged? full)
                               (get-in (:env ctx) [:vars full :tagged?]))))))))))))
 
-(defn- bind-pairs [ctx bindings]
+(defn- bind-pairs [ctx bindings & [on-init]]
   (reduce (fn [ctx [p init]]
             (let [sym (when (= :sym (:op p)) (:val p))
                   pending (:pending-callbacks ctx)
@@ -1403,6 +1403,7 @@
                   ty (if callback
                        (with-meta {:t :fn} {::deferred-callback callback})
                        (dissoc (infer ctx init) :fresh))
+                  _ (when on-init (on-init ctx p init ty))
                   why (why-of ctx init ty)
                   captured (when (and sym (not (env/tag-node p))) (condition-capture ctx init))
                   ctx' (bind-pattern ctx p ty why (stable-path ctx init))]
@@ -2203,14 +2204,66 @@
     (infer-body (bind ctx (:val s) (t/prim :int)) body)
     t/nil-t))
 
-(doseq [h '[with-open binding with-redefs with-local-vars]]
+(defn- close-receiver-class [ctx member init]
+  (or (class-of ctx member)
+      (:jvm-class member)
+      (case (:t member)
+        :atom "clojure.lang.Atom"
+        :map (when (= :map (:op init)) "clojure.lang.APersistentMap")
+        :coll (case (:op init)
+                :vector "clojure.lang.PersistentVector"
+                :set "clojure.lang.PersistentHashSet"
+                nil)
+        nil)))
+
+(defn- check-close! [ctx binding init actual]
+  (let [env (:env ctx)
+        hint (when (#{:unknown :any} (:t (t/resolve-t env actual)))
+               (env/hint-type (:file ctx) binding))
+        members (t/members env (eff ctx (or hint actual)))
+        classes (distinct (map #(close-receiver-class ctx % init)
+                               (remove #(#{:any :nil :never} (:t %)) members)))]
+    (when (some #(= :nil (:t %)) members)
+      (report! ctx init "TSP2531" "with-open resource may be nil when close is called"))
+    (doseq [cname classes
+            :when (and cname (java/has-class? cname))
+            :let [methods (java/methods-named cname "close" false)
+                  shown (java/short-name cname)]]
+      (cond
+        (empty? methods)
+        (report! ctx init "TSP2339" (str "with-open resource " shown " has no instance method close"))
+
+        (not-any? #(empty? (:params %)) methods)
+        (report! ctx init "TSP2554" (str "with-open resource " shown " has no zero-argument close method"))))
+    (when (and (:strict (:opts ctx))
+               (some #(not (some-> % java/has-class?)) classes))
+      (report! ctx init "TSP210-01" "with-open resource close method is not checked"
+               :reasons #{:close-method}))))
+
+(defmethod special 'with-open [ctx node _]
+  (let [[bindings & body] (args-of node)
+        forms (:children bindings)]
+    (if (and (= :vector (:op bindings)) (even? (count forms))
+             (every? #(= :sym (:op %)) (take-nth 2 forms)))
+      (let [reachable? (volatile! true)
+            c (bind-pairs ctx bindings
+                          (fn [c binding init actual]
+                            (when @reachable?
+                              (if (= t/never actual)
+                                (vreset! reachable? false)
+                                (check-close! c binding init actual)))))
+            result (infer-body (cond-> c (not @reachable?) (dissoc :recur-types)) body)]
+        (if @reachable? result t/never))
+      (do (report! ctx (or bindings node) "TSP2345" "with-open expects a binding vector of symbol and initializer pairs")
+          (when (= :vector (:op bindings))
+            (run! #(infer ctx %) (take-nth 2 (rest forms))))
+          (infer-body ctx body)))))
+
+(doseq [h '[binding with-redefs with-local-vars]]
   (defmethod special h [ctx node _]
     (let [[bindings & body] (args-of node)]
-      (infer-body (case h
-                    with-open (bind-pairs ctx bindings)
-                    (do (run! #(infer ctx (second %)) (partition 2 (:children bindings)))
-                        (cond-> ctx (= 'with-redefs h) (assoc :guards-disabled? true))))
-                  body))))
+      (run! #(infer ctx (second %)) (partition 2 (:children bindings)))
+      (infer-body (cond-> ctx (= 'with-redefs h) (assoc :guards-disabled? true)) body))))
 
 (defmethod special 'doto [ctx node _]
   (let [[x & forms] (args-of node)

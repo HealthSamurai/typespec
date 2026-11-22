@@ -199,6 +199,11 @@ Typespec checks macros through these sources of information:
 | hook | a small function (run in SCI, not on the project classpath) that rewrites the form into plain Clojure |
 | `:t/macro` in externs | the macro behaves like a typed function |
 
+`with-open` checks that each known resource exposes a public instance
+`close()` and reports problems at the initializer. Explicitly nilable
+resources report `TSP2531`. With `--strict`, opaque resource types report
+`TSP210-01`. [F420](../features/F420-control-flow.md)
+
 Existing `clj-kondo` configuration (`:lint-as`, hooks, `clj-kondo.exports/` in jars) is reused as is. An unknown macro gives `TSP7031`; its body is not checked and its value is `t/unknown`. With `:macros {:expand true}` unknown macros are expanded in a separate worker process without network access, and the expansion is checked; macro code is then trusted code.
 
 `cond->` and `cond->>` check each reachable step and combine the accumulator types from executed and skipped steps. [Examples](../features/F611-conditional-threading.md)

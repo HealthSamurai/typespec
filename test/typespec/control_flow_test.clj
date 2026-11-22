@@ -10,6 +10,9 @@
 (defn- issues [result]
   (mapv (juxt (comp :row :pos) (comp :col :pos) :code :severity) (:diagnostics result)))
 
+(definterface CloseWithArgument
+  (close [argument]))
+
 (deftest throw-checks-the-operand-and-arity
   (let [source "(ns flow)
 (throw (ex-info \"stop\" {}))
@@ -81,6 +84,52 @@
       (do (throw (Exception.)) (recur 42))
       x)))")]
     (is (empty? (:diagnostics result)) (pr-str (:diagnostics result)))))
+
+(deftest with-open-checks-implicit-close-at-the-initializer
+  (let [result (checked "(ns flow (:require [clojure.spec.alpha :as s]))
+(s/fdef consume :args (s/cat :r (partial instance? java.io.Reader)) :ret int?)
+(defn consume [r] 0)
+(with-open [] :empty)
+(clojure.core/with-open [reader (java.io.StringReader. \"\")]
+  (consume reader))
+(with-open [r (javax.naming.InitialContext.)] :legacy)
+(with-open [r (Object.)] :missing-method)
+(with-open [r nil] :absent-resource)
+(with-open [r []] :collection)
+(s/fdef maybe-open :args (s/cat :r (s/nilable (partial instance? java.io.Reader))) :ret string?)
+(defn maybe-open [r] (with-open [^java.io.Reader x r] \"ok\"))
+(with-open [r] :bad-bindings)
+(with-open [[r] (Object.)] :bad-binding-name)
+(with-open [r (throw (Exception.)) ignored (Object.)] :unreachable)
+(s/fdef choose :args (s/cat :r (s/or :reader (partial instance? java.io.Reader)
+                                  :legacy (partial instance? javax.naming.Context))) :ret string?)
+(defn choose [r] (with-open [x r] \"ok\"))")]
+    (is (= [[8 15 "TSP2339" :error] [9 15 "TSP2531" :error] [10 15 "TSP2339" :error]
+            [12 52 "TSP2531" :error] [13 12 "TSP2345" :error] [14 12 "TSP2345" :error]]
+           (issues result))
+        (pr-str (:diagnostics result)))
+    (is (= [":empty" "int?" ":legacy" "t/never"]
+           (mapv #(main/type-at result "flow.clj" % 1) [4 5 7 15])))))
+
+(deftest with-open-requires-a-zero-argument-close-method
+  (let [thread (Thread/currentThread)
+        prior (.getContextClassLoader thread)]
+    (try
+      (.setContextClassLoader thread (.getClassLoader CloseWithArgument))
+      (let [result (checked "(ns flow (:import [typespec.control_flow_test CloseWithArgument]))
+(defn- use-resource [^CloseWithArgument r]
+  (with-open [x r] :done))")]
+        (is (= [[3 17 "TSP2554" :error]] (issues result)) (pr-str (:diagnostics result))))
+      (finally
+        (.setContextClassLoader thread prior)))))
+
+(deftest with-open-reports-opaque-and-platform-resources-in-strict-modes
+  (let [source "(ns flow)
+(defn- with-resource [r] (with-open [x r] :done))
+(defn- with-reader [^java.io.Reader r] (with-open [x r] :done))"]
+    (is (empty? (issues (checked source))))
+    (is (= [[2 40 "TSP210-01" :error]] (issues (checked source {:strict true}))))
+    (is (= [[3 54 "TSP2531" :error]] (issues (checked source {:strict-nil true}))))))
 
 (deftest jvm-control-flow-on-clojure-1-12-4
   (is (thrown? NullPointerException (throw nil)))

@@ -1,6 +1,7 @@
 ;; Regression acceptance, not the diagnostic CLI: expected errors mean success.
 (require '[fixture :as fixture]
          '[clojure.edn :as edn]
+         '[clojure.string :as str]
          '[typespec.main :as main])
 
 (defn expect! [label expected actual]
@@ -74,7 +75,18 @@
                                        (<= 1166 (:row pos) 1189))
                               [(:row pos) (:col pos)])))
                     vec))
-      (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")))
+      (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")
+      (let [edit (fn [path source]
+                   (if (= path "pg/docker.clj")
+                     (str/replace-first source "[socket (java.net.ServerSocket. 0)]"
+                                        "[socket (java.net.ServerSocket. 0) probe-resource (Object.)]")
+                     source))
+            mutated (fixture/run-tree-check edit)
+            original (set (:diagnostics tree))]
+        (expect! "implicit close rejects an Object bound in free-port"
+                 [[:error "TSP2339" "upstream/src/pg/docker.clj" 8 64]]
+                 (mapv location (remove original (:diagnostics mutated))))
+        (println "WITH-OPEN PASS: all 9 pg sources checked with the resource mutation."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

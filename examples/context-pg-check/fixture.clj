@@ -43,7 +43,7 @@
                :codes (into (sorted-map) (frequencies (map (juxt :severity :code) ds)))
                :trust (:trust result)}}))
 
-(defn run-tree-check []
+(defn run-tree-check [& [edit-source]]
   (let [root (.getParentFile (io/file (.toURI (pg-resource))))
         manifest (into (sorted-map) (edn/read-string (slurp "manifest.edn")))
         paths (into {}
@@ -55,7 +55,9 @@
         parsed (mapv (fn [[path expected]]
                        (let [bytes (Files/readAllBytes (.toPath (get paths path)))]
                          (assert (= expected (sha-256 bytes)) (str "SHA-256 mismatch: " path))
-                         (parse/parse-string (str "upstream/src/" path) (String. bytes "UTF-8"))))
+                         (let [source (String. bytes "UTF-8")]
+                           (parse/parse-string (str "upstream/src/" path)
+                                               (if edit-source (edit-source path source) source)))))
                      manifest)
         result (check-parsed parsed "contracts")
         ds (:diagnostics result)]

@@ -197,6 +197,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `peek` on a vector | reads the final position when known. An empty vector returns `nil`. [F330](../features/F330-tuples-and-nonempty.md) |
 | `last` | uses the final position's type when known. A positive lower length bound guarantees that the last element exists. [F330](../features/F330-tuples-and-nonempty.md) |
 | `drop-last` | subtracts a known non-negative integral drop count from the length bounds, with a floor of zero. The one-argument form drops one element. Fixed positions in the remaining prefix retain their types. [F330](../features/F330-tuples-and-nonempty.md) |
+| `butlast` | removes the final position and preserves the remaining length bounds and fixed positions. Inputs shorter than two elements return `nil`. [F330](../features/F330-tuples-and-nonempty.md) |
 | `map`, `mapv` | check the callback against input element types and use the shortest input's length for the result. `map` returns a sequence and `mapv` returns a vector. [F330](../features/F330-tuples-and-nonempty.md) |
 | `filter`, `filterv`, `remove` | narrow the output element type using a checked predicate and preserve the input's upper length bound. The result can be empty. [F330](../features/F330-tuples-and-nonempty.md) |
 | `(map-indexed f coll)` | checks `f` with an `int?` index and the input element type. The inferred sequence carries the callback's result type and the input's length bounds. [F330](../features/F330-tuples-and-nonempty.md) |

@@ -449,6 +449,26 @@
     (is (= ["\"kept\"" "nil?" "nil?" "java.lang.Character"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest butlast-returns-a-bounded-prefix-or-nil
+  (let [r (checked "(first (butlast [\"kept\" :tail]))
+(butlast [1])
+(butlast nil)
+(butlast \"ab\")
+(butlast 42)
+(butlast)
+(s/def ::path (s/coll-of string? :kind vector? :min-count 2 :max-count 4))
+(s/def ::prefix (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/fdef prefix :args (s/cat :path ::path) :ret ::prefix)
+(defn prefix [path] (into [] (butlast path)))
+(s/fdef maybe-single :args (s/cat :xs (s/coll-of string? :kind seq? :min-count 1 :max-count 3))
+  :ret (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
+(defn maybe-single [xs] (butlast xs))")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [14 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"kept\"" "nil?" "nil?" "(s/coll-of java.lang.Character :kind seq? :min-count 1 :max-count 1)"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

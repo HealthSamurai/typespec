@@ -2844,12 +2844,11 @@
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))
 
-(doseq [h '[distinct shuffle butlast set doall]]
+(doseq [h '[distinct shuffle set doall]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)
-          el (elem-type ctx (infer ctx c))
-          res (coll-of (if (= 'set h) :set :seq) el)]
-      (if (= 'butlast h) (t/union res t/nil-t) res))))
+          el (elem-type ctx (infer ctx c))]
+      (coll-of (if (= 'set h) :set :seq) el))))
 
 (doseq [h '[take drop take-last]]
   (defmethod special h [ctx node _]
@@ -2996,6 +2995,29 @@
                      :else element)]
     (cond-> (length/with-bounds (coll-of kind output) minimum maximum)
       items (assoc :items items))))
+
+(defmethod special 'butlast [ctx node _]
+  (let [args (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "butlast expects 1 argument") t/unknown)
+
+      (report-invalid-sequence-args! ctx 'butlast args types) t/unknown
+
+      :else
+      (t/with-assumption
+       (apply t/union
+              (for [member (t/members (:env ctx) source)]
+                (if (= :never (:t member))
+                  t/never
+                  (let [prefix (trim-tail-type ctx :seq member 1)
+                        [lo hi] (length/bounds prefix)]
+                    (cond
+                      (= 0 hi) t/nil-t
+                      (pos? lo) prefix
+                      :else (t/union (length/with-bounds prefix 1 hi) t/nil-t))))))
+       (t/assumption source)))))
 
 (defmethod special 'pop [ctx node _]
   (let [args (args-of node)

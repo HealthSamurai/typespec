@@ -226,6 +226,39 @@
     (is (= "(s/coll-of string? :kind seq? :max-count 4)"
            (main/type-at r "length.clj" 18 28)))))
 
+(deftest mapv-keeps-the-shortest-input-length
+  (let [r (checked "(mapv inc [1 2])
+(mapv + [1 2 3] [4 5])
+(mapv (fn [a b c d] (str a b c d)) [1 2] [3] [4 5] [6 7])
+(mapv inc nil)
+(mapv vector [] [\"unused\"])
+(mapv identity (throw (Exception.)))
+(mapv identity 42)
+(mapv identity)
+(mapv inc [\"bad\"])
+(s/def ::name string?)
+(s/def ::package (s/keys :req-un [::name]))
+(s/def ::packages (s/coll-of ::package :kind vector? :min-count 1 :max-count 3))
+(s/def ::names (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/fdef names :args (s/cat :packages ::packages) :ret ::names)
+(defn names [packages] (mapv :name packages))
+(s/fdef first-name :args (s/cat :packages ::packages) :ret string?)
+(defn first-name [packages] (first (mapv :name packages)))
+(s/fdef cap :args (s/cat :xs (s/coll-of int?)))
+(defn cap [xs] (mapv + xs [1 2]))")]
+    (is (= [[8 "TSP2345"] [9 "TSP2554"] [10 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "(s/coll-of string? :kind vector? :min-count 1 :max-count 1)"
+            "(s/coll-of t/never :kind vector? :max-count 0)"
+            "(s/coll-of t/never :kind vector? :max-count 0)"
+            "t/never"]
+           (mapv #(at r %) (range 2 8))))
+    (is (= "(s/coll-of int? :kind vector? :max-count 2)"
+           (main/type-at r "length.clj" 20 16)))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

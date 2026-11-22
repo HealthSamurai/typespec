@@ -2602,6 +2602,15 @@
             member))
         (t/members (:env ctx) ty)))
 
+(defn- report-invalid-sequence-args! [ctx head args sources]
+  (let [invalid (keep (fn [[arg source]]
+                        (when-let [member (unsupported-sequence-member ctx source)]
+                          [arg member]))
+                      (map vector args sources))]
+    (doseq [[arg member] invalid]
+      (report! ctx arg "TSP2345" (str head " cannot sequence " (t/show member))))
+    (boolean (seq invalid))))
+
 (defn- spread-tail-types [ctx tail ty]
   (let [form (if (= :quote (:op tail)) (first (:children tail)) tail)]
     (if (and (= :list (:op form)) (empty? (:children form)) (empty? (:directives tail)))
@@ -2877,34 +2886,29 @@
                       items (assoc :items items))))
            (t/assumption source)))))))
 
-(defn- concat-fragment [ctx source]
+(defn- sequence-summary [ctx source]
   (let [parts (for [member (t/members (:env ctx) source)
-                    :let [[lo hi] (sequence-member-bounds member)]]
+                    :let [element (elem-type ctx member)
+                          [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))]]
                 {:lower lo :upper hi
-                 :element (if (= 0 hi) t/never (elem-type ctx member))})]
+                 :element (if (= 0 hi) t/never element)})]
     {:lower (apply min (map :lower parts))
      :upper (when (every? :upper parts) (apply max (map :upper parts)))
-     :element (apply t/union (map :element parts))}))
+     :element (t/with-assumption (apply t/union (map :element parts)) (t/assumption source))}))
 
 (defmethod special 'concat [ctx node _]
   (let [args (args-of node)
         sources (mapv #(eff ctx (infer ctx %)) args)]
-    (if (some #{t/never} sources)
-      t/never
-      (let [invalid (seq (keep (fn [[arg source]]
-                                 (when-let [member (unsupported-sequence-member ctx source)]
-                                   [arg member]))
-                               (map vector args sources)))]
-        (if invalid
-          (do (doseq [[arg member] invalid]
-                (report! ctx arg "TSP2345" (str "concat cannot sequence " (t/show member))))
-              t/unknown)
-          (let [parts (mapv #(concat-fragment ctx %) sources)]
-            (t/with-assumption
-             (length/with-bounds (coll-of :seq (apply t/union (map :element parts)))
-                                 (reduce +' 0 (map :lower parts))
-                                 (when (every? :upper parts) (reduce +' 0 (map :upper parts))))
-             (some t/assumption sources))))))))
+    (cond
+      (some #{t/never} sources) t/never
+      (report-invalid-sequence-args! ctx 'concat args sources) t/unknown
+      :else
+      (let [parts (mapv #(sequence-summary ctx %) sources)]
+        (t/with-assumption
+         (length/with-bounds (coll-of :seq (apply t/union (map :element parts)))
+                             (reduce +' 0 (map :lower parts))
+                             (when (every? :upper parts) (reduce +' 0 (map :upper parts))))
+         (some t/assumption sources))))))
 
 (def ^:private comp-identity
   (t/parse-type {:fail #(throw (ex-info "Invalid comp identity signature" {:form %}))}
@@ -2924,7 +2928,7 @@
       (empty? args) (infer ctx f)
       :else (or (partial-function ctx node f args) t/unknown))))
 
-(doseq [h '[map mapv keep mapcat pmap]]
+(doseq [h '[map keep mapcat pmap]]
   (defmethod special h [ctx node _]
     (let [[f & colls] (args-of node)
           els (mapv #(elem-type ctx (infer ctx %)) colls)]
@@ -2932,7 +2936,34 @@
         (do (infer ctx f) t/unknown)
         (let [ret (apply-fn-node ctx f els)
               ret (case h keep (t/remove-nil (:env ctx) ret) mapcat (elem-type ctx ret) ret)]
-          (coll-of (if (= 'mapv h) :vector :seq) ret))))))
+          (coll-of :seq ret))))))
+
+(defmethod special 'mapv [ctx node _]
+  (let [[f & colls] (args-of node)
+        sources (mapv #(eff ctx (infer ctx %)) colls)]
+    (cond
+      (empty? colls)
+      (do (when f (infer ctx f))
+          (report! ctx node "TSP2554" "mapv expects a function and at least one collection")
+          t/unknown)
+
+      (some #{t/never} sources)
+      (do (infer ctx f) t/never)
+
+      (report-invalid-sequence-args! ctx 'mapv colls sources)
+      (do (infer ctx f) t/unknown)
+
+      :else
+      (let [parts (mapv #(sequence-summary ctx %) sources)
+            minimum (apply min (map :lower parts))
+            known-maxima (seq (keep :upper parts))
+            maximum (when known-maxima (apply min known-maxima))
+            element (if (= 0 maximum)
+                      (do (infer ctx f) t/never)
+                      (apply-fn-node ctx f (mapv :element parts)))]
+        (t/with-assumption
+         (length/with-bounds (coll-of :vector element) minimum maximum)
+         (some t/assumption sources))))))
 
 (defmethod special 'map-indexed [ctx node _]
   (let [[f coll :as args] (args-of node)]

@@ -9,11 +9,13 @@
 (import '[java.security MessageDigest] '[java.util HexFormat])
 (assert (>= (.feature (Runtime/version)) 25) "Use JDK >=25 (Java catalogue baseline)")
 
-(defn- check-version-order! [files opts]
-  (let [path "probe/version_keys.clj"
-        checked (check/check-files (conj files (parse/parse-file path)) opts)
-        diagnostics (filter #(= path (:file %)) (:diagnostics checked))]
-    (assert (= [[13 :error "TSP2322"]] (mapv (juxt (comp :row :pos) :severity :code) diagnostics))
+(defn- check-registry-probes! [files opts]
+  (let [version-path "probe/version_keys.clj"
+        paths #{version-path "probe/package_names.clj"}
+        checked (check/check-files (into files (map parse/parse-file) paths) opts)
+        diagnostics (filter #(paths (:file %)) (:diagnostics checked))]
+    (assert (= [[version-path 13 :error "TSP2322"]]
+               (mapv (juxt :file (comp :row :pos) :severity :code) diagnostics))
             (str "Expected only the numeric version key contract to fail: " (pr-str diagnostics)))))
 
 (let [mode (or (first *command-line-args*) "baseline")
@@ -79,7 +81,7 @@
   (spit (io/file output "diagnostics.edn") (str (pr-str (vec ds)) "\n"))
   (assert (= 11 (:source-files summary) (:parsed-files summary)) "All 11 sources must parse")
   (assert (= {:cast 0 :any 0 :ignore 0} (:trust summary)) "Trust escape introduced")
-  (check-version-order! parsed opts)
+  (check-registry-probes! parsed opts)
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))
   (doseq [d ds] (println (main/format-diag d)))

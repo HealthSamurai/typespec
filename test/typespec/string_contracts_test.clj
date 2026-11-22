@@ -23,6 +23,8 @@
                 "(s/starts-with? (StringBuilder. \"ab\") \"a\")"
                 "(s/ends-with? (StringBuilder. \"ab\") \"b\")"
                 "(s/includes? (StringBuilder. \"ab\") (StringBuilder. \"b\"))"
+                "(s/upper-case (slurp (java.io.StringReader. \"ab\")))"
+                "(s/upper-case (clojure.core/slurp (java.io.File. \"body.txt\") :encoding \"UTF-8\"))"
                 "(join nil)" "(join [1 nil :a])" "(join #{1 2})" "(join '(1 2))"
                 "(join {:a 1})" "(join (range 2))" "(join \"ab\")"
                 "(join (StringBuilder. \"ab\"))"
@@ -52,11 +54,19 @@
                 "(replace \"abc\" #\"a\" (fn [x] nil))"
                 "(replace \"abc\" #\"a\" (fn [x] (StringBuilder. \"x\")))"
                 "(join)" "(join 1 2 3)" "(s/split \"abc\")"
-                "(replace \"abc\" \"a\")" "(s/blank? nil nil)"]]
+                "(replace \"abc\" \"a\")" "(s/blank? nil nil)"
+                "(slurp)" "(spit \"body.txt\")"
+                "(inc (slurp (java.io.StringReader. \"ab\")))"]]
     (let [ds (diagnostics form)]
       (is (some #(and (= :error (:severity %))
                       (#{"TSP2345" "TSP2554" "TSP2322"} (:code %))) ds)
           (str form " => " (pr-str ds))))))
+
+(deftest spit-returns-nil
+  (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
+  (let [writer (java.io.StringWriter.)]
+    (is (nil? (spit writer "text")))
+    (is (= "text" (.toString writer)))))
 
 (deftest honest-incomplete-boundaries
   ;; Regex groups reach the callback as a string or a vector.

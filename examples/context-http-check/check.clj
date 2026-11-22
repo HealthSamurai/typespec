@@ -184,6 +184,10 @@
               "Expected the subscriber call inside future to be analyzed")
       (assert (= "int?" (main/type-at result "src/uui.clj" 120 15))
               "Expected an integer index in the breadcrumb map-indexed callback")
+      (assert (= ["string?" "string?"]
+                 [(main/type-at result "src/http.clj" 395 50)
+                  (main/type-at result "src/uui/heroicons.clj" 25 51)])
+              "Expected strings from slurp at the NDJSON and SVG consumers")
       (assert (= "(s/coll-of t/unknown :kind seq?)" (main/type-at result "src/uui.clj" 126 9))
               "Expected breadcrumb interpose to retain a sequence type")
       (assert (= ["map?" "map?"]

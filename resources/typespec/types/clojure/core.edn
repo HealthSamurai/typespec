@@ -58,6 +58,9 @@
  clojure.core/println    [& any? :-> nil?]
  clojure.core/prn        [& any? :-> nil?]
  clojure.core/pr-str     [& any? :-> string?]
+ ;; Sources, targets, and options are open to IOFactory extensions.
+ clojure.core/slurp      [any? & any? :-> string?]
+ clojure.core/spit       [any? any? & any? :-> nil?]
  clojure.core/ex-info    ([string? map? :-> java.lang.Exception] [string? map? any? :-> java.lang.Exception])
  clojure.core/range      ([:-> (s/coll-of int?)] [number? :-> (s/coll-of int?)] [number? number? :-> (s/coll-of int?)])
  clojure.core/keys       [any? :-> (s/nilable (s/coll-of any?))]

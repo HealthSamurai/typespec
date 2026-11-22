@@ -178,6 +178,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 
 | Construct | Rule |
 |---|---|
+| `slurp`, `spit` | check the minimum arity and infer `string?` and `nil?` respectively. Sources, targets, and options remain open to `IOFactory` extensions. |
 | `defrecord R [a b]` | nominal class + fields + open extra keys; `assoc` preserves `R`, `dissoc` of a field yields a map |
 | `defprotocol` | method `s/fdef` contracts check `reify`, `extend-type` and `extend-protocol` across namespaces when the protocol declaration is among the checked sources. `extend-protocol` allows partial implementations. [F430](../features/F430-protocols.md) |
 | `defmulti` / `defmethod` | the shared `s/fdef` checks calls and method bodies across namespaces. String dispatch narrows by a required tag. `class` and `(comp class :key)` refine an argument or a field using JVM inheritance. [F440](../features/F440-multimethods.md) |

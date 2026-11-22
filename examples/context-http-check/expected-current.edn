@@ -1,6 +1,6 @@
 {:review
- "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check.",
- :counts {:warning 43},
+ "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check. The slurp return type resolves two previously unchecked string calls.",
+ :counts {:warning 41},
  :coverage
  [{:file "src/http.clj",
    :opaque-nodes 1,
@@ -147,13 +147,6 @@
    "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
    #{:unknown}
    "cd98a63f7c788c7f91a41f76b093b06d"]
-  ["src/http.clj"
-   {:row 395, :col 50, :end-row 395, :end-col 54}
-   :warning
-   "TSP210-01"
-   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
-   #{:unknown}
-   "de3e6d83eddaecda774ae6e50ddf15c8"]
   ["src/http.clj"
    {:row 50, :col 33, :end-row 50, :end-col 36}
    :warning
@@ -377,11 +370,4 @@
    "TSP210-01"
    "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
    #{:unknown}
-   "6cc6574010a0b1ca6a7d2042ea0bbff5"]
-  ["src/uui/heroicons.clj"
-   {:row 25, :col 51, :end-row 25, :end-col 54}
-   :warning
-   "TSP210-01"
-   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
-   #{:unknown}
-   "c9dbd10263089309eea5a581025b9b95"]]}
+   "6cc6574010a0b1ca6a7d2042ea0bbff5"]]}

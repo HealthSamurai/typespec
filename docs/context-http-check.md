@@ -1,5 +1,11 @@
 # Проверка context-clj/http
 
+## Вывод результата `slurp`
+
+На восьми исходниках 0 ошибок и 41 предупреждение. `slurp` передаёт
+`string?` в `str/split` при чтении NDJSON и в `str/replace` при обработке
+SVG. Ушли два `TSP210-01`. Остальные диагностические записи совпали.
+
 ## Регрессия F610
 
 Все восемь файлов проходят с 0 ошибок и 43 предупреждениями. Пять вызовов `register-endpoint` в `http/openapi.clj` и `uui.clj` проверяются по `::http/endpoint`. В `http.clj:172:37` checker теперь сообщает `TSP210-01` на неизвестном аргументе. Приёмочный тест сравнивает ошибки на `:trace` и мапе в `:middleware` при прямом вызове по Spec и через макрос. [Тестовый namespace](../examples/context-http-check/probe/endpoint.clj)

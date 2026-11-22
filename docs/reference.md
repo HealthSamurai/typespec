@@ -156,7 +156,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 - A **fresh literal** `{...}` in a call is checked for extra keys **only against the declared type**. An extra qualified key without a declared type is an error; a key that looks like a typo produces an error with Did you mean.
 - **`t/exact`** forbids extra keys everywhere.
 - **Map operations.** `get-in` uses the default when a literal path may be absent and preserves `nil` stored at the final key. `assoc-in` and `update-in` track keyword paths and keep sibling fields. [Supported paths](../features/F312-literal-map-paths.md)
-- **Fixed vector positions.** `s/tuple` checks length and element order. Vector literals supply positional types for destructuring and constant indices. [Supported operations](../features/F331-fixed-vector-positions.md)
+- **Fixed vector positions.** `s/tuple` checks length and element order. Vector literals supply positional types for destructuring and constant indices. `nth` also uses finite sets of indices inferred from Spec or branches. [Supported operations](../features/F331-fixed-vector-positions.md)
 - **`apply` with a fixed tail.** Arguments before the final sequence and its known positions form one checked call. [Supported tails](../features/F411-apply-fixed-tail.md)
 - **Generics** with explicit binders and constraints:
   ```clojure

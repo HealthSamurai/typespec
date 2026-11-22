@@ -2820,43 +2820,60 @@
     (let [[c] (args-of node)]
       (indexed (elem-type ctx (infer ctx c))))))
 
+(defn- checked-nth-index [value]
+  (try (int value)
+       (catch IllegalArgumentException _ nil)
+       (catch ArithmeticException _ nil)))
+
+(defn- infer-nth-positions [ctx index members values default-type]
+  (let [candidates (mapv (fn [value] [value (checked-nth-index value)]) values)
+        positions (vec (distinct (keep second candidates)))
+        accesses (for [i positions, member members]
+                   [i member (when (= :coll (:t member)) (length/position member i))])]
+    (when-let [[bad] (first (filter (comp nil? second) candidates))]
+      (report! ctx index "TSP330-02" (str "index " bad " cannot be represented as a JVM int")))
+    (when-let [[i member] (and (nil? default-type) (first (filter #(= :absent (last %)) accesses)))]
+      (report! ctx index "TSP330-02"
+               (str "index " i
+                    (if (and (= 1 (count values)) (every? #(= :absent (last %)) accesses)) " is" " may be")
+                    " out of bounds for length " (length/describe member))))
+    (if (seq positions)
+      (apply t/union
+             (for [[i member presence] accesses]
+               (cond
+                 (= :never (:t member)) t/never
+                 (= :nil (:t member)) (or default-type t/nil-t)
+                 (= :absent presence) (or default-type t/never)
+                 (:items member) (nth (:items member) i)
+                 (= :present presence) (:of member)
+                 :else (t/union (elem-type ctx member) (or default-type t/never)))))
+      t/unknown)))
+
 (defmethod special 'nth [ctx node _]
   (let [[c index default & extra :as args] (args-of node)
-        ty (infer ctx c)
-        it (infer ctx index)
+        ty (eff ctx (infer ctx c))
+        it (eff ctx (infer ctx index))
         default-type (when default (infer ctx default))
-        value (:val it)
-        literal-index? (and (= :lit (:t it)) (number? value))
-        i (when literal-index? (try (int value) (catch IllegalArgumentException _ nil)
-                                                  (catch ArithmeticException _ nil)))
-        members (t/members (:env ctx) (eff ctx ty))]
+        env (:env ctx)
+        members (t/members env ty)
+        indices (t/members env it)]
     (cond
       (or (nil? index) (seq extra))
       (do (run! #(infer ctx %) extra)
           (report! ctx node "TSP2554" (str "nth expects 2 or 3 arguments, got " (count args)))
           t/unknown)
 
-      (= :mismatch (:status (t/sub-result (:env ctx) (eff ctx it) (t/prim :number))))
+      (= :mismatch (:status (t/sub-result env it (t/prim :number))))
       (do (assignable! ctx index it (t/prim :number))
           t/unknown)
 
-      (and literal-index? (nil? i))
-      (do (report! ctx index "TSP330-02" (str "index " value " cannot be represented as a JVM int"))
-          t/unknown)
+      (some #{t/never} [ty it default-type]) t/never
 
-      (some? i)
-      (let [missing? #(and (= :coll (:t %)) (= :absent (length/position % i)))]
-        (when-let [miss (and (nil? default) (first (filter missing? members)))]
-          (report! ctx index "TSP330-02" (str "index " i
-                                              (if (every? missing? members) " is" " may be")
-                                              " out of bounds for length " (length/describe miss))))
-        (apply t/union (for [m members]
-                         (cond
-                           (= :nil (:t m)) (or default-type t/nil-t)
-                           (missing? m) (or default-type t/never)
-                           (:items m) (get (:items m) i (or default-type t/never))
-                           (and (= :coll (:t m)) (= :present (length/position m i))) (:of m)
-                           :else (t/union (elem-type ctx m) (or default-type t/never))))))
+      (every? #(and (= :lit (:t %)) (number? (:val %))) indices)
+      (t/with-assumption
+       (infer-nth-positions ctx index members (vec (distinct (map :val indices))) default-type)
+       (or (t/assumption ty) (t/assumption it)))
+
       :else (apply t/union (or default-type t/never)
                    (map (fn [m]
                           (cond (= :nil (:t m)) (or default-type t/nil-t)

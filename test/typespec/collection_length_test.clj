@@ -669,6 +669,28 @@
 (defn filtered [xs] (str/upper-case (first (filter identity xs))))")]
     (is (= ["TSP2345" "TSP330-01" "TSP2531"] (codes r)) (pr-str (:diagnostics r)))))
 
+(deftest nth-selects-finite-indices-from-spec-and-control-flow
+  (doseq [opts [{} {:strict-nil true}]]
+    (let [r (checked "(s/def ::positions #{0 2})
+(s/def ::parts (s/tuple string? keyword? string?))
+(s/fdef text :args (s/cat :xs ::parts :i ::positions) :ret string?)
+(defn text [xs i] (nth xs i :missing))
+(s/fdef computed :args (s/cat :flag boolean?) :ret string?)
+(defn computed [flag] (nth [\"a\" :tag \"b\"] (if flag 0 2)))
+(s/fdef fallback :args (s/cat :i #{0 4}) :ret (s/nilable string?))
+(defn fallback [i] (nth [nil :tag] i \"missing\"))
+(s/fdef out-of-bounds :args (s/cat :i #{0 4}) :ret string?)
+(defn out-of-bounds [i] (nth [\"hit\" :tag] i))
+(s/fdef overflow :args (s/cat :i #{0 4294967297}) :ret string?)
+(defn overflow [i] (nth [\"hit\" :tag] i \"missing\"))
+(s/fdef maybe-present :args (s/cat :i #{0 2} :xs (s/coll-of string? :min-count 1 :max-count 4)) :ret string?)
+(defn maybe-present [i xs] (nth xs i :missing))" opts)]
+      (is (= [[11 "TSP330-02" "index 4 may be out of bounds for length 2"]
+              [13 "TSP330-02" "index 4294967297 cannot be represented as a JVM int"]
+              [15 "TSP2322" "returns (t/or string? :missing), but the signature says string?"]]
+             (mapv (juxt (comp :row :pos) :code :message) (:diagnostics r)))
+          (pr-str (:diagnostics r))))))
+
 (deftest first-on-an-absent-collection-propagates-nil
   (let [r (checked "(defn docker-result [success?]
                         (if success? {:output [\"0.0.0.0:5432\"]} {:error :failed}))

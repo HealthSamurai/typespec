@@ -180,7 +180,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 |---|---|
 | `defrecord R [a b]` | nominal class + fields + open extra keys; `assoc` preserves `R`, `dissoc` of a field yields a map |
 | `defprotocol` | method `s/fdef` contracts check `reify`, `extend-type` and `extend-protocol` across namespaces when the protocol declaration is among the checked sources. `extend-protocol` allows partial implementations. [F430](../features/F430-protocols.md) |
-| `defmulti` / `defmethod` | the shared `s/fdef` checks calls and method bodies across namespaces. A string dispatch value can narrow an argument to the Spec variants whose required tag matches a direct keyword lookup. [F440](../features/F440-multimethods.md) |
+| `defmulti` / `defmethod` | the shared `s/fdef` checks calls and method bodies across namespaces. String dispatch narrows by a required tag. `class` and `(comp class :key)` refine an argument or a field using JVM inheritance. [F440](../features/F440-multimethods.md) |
 | `reduce-kv` | checks the accumulator, key and value against the reducer's signature. Key and value types come from `s/map-of`, known map entries or a vector's index and element types. An empty input or `nil` returns the initial accumulator. [F230](../features/F230-generics-and-hof.md) |
 | `group-by` | checks the key function and infers non-empty vector values. A lookup can return `nil` when the key is absent. [F330](../features/F330-tuples-and-nonempty.md) |
 | `keys`, `vals` | preserve key and value types from `s/map-of` and maps whose entries are known. An empty input returns `nil`. [F310](../features/F310-maps-and-destructuring.md) |

@@ -53,3 +53,19 @@ PY
 
 clojure -Sdeps "$ring_deps" -M:check check --root "$ring_root"
 ```
+
+## Проверка `body-string` по Spec
+
+Добавьте [проверочный `s/fdef`](../examples/ring-core-check/body_contract.clj)
+в распакованные исходники и повторите обычный `check`.
+
+```sh
+cp examples/ring-core-check/body_contract.clj "$ring_root/src/ring/"
+clojure -Sdeps "$ring_deps" -M:check check --root "$ring_root"
+```
+
+С контрактом прогон охватывает 29 файлов. `class` в `(comp class :body)`
+сужает поле до `string?` в исходном методе `String`. До доработки F440
+эта ветка давала `TSP2322`. Теперь остаётся **1 ошибка, 63 предупреждения**.
+Три дополнительных предупреждения относятся к выводу результата `apply`
+и `slurp` в других методах `body-string`.

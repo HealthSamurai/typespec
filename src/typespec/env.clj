@@ -258,6 +258,19 @@
                 {:index index :key (:val key) :arity (count names)})))
     nil))
 
+(defn- class-dispatch-projection [file dispatch]
+  (when (and (empty? (:directives dispatch)) (not (tag-node dispatch)))
+    (case (:op dispatch)
+      :sym (when (= 'class (t/core-name file (:val dispatch)))
+             {:kind :class :index 0 :arity 1})
+      :list (let [[head f key & more] (:children dispatch)]
+              (when (and (= 'comp (t/core-name file (:val head)))
+                         (= :sym (:op f)) (= 'class (t/core-name file (:val f)))
+                         (= :kw (:op key)) (empty? more)
+                         (every? #(and (empty? (:directives %)) (not (tag-node %))) [head f key]))
+                {:kind :class :index 0 :key (:val key) :arity 1}))
+      nil)))
+
 (defn- multimethod-dispatch [file forms]
   (let [forms (if (= :str (:op (first forms))) (rest forms) forms)
         forms (if (= :map (:op (first forms))) (rest forms) forms)
@@ -268,7 +281,8 @@
     (when (or (empty? options)
               (and (= :kw (:op option)) (= :default (:val option))
                    (#{:kw :str :nil :num :bool :char} (:op fallback)) (empty? extra)))
-      (when-let [projection (dispatch-projection file dispatch)]
+      (when-let [projection (or (class-dispatch-projection file dispatch)
+                               (dispatch-projection file dispatch))]
         (assoc projection :default (if (empty? options) :default (:val fallback)))))))
 
 (defn- register-spec [acc bucket sym entry diags]

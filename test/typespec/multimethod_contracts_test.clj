@@ -118,6 +118,52 @@
            (locations result))
         (pr-str (:diagnostics result)))))
 
+(deftest class-dispatch-refines-spec-arguments-and-projected-keys
+  (let [provider (parse/parse-string "render.clj"
+                                    "(ns catalog.render (:require [clojure.spec.alpha :as s]))
+(s/def ::body (s/nilable (s/or :text string? :file (partial instance? java.io.File)
+                              :stream (partial instance? java.io.ByteArrayInputStream))))
+(s/def ::request (s/keys :opt-un [::body]))
+(s/fdef render :args (s/cat :request ::request) :ret (s/nilable string?))
+(defmulti render (comp class :body))
+(s/fdef render-body :args (s/cat :body ::body) :ret (s/nilable string?))
+(defmulti render-body class)")
+        client (parse/parse-string "extension.clj"
+                                  "(ns extension (:require [catalog.render :as api] [clojure.spec.alpha :as s])
+  (:import [java.io InputStream]))
+(s/fdef consume :args (s/cat :stream (partial instance? InputStream)) :ret string?)
+(defn consume [stream] \"read\")
+(defmethod api/render String [{:keys [body]}] (subs body 1))
+(defmethod api/render InputStream [request] (consume (:body request)))
+(defmethod api/render nil [request] (:body request))
+(defmethod api/render-body String [body] (subs body 1))
+(defmethod api/render-body :default [body] (subs body 1))
+(defmethod api/render java.io.File [request] (consume (:body request)))")
+        result (check/check-files [client provider] {})]
+    (is (= [["extension.clj" 9 "TSP2345"] ["extension.clj" 10 "TSP2345"]]
+           (locations result))
+        (pr-str (:diagnostics result)))
+    (is (= (:diagnostics result) (:diagnostics (check/check-files [provider client] {}))))))
+
+(deftest class-dispatch-keeps-the-contract-for-custom-hierarchies-and-functions
+  (let [file (parse/parse-string "demo.clj" "(ns demo (:refer-clojure :exclude [class])
+  (:require [clojure.spec.alpha :as s]))
+(defn class [_] String)
+(s/def ::body (s/or :text string? :file (partial instance? java.io.File)))
+(s/fdef shadowed :args (s/cat :body ::body) :ret string?)
+(defmulti shadowed class)
+(defmethod shadowed String [body] (subs body 1))
+(s/fdef custom :args (s/cat :body ::body) :ret string?)
+(defmulti custom clojure.core/class :hierarchy #'hierarchy)
+(defmethod custom String [body] (subs body 1))
+(s/fdef default-nil :args (s/cat :body ::body) :ret string?)
+(defmulti default-nil clojure.core/class :default nil)
+(defmethod default-nil nil [body] (subs body 1))")
+        result (check/check-files [file] {})]
+    (is (= [["demo.clj" 7 "TSP2345"] ["demo.clj" 10 "TSP2345"] ["demo.clj" 13 "TSP2345"]]
+           (locations result))
+        (pr-str (:diagnostics result)))))
+
 (deftest variadic-spec-also-checks-fixed-methods-and-their-rest-alternatives
   (let [file (parse/parse-string "demo.clj"
                                 "(ns demo (:require [clojure.spec.alpha :as s]))

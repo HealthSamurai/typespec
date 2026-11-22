@@ -3961,21 +3961,59 @@
   (let [resolved (env/resolve-sym file sym)]
     (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))))
 
-(defn- narrow-dispatch-params [ctx types {:keys [arity index key default]} dispatch]
-  (if (and (= arity (count types)) (= :str (:op dispatch)) (literal-node? dispatch)
-           (not= default (:val dispatch)))
-    (let [original (nth types index)
-          alternatives (path-alternatives ctx original [key])]
-      (if (and (seq alternatives)
-               (every? (fn [[leaf]] (and (= :lit (:t leaf)) (string? (:val leaf)))) alternatives))
-        (let [matches (keep (fn [[leaf rebuild]]
-                              (when (= (:val dispatch) (:val leaf)) (rebuild leaf)))
-                            alternatives)]
-          (if (seq matches)
-            (assoc types index (t/with-assumption (apply t/union matches) (t/assumption original)))
-            types))
-        types))
-    types))
+(defn- dispatch-leaf-class [leaf]
+  (let [primitive (if (= :lit (:t leaf)) (:name (t/lit-prim (:val leaf))) (:name leaf))]
+    (cond
+      (= :class (:t leaf)) (t/load-class (:name leaf))
+      (and (#{:prim :lit} (:t leaf)) (#{:string :boolean :keyword :symbol :uuid} primitive))
+      (t/load-class (t/prim->class primitive)))))
+
+(defn- disjoint-dispatch-classes? [^Class a ^Class b]
+  (and (not (.isAssignableFrom a b)) (not (.isAssignableFrom b a))
+       ;; Arrays of different interface types can have a common subtype.
+       (not (or (.isArray a) (.isArray b)))
+       (or (and (not (.isInterface a)) (not (.isInterface b)))
+           (java.lang.reflect.Modifier/isFinal (.getModifiers a))
+           (java.lang.reflect.Modifier/isFinal (.getModifiers b)))))
+
+(defn- class-dispatch-filter [ctx dispatch]
+  (let [{:keys [file env]} ctx
+        sym (:val dispatch)]
+    (cond
+      (and (= :nil (:op dispatch)) (literal-node? dispatch))
+      (fn [leaf]
+        (let [nil-type (nil-part env leaf)]
+          (when-not (= t/never nil-type) nil-type)))
+
+      (and (= :sym (:op dispatch)) (empty? (:directives dispatch)) (not (env/tag-node dispatch))
+           (not (contains? (:locals ctx) sym))
+           (not (contains? (:refers file) sym))
+           (not (contains? (get-in env [:ns-defs (:ns file)]) sym)))
+      (when-let [class-name (t/resolve-class (:imports file) sym)]
+        (when-let [^Class target (t/load-class class-name)]
+          (when-not (.isPrimitive target)
+            (fn [leaf]
+              (let [receiver (dispatch-leaf-class leaf)]
+                (when-not (and receiver (disjoint-dispatch-classes? target receiver))
+                  (first (instance-parts ctx class-name leaf)))))))))))
+
+(defn- narrow-dispatch-params [ctx types {:keys [arity index key default kind]} dispatch]
+  (let [class? (= :class kind)
+        narrow (when (and (= arity (count types)) (not= default (:val dispatch)))
+                 (if class?
+                   (class-dispatch-filter ctx dispatch)
+                   (when (and (= :str (:op dispatch)) (literal-node? dispatch))
+                     #(when (= (:val dispatch) (:val %)) %))))]
+    (if narrow
+      (let [original (nth types index)
+            alternatives (path-alternatives ctx original (if key [key] []) class?)
+            string-leaf? (fn [[leaf]] (and (= :lit (:t leaf)) (string? (:val leaf))))
+            matches (when (or class? (every? string-leaf? alternatives))
+                      (keep (fn [[leaf rebuild]] (some-> (narrow leaf) rebuild)) alternatives))]
+        (if (seq matches)
+          (assoc types index (t/with-assumption (apply t/union matches) (t/assumption original)))
+          types))
+      types)))
 
 (defmethod special 'defmethod [ctx node _]
   (let [{:keys [target dispatch local-name arities]} (env/defmethod-parts node)

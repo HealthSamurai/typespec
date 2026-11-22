@@ -16,6 +16,43 @@
 (defn alternatives [ty] (set (t/members {} ty)))
 (defn map-type [req opt] {:t :map :req req :opt opt})
 
+(deftest keys-and-vals-project-map-entries
+  (let [by-name {:t :map-of :k (t/prim :string) :v (t/prim :int)}
+        complete (assoc (map-type {:required (t/lit 1)} {:optional t/nil-t}) :complete-keys? true)]
+    (doseq [[source bounds element locals]
+            [["(keys {:known 1})" [1 1] (t/lit :known) {}]
+             ["(vals {:a 1 :b 1})" [2 2] (t/lit 1) {}]
+             ["(keys m)" [1 2] (t/union (t/lit :required) (t/lit :optional)) {'m complete}]
+             ["(vals m)" [1 2] (t/union (t/lit 1) t/nil-t) {'m complete}]
+             ["(keys m)" [1 nil] (t/prim :string) {'m by-name}]
+             ["(vals m)" [1 nil] (t/prim :int) {'m by-name}]
+             ["(keys m)" [1 nil] t/any {'m (map-type {:open (t/lit 1)} {})}]]]
+      (let [members (alternatives (infer-type source locals))
+            items {:t :coll :kind :seq :of element :min-count (first bounds)}
+            items (cond-> items (second bounds) (assoc :max-count (second bounds)))]
+        (is (= (if (= locals {'m by-name}) #{items t/nil-t} #{items}) members) source)))
+    (is (= t/nil-t (infer-type "(keys {})")))
+    (is (= t/nil-t (infer-type "(vals nil)")))
+    (is (= t/nil-t (infer-type "(first (vals {:key nil}))")))))
+
+(deftest map-projections-check-spec-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj"
+              "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::index (s/map-of string? int?))
+(s/fdef names :args (s/cat :m ::index) :ret (s/nilable (s/coll-of string? :kind seq?)))
+(defn names [m] (keys m))")
+        consumer (parse/parse-string "consumer.clj"
+                   "(ns consumer (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef bad-names :args (s/cat :m ::api/index) :ret (s/coll-of int? :kind seq?))
+(defn bad-names [m] (sort (api/names m)))
+(s/fdef wrong-values :args (s/cat :m ::api/index) :ret (s/nilable (s/coll-of string? :kind seq?)))
+(defn wrong-values [m] (vals m))
+(keys)")
+        ds (:diagnostics (check/check-files [consumer api] {:strict-nil true}))]
+    (is (= [["consumer.clj" 3 "TSP2322"] ["consumer.clj" 5 "TSP2322"] ["consumer.clj" 6 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest defaults-replace-absence-not-nil
   (doseq [source ["(get m :x 42)" "(:x m 42)"]]
     (testing source

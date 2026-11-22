@@ -8,6 +8,14 @@
          '[typespec.externs :as externs])
 (import '[java.security MessageDigest] '[java.util HexFormat])
 (assert (>= (.feature (Runtime/version)) 25) "Use JDK >=25 (Java catalogue baseline)")
+
+(defn- check-version-keys! [files opts]
+  (let [path "probe/version_keys.clj"
+        checked (check/check-files (conj files (parse/parse-file path)) opts)
+        diagnostics (filter #(= path (:file %)) (:diagnostics checked))]
+    (assert (= [[13 :error "TSP2322"]] (mapv (juxt (comp :row :pos) :severity :code) diagnostics))
+            (str "Expected only the numeric version key contract to fail: " (pr-str diagnostics)))))
+
 (let [mode (or (first *command-line-args*) "baseline")
       _ (assert (#{"baseline" "contracts"} mode) "Use baseline or contracts")
       output (if (= mode "contracts") "current-contracts" "current")
@@ -29,11 +37,11 @@
                        :parse (try {:ok (parse/parse-string path source)}
                                    (catch Exception e {:error {:class (.getName (class e))
                                                                :message (.getMessage e)}}))})) manifest)
-      parsed (keep #(get-in % [:parse :ok]) reads)
-      result (check/check-files (vec parsed)
-               (if (= mode "contracts")
-                 {:extern-contracts (externs/load-contracts "." {:externs ["externs.edn"]})}
-                 {}))
+      parsed (into [] (keep #(get-in % [:parse :ok])) reads)
+      opts (if (= mode "contracts")
+             {:extern-contracts (externs/load-contracts "." {:externs ["externs.edn"]})}
+             {})
+      result (check/check-files parsed opts)
       ds (:diagnostics result)
       namespaces (keep :ns parsed)
       loaded (vec (filter find-ns namespaces))
@@ -71,6 +79,7 @@
   (spit (io/file output "diagnostics.edn") (str (pr-str (vec ds)) "\n"))
   (assert (= 11 (:source-files summary) (:parsed-files summary)) "All 11 sources must parse")
   (assert (= {:cast 0 :any 0 :ignore 0} (:trust summary)) "Trust escape introduced")
+  (check-version-keys! parsed opts)
   (prn summary)
   (doseq [r reads :when (get-in r [:parse :error])] (prn {:parse-failure (:file r) :error (get-in r [:parse :error])}))
   (doseq [d ds] (println (main/format-diag d)))

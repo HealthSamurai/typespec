@@ -3098,6 +3098,28 @@
       :prim (cond-> opaque (= :vector (:name member)) (assoc :key (t/prim :int)))
       opaque)))
 
+(doseq [[head part] {'keys :key 'vals :value}]
+  (defmethod special head [ctx node _]
+    (let [args (args-of node)
+          [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+      (if (not= 1 (count types))
+        (do (report! ctx node "TSP2554" (str head " expects 1 argument")) t/unknown)
+        (t/with-assumption
+         (apply t/union
+                (for [member (t/members (:env ctx) source)]
+                  (case (:t member)
+                    (:nil :never) member
+                    (let [{[lo hi] :bounds :as entries} (when (#{:map :map-of} (:t member))
+                                                        (kv-reduction-input member))
+                          element (if (or (= :map-of (:t member)) (:complete-keys? member))
+                                    (part entries) t/any)
+                          minimum (or lo 0)]
+                      (if (= 0 hi)
+                        t/nil-t
+                        (let [items (length/with-bounds {:t :coll :kind :seq :of element} (max 1 minimum) hi)]
+                          (if (zero? minimum) (t/union items t/nil-t) items)))))))
+         (t/assumption source))))))
+
 (defmethod special 'reduce-kv [ctx node _]
   (let [[f init c :as args] (args-of node)]
     (if (not= 3 (count args))

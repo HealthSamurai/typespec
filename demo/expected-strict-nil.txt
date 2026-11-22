@@ -26,7 +26,6 @@ src/clinic/intake.clj:10:38  TSP2741  :keys! below requires :patient/address, bu
 src/clinic/intake.clj:25:3  TSP2741  required key :port is missing
 src/clinic/intake.clj:41:17  TSP2531  email may be nil: :user/email is missing when m is not nil
 src/clinic/intake.clj:41:23  TSP2531  name may be nil: :user/name is missing when m is not nil
-src/clinic/patients.clj:11:3  TSP210-01  compatibility not checked: t/unknown to (s/nilable :clinic/patient) (unknown)  [warning]
 src/clinic/patients.clj:17:40  TSP2339  :patient/nmae is not a key of :clinic/patient. Did you mean :patient/name?
 src/clinic/patients.clj:25:3  TSP8001  case is not exhaustive: "deceased" is not handled
 src/clinic/patients.clj:34:19  TSP2531  (:patient/name patient) may be nil: :patient/name is optional in :clinic/patient

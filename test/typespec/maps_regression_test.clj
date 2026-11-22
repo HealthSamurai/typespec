@@ -53,6 +53,26 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest get-uses-the-map-of-domain-for-computed-keys
+  (let [by-name {:t :map-of :k (t/prim :string) :v (t/prim :int)}
+        by-tag {:t :map-of :k (t/prim :keyword) :v (t/prim :boolean)}
+        either (t/union by-name by-tag t/nil-t)
+        nullable (update by-name :v t/union t/nil-t)
+        string-key (t/prim :string)
+        fallback (t/lit :missing)]
+    (doseq [[source map-type key-type expected]
+            [["(get m k)" by-name string-key #{t/nil-t (t/prim :int)}]
+             ["(get m k :missing)" by-name string-key #{fallback (t/prim :int)}]
+             ["(get m k :missing)" nullable string-key #{fallback t/nil-t (t/prim :int)}]
+             ["(get m k :missing)" either string-key #{fallback (t/prim :int)}]
+             ["(get m k :missing)" either (t/prim :int) #{fallback}]
+             ["(get m k :missing)" either (t/union string-key (t/prim :keyword))
+              #{fallback (t/prim :int) (t/prim :boolean)}]
+             ["(get m \"name\" :missing)" by-name t/unknown #{fallback (t/prim :int)}]
+             ["(get m k :missing)" by-name t/unknown #{fallback (t/prim :int)}]
+             ["(get m k :missing)" t/nil-t string-key #{fallback}]]]
+      (is (= expected (alternatives (infer-type source {'m map-type 'k key-type}))) source))))
+
 (deftest defaults-replace-absence-not-nil
   (doseq [source ["(get m :x 42)" "(:x m 42)"]]
     (testing source

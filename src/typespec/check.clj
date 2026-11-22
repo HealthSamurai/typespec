@@ -2324,6 +2324,20 @@
 
 ;; maps
 
+(defn- read-map-of [ctx source key-type not-found]
+  (let [env (:env ctx)
+        members (t/members env source)
+        key-members (t/members env key-type)]
+    (if (every? #(#{:map-of :nil :never} (:t %)) members)
+      (t/with-assumption
+       (apply t/union not-found
+              (for [{:keys [k v] :as member} members
+                    :when (and (= :map-of (:t member))
+                               (not-every? #(disjoint-scalars? env % k) key-members))]
+                v))
+       (or (t/assumption source) (t/assumption key-type)))
+      t/unknown)))
+
 (defmethod special 'get [ctx node _]
   (let [[m k default] (args-of node)
         mty (infer ctx m)]
@@ -2331,7 +2345,12 @@
       (if default
         (read-key-default ctx mty (:val k) k (infer ctx default))
         (read-key ctx mty (:val k) k))
-      (do (infer ctx k) (some->> default (infer ctx)) t/unknown))))
+      (let [source (eff ctx mty)
+            key-type (eff ctx (infer ctx k))
+            not-found (if default (infer ctx default) t/nil-t)]
+        (if (some #{t/never} [source key-type not-found])
+          t/never
+          (read-map-of ctx source key-type not-found))))))
 
 (defn- numeric-path-value [ctx ty index]
   (let [env (:env ctx)

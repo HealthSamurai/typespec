@@ -11,12 +11,13 @@
 
 (defn- check-registry-probes! [files opts]
   (let [version-path "probe/version_keys.clj"
-        paths #{version-path "probe/package_names.clj"}
+        lookup-path "probe/latest_version.clj"
+        paths #{version-path lookup-path "probe/package_names.clj"}
         checked (check/check-files (into files (map parse/parse-file) paths) opts)
-        diagnostics (filter #(paths (:file %)) (:diagnostics checked))]
-    (assert (= [[version-path 13 :error "TSP2322"]]
+        diagnostics (sort-by :file (filter #(paths (:file %)) (:diagnostics checked)))]
+    (assert (= [[lookup-path 16 :error "TSP2322"] [version-path 13 :error "TSP2322"]]
                (mapv (juxt :file (comp :row :pos) :severity :code) diagnostics))
-            (str "Expected only the numeric version key contract to fail: " (pr-str diagnostics)))))
+            (str "Expected the incorrect numeric version key and package contracts to fail: " (pr-str diagnostics)))))
 
 (let [mode (or (first *command-line-args*) "baseline")
       _ (assert (#{"baseline" "contracts"} mode) "Use baseline or contracts")

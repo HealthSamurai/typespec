@@ -2753,7 +2753,7 @@
           res (coll-of (get '{vec :vector set :set} h :seq) el)]
       (if (= 'butlast h) (t/union res t/nil-t) res))))
 
-(doseq [h '[take drop take-last drop-last]]
+(doseq [h '[take drop take-last]]
   (defmethod special h [ctx node _]
     (let [[n c] (args-of node)]
       (infer ctx n)
@@ -2844,6 +2844,38 @@
     (and (= :lit (:t member)) (string? (:val member)))
     (let [size (count (:val member))] [size size])
     :else (length/bounds member)))
+
+(defmethod special 'drop-last [ctx node _]
+  (let [[n-node coll :as args] (args-of node)
+        types (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not (#{1 2} (count args)))
+      (do (report! ctx node "TSP2554" "drop-last expects 1 or 2 arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [source (peek types)
+            amount (if coll (:val (t/resolve-t (:env ctx) (first types))) 1)
+            n (when (integer? amount) (max 0 amount))]
+        (when coll
+          (assignable! ctx n-node (first types) (t/prim :number)))
+        (if-let [invalid (unsupported-sequence-member ctx source)]
+          (do (report! ctx (peek args) "TSP2345" (str "drop-last cannot sequence " (t/show invalid))) t/unknown)
+          (t/with-assumption
+           (apply t/union
+                  (for [member (t/members (:env ctx) source)
+                        :let [element (elem-type ctx member)
+                              [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))
+                              minimum (if n (max 0 (-' lo n)) 0)
+                              maximum (if (and n hi) (max 0 (-' hi n)) hi)
+                              items (when (and n (:items member)) (subvec (:items member) 0 (int maximum)))
+                              output (cond (= 0 maximum) t/never
+                                           items (apply t/union items)
+                                           :else element)]]
+                    (cond-> (length/with-bounds (coll-of :seq output) minimum maximum)
+                      items (assoc :items items))))
+           (t/assumption source)))))))
 
 (defn- concat-fragment [ctx source]
   (let [parts (for [member (t/members (:env ctx) source)

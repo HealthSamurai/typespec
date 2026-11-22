@@ -195,6 +195,37 @@
             "t/never"]
            (mapv #(at r %) [2 3 4 5 6 7 11])))))
 
+(deftest drop-last-trims-length-and-preserves-prefix-positions
+  (let [r (checked "(drop-last [1 2 \"tail\"])
+(first (drop-last 2 [\"head\" 1 2]))
+(nth (drop-last [1 \"head\" :tail]) 1)
+(drop-last 3 [\"short\"])
+(drop-last 0 [1 2])
+(drop-last -1 [1 2])
+(drop-last nil)
+(drop-last 42)
+(drop-last \"bad\" [1])
+(drop-last)
+(drop-last 2 [] :extra)
+(s/def ::input (s/coll-of string? :kind vector? :min-count 2 :max-count 4))
+(s/def ::output (s/coll-of string? :kind seq? :min-count 1 :max-count 3))
+(s/fdef trim-comma :args (s/cat :fragments ::input) :ret ::output)
+(defn trim-comma [fragments] (->> fragments (drop-last)))
+(s/fdef trim-n :args (s/cat :n int? :fragments ::input))
+(defn trim-n [n fragments] (drop-last n fragments))")]
+    (is (= [[9 "TSP2345"] [10 "TSP2345"] [11 "TSP2554"] [12 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"
+            "\"head\"" "\"head\""
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"
+            "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"]
+           (mapv #(at r %) (range 2 9))))
+    (is (= "(s/coll-of string? :kind seq? :max-count 4)"
+           (main/type-at r "length.clj" 18 28)))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

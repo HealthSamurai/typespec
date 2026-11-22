@@ -449,6 +449,30 @@
     (is (= ["\"kept\"" "nil?" "nil?" "java.lang.Character"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest pmap-and-doall-preserve-bounds-and-original-shape
+  (let [r (checked "(doall 1 [:head \"tail\"])
+(doall nil)
+(nth (doall :unused []) 0 :empty)
+(doall :bad [1])
+(doall 42)
+(doall)
+(pmap +)
+(pmap inc false)
+(s/def ::names (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/def ::packages (s/coll-of string? :kind seq? :min-count 1 :max-count 3))
+(s/fdef realized :args (s/cat :names ::names) :ret ::packages)
+(defn realized [names] (->> names (pmap str/upper-case) doall))
+(s/fdef zipped :args (s/cat :xs (s/coll-of int? :min-count 3 :max-count 5)
+                          :ys (s/coll-of int? :min-count 1 :max-count 2))
+  :ret (s/coll-of int? :kind seq? :min-count 1 :max-count 2))
+(defn zipped [xs ys] (doall 1 (pmap + xs ys)))
+(nth (doall 1 [:head \"tail\"]) 0)")]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2554"] [8 "TSP2554"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of (t/or keyword? string?) :kind vector?)" "nil?" ":empty" ":head"]
+           (mapv #(at r %) [2 3 4 18])))))
+
 (deftest butlast-returns-a-bounded-prefix-or-nil
   (let [r (checked "(first (butlast [\"kept\" :tail]))
 (butlast [1])

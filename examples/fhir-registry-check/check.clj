@@ -17,7 +17,7 @@
         prerelease-path "probe/prerelease_parts.clj"
         paths #{version-path lookup-path resource-path write-path prerelease-path
                 "probe/package_names.clj" "probe/latest_nonempty.clj"
-                "probe/nonempty_packages.clj"}
+                "probe/nonempty_packages.clj" "probe/parallel_packages.clj"}
         checked (check/check-files (into files (map parse/parse-file) paths) (assoc opts :strict-nil true))
         diagnostics (sort-by :file (filter #(paths (:file %)) (:diagnostics checked)))]
     (assert (= [[resource-path 11 :error "TSP2322"]

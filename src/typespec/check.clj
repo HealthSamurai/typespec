@@ -2910,7 +2910,7 @@
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))
 
-(doseq [h '[distinct shuffle set doall]]
+(doseq [h '[distinct shuffle set]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)
           el (elem-type ctx (infer ctx c))]
@@ -3138,6 +3138,23 @@
      :upper (when (every? :upper parts) (apply max (map :upper parts)))
      :element (t/with-assumption (apply t/union (map :element parts)) (t/assumption source))}))
 
+(defmethod special 'doall [ctx node _]
+  (let [args (args-of node)
+        types (mapv #(eff ctx (infer ctx %)) args)
+        source (peek types)]
+    (cond
+      (not (#{1 2} (count args)))
+      (do (report! ctx node "TSP2554" "doall expects one or two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      (report-invalid-sequence-args! ctx 'doall [(peek args)] [source]) t/unknown
+
+      :else
+      (do (when (and (= 2 (count args)) (not= 0 (:upper (sequence-summary ctx source))))
+            (assignable! ctx (first args) (first types) (t/prim :number)))
+          source))))
+
 (defmethod special 'concat [ctx node _]
   (let [args (args-of node)
         sources (mapv #(eff ctx (infer ctx %)) args)]
@@ -3170,7 +3187,7 @@
       (empty? args) (infer ctx f)
       :else (or (partial-function ctx node f args) t/unknown))))
 
-(doseq [h '[keep mapcat pmap]]
+(doseq [h '[keep mapcat]]
   (defmethod special h [ctx node _]
     (let [[f & colls] (args-of node)
           els (mapv #(elem-type ctx (infer ctx %)) colls)]
@@ -3180,7 +3197,7 @@
               ret (case h keep (t/remove-nil (:env ctx) ret) mapcat (elem-type ctx ret) ret)]
           (coll-of :seq ret))))))
 
-(doseq [[head kind] {'map :seq 'mapv :vector}]
+(doseq [[head kind] {'map :seq 'mapv :vector 'pmap :seq}]
   (defmethod special head [ctx node _]
     (let [[f & colls] (args-of node)
           sources (mapv #(eff ctx (infer ctx %)) colls)]
@@ -3192,7 +3209,7 @@
         (do (when f (infer ctx f))
             (report! ctx node "TSP2554" (if (= 'map head)
                                          "map expects at least one argument"
-                                         "mapv expects a function and at least one collection"))
+                                         (str (name head) " expects a function and at least one collection")))
             t/unknown)
 
         (some #{t/never} sources)

@@ -4172,7 +4172,7 @@
                       (when-not contract
                         (protocol-diagnostic! ctx method "TSP430-03" (str var " has no s/fdef for arity " n)))
                       (check-protocol-body ctx method fixed body params contract receiver)))))))
-        (when (not= :extend-protocol form-kind)
+        (when-not (#{:extend-protocol :extend} form-kind)
           (doseq [[method {:keys [var arities]}] (sort-by key declared)
                   n arities :when (not (contains? @covered [method n]))]
             (protocol-diagnostic! ctx protocol "TSP430-02" (str "missing implementation of " var " with arity " n))))))))
@@ -4201,6 +4201,53 @@
       (doseq [[target methods] (method-groups groups #{:sym :nil})]
         (check-protocol-group ctx protocol methods (extension-receiver ctx target) :extend-protocol))))
   t/nil-t)
+
+(defn- direct-extension-receiver [ctx target]
+  (when (and (empty? (:directives target)) (not (env/tag-node target)))
+    (case (:op target)
+      :nil t/nil-t
+      :sym (let [sym (:val target)]
+             (when-not (or (t/primitives (str sym)) (contains? (:locals ctx) sym)
+                           (contains? (get-in ctx [:file :refers]) sym)
+                           (contains? (get-in ctx [:env :ns-defs (get-in ctx [:file :ns])]) sym))
+               (extension-receiver ctx target)))
+      :list (let [[head class-name & more] (:children target)
+                  sym (:val head)]
+              (when (and (= :sym (:op head)) (empty? (:directives head)) (not (env/tag-node head))
+                         (= "forName" (name sym)) (= "java.lang.Class" (java-static? ctx sym))
+                         (= :str (:op class-name)) (literal-node? class-name) (empty? more))
+                (when-let [^Class cls (t/load-class (:val class-name))]
+                  (when-not (.isPrimitive cls)
+                    (t/class-type (:val class-name))))))
+      nil)))
+
+(defn- literal-extension-methods [ctx method-map]
+  (when (and (= :map (:op method-map)) (empty? (:directives method-map)) (not (env/tag-node method-map)))
+    (let [methods (mapv (fn [[k f]]
+                          (let [[_ & parts] (:children f)]
+                            (when (and (= :kw (:op k)) (literal-node? k) (simple-keyword? (:val k))
+                                       (#{'fn 'fn*} (builtin-head ctx f))
+                                       (#{:vector :list} (:op (first parts))))
+                              (assoc f :children (into [(assoc k :op :sym :val (symbol (name (:val k))))] parts)))))
+                        (partition 2 (:children method-map)))]
+      (when (every? some? methods) methods))))
+
+(defmethod special 'extend [ctx node _]
+  (let [[target & groups] (args-of node)
+        receiver (direct-extension-receiver ctx target)]
+    (if-not target
+      (do (report! ctx node "TSP2554" "extend expects a class or nil") t/unknown)
+      (let [target-type (infer ctx target)]
+        (if (and receiver (even? (count groups)))
+          (doseq [[protocol method-map] (partition 2 groups)]
+            (if-let [methods (when (and (= :sym (:op protocol)) (empty? (:directives protocol))
+                                        (not (env/tag-node protocol)) (not (contains? (:locals ctx) (:val protocol)))
+                                        (get-in ctx [:env :protocols (qualified-var (:file ctx) (:val protocol))]))
+                               (literal-extension-methods ctx method-map))]
+              (check-protocol-group ctx protocol methods receiver :extend)
+              (do (infer ctx protocol) (infer ctx method-map))))
+          (run! #(infer ctx %) groups))
+        (if (= t/never target-type) t/never t/nil-t)))))
 
 (defn- guard-claim [env entry]
   (when-let [node (env/attr-get (get-in entry [:parts :attr]) :t/guard)]

@@ -16,6 +16,17 @@
                       (parse/parse-string "display.clj" provider)]
                      {:track-uses true}))
 
+(deftest checks-literal-extend-methods-including-a-forname-array
+  (let [r (checked "(extend String api/Display
+  {:render (fn ([this] this) ([this prefix] (str prefix this)))})
+(extend (Class/forName \"[B\") api/Display
+  {:render (fn [body] (alength body))})
+(extend nil api/Display {:render (fn [_] \"nil\")})")]
+    (is (= [[5 "TSP2322"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= [3 5 6] (mapv (comp :row :pos) (filter #(and (= :implementation (:kind %))
+                                                          (= 'catalog.display/render (:var %))) (:uses r)))))))
+
 (deftest checks-reify-and-extensions-against-the-same-method-spec
   (let [r (checked "(let [captured 42]
   (reify api/Display

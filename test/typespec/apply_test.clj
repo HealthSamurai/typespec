@@ -84,6 +84,25 @@
   (let [r (checked "(defn forward [xs] (apply inc xs))" {:strict true})]
     (is (= :error (:severity (first (filter #(= "TSP410-01" (:code %)) (:diagnostics r))))))))
 
+(deftest checks-seqable-tails-with-a-single-variadic-contract
+  (let [r (checked "(s/fdef join :args (s/cat :items (partial instance? clojure.lang.ISeq)) :ret string?)
+(defn join [items] (apply str items))
+(s/fdef label :args (s/cat :label string? :items (s/* int?)) :ret string?)
+(defn label [label & items] label)
+(s/fdef good :args (s/cat :items (s/coll-of int? :kind vector?)) :ret string?)
+(defn good [items] (apply label \"good\" items))
+(s/fdef bad :args (s/cat :items (s/coll-of keyword? :kind vector?)) :ret string?)
+(defn bad [items] (apply label \"bad\" items))
+(s/fdef missing-prefix :args (s/cat :items (s/coll-of string? :kind vector?)) :ret any?)
+(defn missing-prefix [items] (apply label items))
+(s/fdef choice :args (s/cat :flag boolean? :items (s/coll-of #{1} :kind vector?)) :ret string?)
+(defn ones {:t/sig '[& #{1} :-> string?]} [& items] \"ok\")
+(defn choice [flag items] (apply ones (if flag [1] items)))")]
+    (is (= [[9 "TSP2345"] [11 "TSP410-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "string?" (main/type-at r "spread.clj" 3 20)))))
+
 (deftest spread-arguments-are-inferred-once
   (let [r (checked "(apply str [#_(t/any \"fixture\") 42])")]
     (is (empty? (codes r)) (pr-str (:diagnostics r)))

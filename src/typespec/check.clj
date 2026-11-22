@@ -2840,6 +2840,17 @@
                   (some #(not (#{:unknown :any} (:t %))) (conj params rest))))
             (:arities ty))))
 
+(defn- spread-seqable? [ty]
+  (case (:t ty)
+    (:nil :never :coll :map :map-of) true
+    :lit (string? (:val ty))
+    :prim (#{:coll :seq :vector :set :map :string} (:name ty))
+    :class (when-let [^Class cls (t/load-class (:name ty))]
+             (or (.isArray cls)
+                 (some #(.isAssignableFrom ^Class % cls)
+                       [clojure.lang.Seqable java.lang.Iterable java.lang.CharSequence java.util.Map])))
+    false))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -2855,6 +2866,11 @@
             expected (when (and exact? (callback-node? ctx f))
                        {:t :fn :arities (mapv #(hash-map :params (into prefix-types %) :ret t/unknown) spreads)})
             ftype (t/resolve-t (:env ctx) (infer ctx f expected))
+            [arity & overloads] (:arities ftype)
+            tail-members (when-not exact? (t/members (:env ctx) (eff ctx tail-type)))
+            variadic? (and (not exact?) (= :fn (:t ftype)) (:rest arity) (not (:kwargs arity))
+                           (empty? overloads) (<= (t/arity-minimum arity) (count prefix))
+                           (every? spread-seqable? tail-members))
             invalid-tail (unsupported-sequence-member ctx tail-type)
             callable? (or (= :all (:t ftype)) (seq (:arities ftype)))]
         (cond
@@ -2874,6 +2890,19 @@
           exact?
           (do (when-not (= :any (:t ftype)) (check-composable! ctx f ftype "apply"))
               t/unknown)
+
+          variadic?
+          (let [element (apply t/union
+                               (map (fn [items member]
+                                      (if items (apply t/union items) (elem-type ctx member)))
+                                    spreads tail-members))
+                element-node {:op :spread :pos (:pos tail) :synthetic true
+                              :display (str "element of " (parse/unparse tail))}
+                ftype (if (seq prefix) ftype (assoc ftype :arities [(dissoc arity :map-edits)]))]
+            (t/with-assumption
+             (call-fn ctx node (str "apply " (parse/unparse f)) ftype
+                      (conj prefix element-node) (conj prefix-types element))
+             (t/assumption tail-type)))
 
           :else
           (do (when (or (:strict (:opts ctx)) (checkable-spread-contract? ftype))

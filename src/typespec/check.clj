@@ -524,6 +524,26 @@
 (defn- equality-contexts [ctx expr value]
   (refine-path ctx expr #(equality-parts ctx value %)))
 
+(defn- count-parts [size member]
+  (case (:t member)
+    :never [nil nil]
+    :nil (if (zero? size) [member nil] [nil member])
+    :coll
+    (let [[lo hi] (length/bounds member)]
+      (if (or (< size lo) (and hi (> size hi)))
+        [nil member]
+        (let [shorter (when (< lo size) (length/with-bounds member lo (dec' size)))
+              longer (when (or (nil? hi) (< size hi)) (length/with-bounds member (inc' size) hi))]
+          [(if (= lo hi) member (length/with-bounds member size size))
+           (if (and shorter longer) (t/union shorter longer) (or shorter longer))])))
+    [member member]))
+
+(defn- count-equality-contexts [ctx expr size]
+  (let [[source & extra] (rest (:children expr))]
+    (when (and (not (:guards-disabled? ctx)) (integer? size)
+               (= 'count (builtin-head ctx expr)) source (empty? extra))
+      (refine-path ctx source #(count-parts size %)))))
+
 (defn- invalid-parts [ctx leaf]
   (if (#{:coll :map :map-of :fn} (:t leaf))
     [nil leaf]
@@ -679,8 +699,10 @@
       (and (#{'= 'not=} h) (= 2 (count args)))
       (let [branches (or (cond (and (literal-node? a) (literal-node? b))
                                (if (= (:val a) (:val b)) [ctx nil] [nil ctx])
-                               (literal-node? b) (equality-contexts ctx a (:val b))
-                               (literal-node? a) (equality-contexts ctx b (:val a)))
+                               (literal-node? b) (or (count-equality-contexts ctx a (:val b))
+                                                     (equality-contexts ctx a (:val b)))
+                               (literal-node? a) (or (count-equality-contexts ctx b (:val a))
+                                                     (equality-contexts ctx b (:val a))))
                          [ctx ctx])]
         (if (= '= h) branches (vec (reverse branches))))
 

@@ -80,6 +80,10 @@
                               ":kind seq? :min-count 1) (s/coll-of t/never :kind seq? :max-count 0))"))
                (mapv (fn [[row col]] (main/type-at tree "upstream/src/dsql/pg.clj" row col))
                      [[1093 12] [1125 12] [1153 10]]))
+      (expect! "the SQL else branches narrow pair to exactly two elements"
+               (repeat 3 "(s/coll-of t/unknown :kind seq? :min-count 2 :max-count 2)")
+               (mapv (fn [[row col]] (main/type-at tree "upstream/src/dsql/pg.clj" row col))
+                     [[1102 52] [1134 52] [1162 50]]))
       (println "PASS: all 9 pinned pg production sources (351 forms, 3 expected errors, 93 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")

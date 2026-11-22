@@ -40,6 +40,45 @@
             "(s/coll-of (s/coll-of t/never :kind seq? :max-count 0) :kind seq? :min-count 1)"]
            (mapv #(at r %) [5 7 8 9])))))
 
+(deftest count-equality-refines-length-in-both-branches
+  (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
+(s/fdef choose :args (s/cat :pair ::pair) :ret string?)
+(defn choose [pair]
+  (if (= 1 (count pair)) (first pair) (second pair)))
+(s/fdef label :args (s/cat :xs (s/nilable (s/coll-of string? :kind vector?))) :ret string?)
+(defn label [xs]
+  (if (= (count xs) 0) \"empty\" (first xs)))
+(s/fdef exact :args (s/cat :xs (s/coll-of string? :kind vector?)) :ret string?)
+(defn exact [xs]
+  (let [alias xs
+        other? (not= (count alias) 2)]
+    (if other? \"other\" (second xs))))
+(let [xs nil] (if (= 0 (count xs)) :zero (subs 42 0)))")]
+    (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))
+    (is (= ":zero" (at r 14)))))
+
+(deftest count-refinement-retains-interior-gaps-and-element-nilability
+  (let [r (checked "(s/fdef without-two :args (s/cat :xs (s/coll-of string? :kind vector? :min-count 1 :max-count 3)) :ret any?)
+(defn without-two [xs]
+  (if (not= 2 (count xs))
+    xs
+    nil))
+(s/fdef nullable-element :args (s/cat :xs (s/coll-of (s/nilable string?) :kind vector?)) :ret string?)
+(defn nullable-element [xs] (if (= 1 (count xs)) (first xs) \"empty\"))
+(s/fdef shadowed :args (s/cat :xs (s/coll-of string? :kind vector?)) :ret string?)
+(defn shadowed [xs]
+  (let [count (fn [_] 2)]
+    (if (= 2 (count xs)) (second xs) \"other\")))
+(s/fdef rebound :args (s/cat :xs (s/coll-of string? :kind vector?)) :ret string?)
+(defn rebound [xs]
+  (with-redefs [clojure.core/count (fn [_] 2)]
+    (if (= 2 (count xs)) (second xs) \"other\")))")]
+    (is (= [[8 "TSP2322"] [11 "TSP2322"] [15 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "(t/or (s/coll-of string? :kind vector? :min-count 1 :max-count 1) (s/coll-of string? :kind vector? :min-count 3 :max-count 3))"
+           (main/type-at r "length.clj" 5 5)))))
+
 (deftest bounds-from-spec-cross-namespace-boundaries
   (let [schema (parse/parse-string "schema.clj"
                  "(ns schema (:require [clojure.spec.alpha :as s]))

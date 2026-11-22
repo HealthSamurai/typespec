@@ -106,14 +106,18 @@
         (println "WITH-OPEN PASS: all 9 pg sources checked with the resource mutation."))
       (let [path "probe/migration_files.clj"
             fragments "probe/sql_fragment_vector.clj"
-            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments]))
+            coalesce "probe/coalesce_vector.clj"
+            checked (fixture/run-tree-check nil (mapv parse/parse-file [path fragments coalesce]))
             diagnostics (:diagnostics checked)]
         (expect! "filterv keeps the migration count upper bound from Spec"
                  [] (filterv #(= path (:file %)) diagnostics))
         (expect! "into preserves the SQL fragment count inferred from concat"
                  [] (filterv #(= fragments (:file %)) diagnostics))
+        (expect! "vec preserves the SQL fragment count after drop-last"
+                 [] (filterv #(= coalesce (:file %)) diagnostics))
         (println "FILTERV PASS: filtering migrations preserves the upper length bound from Spec.")
-        (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec."))))
+        (println "INTO PASS: copying SQL fragments into a vector preserves the bounds from Spec.")
+        (println "VEC PASS: converting trimmed SQL fragments preserves their length bounds."))))
   (shutdown-agents)
   (System/exit 0)
   (catch Throwable e

@@ -341,6 +341,29 @@
             "nil?" "t/never" "(s/coll-of int? :kind set?)"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest vec-keeps-bounds-and-known-positions
+  (let [r (checked "(vec nil)
+(vec #{1 2})
+(vec \"ab\")
+(get (vec (reverse [1 \"tail\"])) 0)
+(get (vec (drop-last [1 nil :tail])) 1 :missing)
+(vec (throw (Exception.)))
+(vec 42)
+(vec)
+(vec [] [])
+(s/def ::input (s/coll-of string? :kind vector? :min-count 2 :max-count 4))
+(s/def ::result (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(s/fdef trim-fragments :args (s/cat :parts ::input) :ret ::result)
+(defn trim-fragments [parts] (-> parts drop-last vec))")]
+    (is (= [[8 "TSP2345"] [9 "TSP2554"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of t/never :kind vector? :max-count 0)"
+            "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "(s/coll-of java.lang.Character :kind vector? :min-count 2 :max-count 2)"
+            "\"tail\"" "nil?" "t/never"]
+           (mapv #(at r %) (range 2 8))))))
+
 (deftest count-equality-refines-length-in-both-branches
   (let [r (checked "(s/def ::pair (s/coll-of string? :kind seq? :min-count 1 :max-count 2))
 (s/fdef choose :args (s/cat :pair ::pair) :ret string?)

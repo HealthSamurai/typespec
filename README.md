@@ -111,6 +111,8 @@ sh examples/context-http-check/run.sh --accept
 
 These check all nine production source files in `pg` and all eight in `http`. The `pg` check preserves two known error locations, and the `http` check compares exact diagnostics with a reviewed snapshot. [pg results](docs/context-pg-check.md) · [http results](docs/context-http-check.md)
 
+The Ring Core audit checks all 28 Clojure sources in the pinned release with the standard `check` command. [Ring Core results and reproduction](docs/ring-core-check.md)
+
 **What does not work yet:** higher-rank generics and general generic overload inference, `reify`/`proxy`/protocols/multimethods, arbitrary project macro expansion, automatic declaration discovery and library-version matching, per-namespace caching and the daemon, `fix` and `annotate`, the trust budget in CI. Undescribed project macros remain incomplete; configured macro contracts are trusted assumptions, not verification of the macro implementation. Java classes are read by reflection, not from bytecode. JVM arrays in `join` and regex-group-specific callback inference remain outside the string contracts' supported scope.
 
 **First run on real code.** Three modules of an internal library (5,800 lines, almost no specs) check in 1–4 seconds each, JVM start included. The result is 1 error and 39 warnings. The error is real: a `BufferedReader` is passed to a parameter hinted `^InputStream`, a `ClassCastException` at run time. The warnings are reflective calls and undescribed project macros. Code without specs gives the checker little to work with, so little is reported; getting to zero false errors took about ten fixes to the checker.

@@ -15,18 +15,20 @@
         resource-path "probe/json_resource_type.clj"
         write-path "probe/json_resource_write.clj"
         prerelease-path "probe/prerelease_parts.clj"
+        artifact-path "probe/artifact_index.clj"
         paths #{version-path lookup-path resource-path write-path prerelease-path
                 "probe/package_names.clj" "probe/latest_nonempty.clj"
-                "probe/nonempty_packages.clj" "probe/parallel_packages.clj"}
+                "probe/nonempty_packages.clj" "probe/parallel_packages.clj" artifact-path}
         checked (check/check-files (into files (map parse/parse-file) paths) (assoc opts :strict-nil true))
         diagnostics (sort-by :file (filter #(paths (:file %)) (:diagnostics checked)))]
-    (assert (= [[resource-path 11 :error "TSP2322"]
+    (assert (= [[artifact-path 14 :error "TSP2322"]
+                [resource-path 11 :error "TSP2322"]
                 [write-path 12 :error "TSP2322"]
                 [lookup-path 16 :error "TSP2322"]
                 [prerelease-path 10 :error "TSP2322"]
                 [version-path 13 :error "TSP2322"]]
                (mapv (juxt :file (comp :row :pos) :severity :code) diagnostics))
-            (str "Expected only the incorrect numeric return contracts to fail: " (pr-str diagnostics)))))
+            (str "Expected only the incorrect probe contracts to fail: " (pr-str diagnostics)))))
 
 (let [mode (or (first *command-line-args*) "baseline")
       _ (assert (#{"baseline" "contracts"} mode) "Use baseline or contracts")
@@ -81,6 +83,9 @@
   (assert (= "(s/map-of t/unknown (s/coll-of t/unknown :kind vector? :min-count 1))"
              (main/type-at result "src/fhir/registry/index.clj" 274 22))
           "Expected group-by in reindex-tgz to keep each group's non-empty vector type")
+  (assert (= "(s/map-of string? (s/map-of string? t/unknown))"
+             (main/type-at result "src/fhir/registry/gcs.clj" 191 32))
+          "Expected assoc-in in re-index to infer both levels of the artifact index")
   (when (= mode "contracts")
     (let [semver-file "src/fhir/registry/semver.clj"
           latest-type (main/type-at result semver-file 81 3)

@@ -2560,13 +2560,19 @@
 
 (def ^:private map-path-budget 256)
 
+(defn- map-path-key-type? [ty]
+  (case (:t ty)
+    :lit (or (keyword? (:val ty)) (string? (:val ty)))
+    :prim (#{:keyword :string} (:name ty))
+    false))
+
 (defn- fixed-map-write-paths [ctx path path-type]
   (let [env (:env ctx)
         key-nodes (concat (path-key-nodes path) (repeat path))
         choices (fn [node ty]
                   (let [keys (t/members env (eff ctx ty))]
-                    (when (every? #(and (= :lit (:t %)) (or (keyword? (:val %)) (string? (:val %)))) keys)
-                      (mapv (fn [key] [node (:val key)]) keys))))
+                    (when (every? map-path-key-type? keys)
+                      (mapv (fn [key-type] [node key-type]) keys))))
         paths (mapv #(mapv choices key-nodes (:items %)) (t/members env path-type))]
     (when (every? #(and (seq %) (every? seq %)) paths)
       (let [variants (fn [steps]
@@ -2576,13 +2582,39 @@
             result (vec (take (inc map-path-budget) (mapcat variants paths)))]
         (when (<= (count result) map-path-budget) result)))))
 
+(defn- map-path-entry [ctx member key-type]
+  (let [env (:env ctx)
+        k (:val key-type)
+        m (if (= :nil (:t member)) empty-map-shape member)]
+    (case (:t m)
+      :map-of
+      [(if (some? k)
+         (t/union (or (map-of-entry env m k) t/never) t/nil-t)
+         (read-map-of ctx m key-type t/nil-t))
+       (fn [value]
+         (cond-> (update m :v t/union value)
+           (not (t/sub? env key-type (:k m))) (update :k t/union key-type)))]
+
+      :map
+      (if (some? k)
+        [(cond
+           (contains? (:req m) k) (get (:req m) k)
+           (contains? (:opt m) k) (t/union (get (:opt m) k) t/nil-t)
+           (:complete-keys? m) t/nil-t
+           (get-in env [:specs k]) (t/union (t/ref-t k) t/nil-t)
+           :else t/unknown)
+         #(assoc-map-key m k %)]
+        (when (and (:complete-keys? m) (empty? (:req m)) (empty? (:opt m)))
+          [t/nil-t (fn [value] {:t :map-of :k key-type :v value})])))))
+
 (defn- path-writes
   "Find the previous leaf and rebuild each possible root after a map-path write."
   [ctx root keys budget]
   (let [env (:env ctx)
         unchecked [t/unknown (constantly t/unknown)]]
-    (letfn [(walk [ty [[key k] & more]]
-              (let [members (vec (take (inc @budget) (t/members env (eff ctx ty))))]
+    (letfn [(walk [ty [[key key-type] & more]]
+              (let [k (:val key-type)
+                    members (vec (take (inc @budget) (t/members env (eff ctx ty))))]
                 (if (neg? (vswap! budget - (count members)))
                   [unchecked]
                   (into []
@@ -2590,32 +2622,20 @@
                          (fn [member]
                            (case (:t member)
                              (:map :nil :map-of)
-                             (let [m (if (= :nil (:t member)) empty-map-shape member)
-                                   map-of? (= :map-of (:t m))
-                                   previous (cond
-                                              map-of? (t/union (or (map-of-entry env m k) t/never) t/nil-t)
-                                              (contains? (:req m) k) (get (:req m) k)
-                                              (contains? (:opt m) k) (t/union (get (:opt m) k) t/nil-t)
-                                              (:complete-keys? m) t/nil-t
-                                              (get-in env [:specs k]) (t/union (t/ref-t k) t/nil-t)
-                                              :else t/unknown)
-                                   store (fn [value]
-                                           (if map-of?
-                                             (cond-> (update m :v t/union value)
-                                               (not (t/sub? env (t/lit k) (:k m))) (update :k t/union (t/lit k)))
-                                             (assoc-map-key m k value)))]
+                             (if-let [[previous store] (map-path-entry ctx member key-type)]
                                (if (seq more)
                                  (for [[leaf rebuild] (walk previous more)]
                                    [leaf (fn [value]
                                            (let [child (rebuild value)]
                                              (when-not (= :unknown (:t child)) (check-key-value! ctx k key child))
                                              (store child)))])
-                                 [[previous store]]))
+                                 [[previous store]])
+                               [unchecked])
                              :never []
                              (:any :unknown :class :var :rigid :ivar) [unchecked]
                              (if (and (= :prim (:t member)) (= :map (:name member)))
                                [unchecked]
-                               (do (report! ctx key "TSP2339" (str "cannot write " k " into " (t/show member)))
+                               (do (report! ctx key "TSP2339" (str "cannot write " (or k (t/show key-type)) " into " (t/show member)))
                                    []))))
                         members)))))]
       (walk root keys))))
@@ -2633,7 +2653,7 @@
             budget (volatile! map-path-budget)
             writes (vec (for [keys paths
                               [previous rebuild] (path-writes ctx mty keys budget)]
-                          [(second (peek keys)) previous rebuild]))
+                          [(:val (second (peek keys))) previous rebuild]))
             vty (if (and update? (seq writes))
                   (apply-fn-node ctx value (into [(apply t/union (map second writes))] arg-types))
                   (infer ctx value))]

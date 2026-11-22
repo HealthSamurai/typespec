@@ -242,6 +242,30 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest dynamic-dictionary-paths-track-values-and-possible-absence
+  (let [dict {:t :map-of :k (t/prim :string) :v (t/prim :int)}
+        typed {'counters dict 'name (t/prim :string)}]
+    (is (= (assoc dict :v (t/lit 1)) (infer-type "(assoc-in {} [name] 1)" {'name (t/prim :string)}))
+        "An empty map can start a dictionary with a computed key")
+    (is (= dict (infer-type "(update-in counters [name] (fn [n] (if (nil? n) (inc 0) (inc n))))" typed)))
+    (is (= #{(t/prim :string) (t/lit :new)}
+           (alternatives (:k (infer-type "(assoc-in counters [kw] 1)"
+                                        {'counters dict 'kw (t/lit :new)}))))))
+  (let [file (parse/parse-string "index.clj" "(ns index (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/def ::indices (s/map-of string? ::counts))
+(s/def ::path (s/tuple string? string?))
+(s/fdef put :args (s/cat :m ::indices :path ::path) :ret ::indices)
+(defn put [m path] (assoc-in m path 42))
+(s/fdef put-bad :args (s/cat :m ::indices :path ::path) :ret ::indices)
+(defn put-bad [m path] (assoc-in m path \"bad\"))
+(s/fdef unsafe-inc :args (s/cat :m ::indices :path ::path) :ret ::indices)
+(defn unsafe-inc [m path] (update-in m path inc))")
+        diagnostics (:diagnostics (check/check-files [file] {}))]
+    (is (= [[8 "TSP2322"] [10 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest literal-key-path-writes-check-types-from-spec
   (let [file (parse/parse-string "nested.clj"
                                 "(ns nested (:require [clojure.spec.alpha :as s]))

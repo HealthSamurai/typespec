@@ -523,6 +523,44 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest aclone-preserves-array-classes-for-reads-and-writes
+  (let [r (checked "(aclone (into-array String [\"old\"]))
+(aclone (int-array [1]))
+(aclone (into-array int/1 [(int-array 1)]))
+(let [^objects values (into-array String [\"old\"]) copy (aclone values)] (aset copy 0 42))
+(let [copy (aclone (into-array String [\"old\"]))] (aset copy 0 \"new\"))
+(let [copy (aclone (object-array 1))] (aset copy 0 42))
+(let [copy (aclone (float-array 1))] (aset copy 0 3.5))
+(let [copy (aclone (make-array Float/TYPE 1))] (aset copy 0 3.5))
+(aclone [:not-an-array])
+(aclone nil)
+(aclone)
+(aclone (int-array 1) (int-array 1))
+(defn wide [^objects values] (aset (aclone values) 0 42))" {})]
+    (is (= [[5 "TSP2345"] [9 "TSP210-01"] [10 "TSP2345"] [11 "TSP2531"]
+            [12 "TSP2554"] [13 "TSP2554"] [14 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["[Ljava.lang.String;" "[I" "[[I" "\"new\"" "42" "double?"]
+           (mapv #(at r %) [2 3 4 6 7 8])))))
+
+(deftest aclone-preserves-the-array-contract-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:require [clojure.spec.alpha :as s]))
+(defn labels [] (aclone (into-array String [\"old\"])))
+(s/fdef copied-ints :args (s/cat :values #(instance? int/1 %)) :ret #(instance? int/1 %))
+(defn copied-ints [values] (aclone values))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aset (p/labels) 0 \"value\")
+(aset (p/labels) 0 42)
+(aget (p/copied-ints (int-array [1])) 0)")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 20 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "int?" (main/type-at r "consumer.clj" 4 1)))))
+
 (deftest areduce-checks-the-types-reached-on-later-iterations
   (let [r (checked "(let [a (int-array [1 2])]
   (areduce a i acc 0 (+ acc (aget a i))))

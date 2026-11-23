@@ -1480,11 +1480,20 @@
    'int-array "[I" 'long-array "[J" 'float-array "[F" 'double-array "[D"
    'object-array "[Ljava.lang.Object;"})
 
+(defn- clone-compiler-class [class-name]
+  (when-let [^Class array (some-> class-name t/load-class)]
+    (when-let [^Class component (.getComponentType array)]
+      ;; RT.aclone has one Object[] overload for all reference arrays.
+      (if (.isPrimitive component) class-name "[Ljava.lang.Object;"))))
+
 (defn- compiler-value-class [ctx node]
   (cond
     (env/tag-node node) (array-hint-class (env/hint-type (:file ctx) node))
     (= :sym (:op node)) (get-in ctx [:compiler-local-classes (:val node)])
-    :else (get array-constructors (builtin-head ctx node))))
+    :else (let [head (builtin-head ctx node)]
+            (if (and (= 'aclone head) (= 2 (count (:children node))))
+              (clone-compiler-class (compiler-value-class ctx (second (:children node))))
+              (get array-constructors head)))))
 
 (defn- bind-pairs [ctx bindings & [on-init]]
   (reduce (fn [ctx [p init]]
@@ -3065,6 +3074,21 @@
                :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:unknown}))
     members))
 
+(defn- array-clone-type [ctx array head source]
+  (let [members (checked-array-members ctx array head (eff ctx source))]
+    (t/with-assumption
+     (apply t/union (map #(dissoc % :platform)
+                         (remove #(#{:nil :mismatch} (array-argument-status %)) members)))
+     (t/assumption source))))
+
+(defmethod special 'aclone [ctx node _]
+  (let [[array :as args] (args-of node)
+        [source] (mapv #(infer ctx %) args)]
+    (if (= 1 (count args))
+      (array-clone-type ctx array 'aclone source)
+      (do (report! ctx node "TSP2554" "aclone expects one JVM array")
+          t/unknown))))
+
 (defmethod special 'alength [ctx node _]
   (let [[arg :as args] (args-of node)
         [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
@@ -3337,15 +3361,12 @@
       (= t/never source) t/never
 
       :else
-      (let [members (checked-array-members ctx array 'amap (eff ctx source))
-            clone-type (t/with-assumption
-                        (apply t/union (map #(dissoc % :platform)
-                                            (remove #(#{:nil :mismatch} (array-argument-status %)) members)))
-                        (t/assumption source))]
+      (let [clone-type (array-clone-type ctx array 'amap source)]
         (when-not (= t/never clone-type)
           (let [target-sym (:val target)
                 index-sym (:val index)
-                compiler-array (when-not (env/tag-node target) (compiler-value-class ctx array))
+                compiler-array (when-not (env/tag-node target)
+                                 (clone-compiler-class (compiler-value-class ctx array)))
                 target-ctx (cond-> (bind-pattern ctx target clone-type)
                              compiler-array (assoc-in [:compiler-local-classes target-sym] compiler-array)
                              compiler-array (update :hinted conj target-sym))

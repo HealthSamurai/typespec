@@ -462,6 +462,56 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest make-array-infers-the-component-and-checks-dimensions
+  (let [r (checked "(make-array String 2)
+(make-array Integer/TYPE 2 3)
+(make-array java.lang.Boolean/TYPE 2 0 3)
+(make-array String/1 2)
+(make-array (Class/forName \"[B\") 2)
+(make-array String 1 \\u0002)
+(make-array String -0.5)
+(let [^objects values (make-array Object 1)] (aset values 0 42))
+(make-array String :bad)
+(make-array String -1)
+(make-array String 0 -1)
+(make-array String 2147483648)
+(make-array Void/TYPE 2)
+(make-array 42 2)
+(make-array String)
+(defn dynamic-array [^Class component] (make-array component 1))
+(let [String 42] (make-array String 2))" {})]
+    (is (= ["[Ljava.lang.String;" "[[I" "[[[Z" "[[Ljava.lang.String;" "[[B"
+            "[[Ljava.lang.String;" "[Ljava.lang.String;" "42"]
+           (mapv #(at r %) (range 2 10))))
+    (is (= [[10 "TSP2345"] [11 "TSP2345"] [12 "TSP2345"] [13 "TSP2345"]
+            [14 "TSP2345"] [15 "TSP2345"] [16 "TSP2554"] [18 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest make-array-counts-the-component-rank-toward-the-jvm-limit
+  (let [dimensions (apply str (repeat 254 " 0"))
+        r (checked (str "(make-array String/1" dimensions ")\n"
+                        "(make-array String/1" dimensions " 0)") {})]
+    (is (= (str (apply str (repeat 255 "[")) "Ljava.lang.String;") (at r 2)))
+    (is (= [[3 "TSP2345" "make-array exceeds the JVM limit of 255 array dimensions"]]
+           (mapv (juxt (comp :row :pos) :code :message) (:diagnostics r))))))
+
+(deftest make-array-preserves-the-component-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:require [clojure.spec.alpha :as s]))
+(defn labels [] (make-array String 2))
+(s/fdef ints :args (s/cat) :ret #(instance? int/2 %))
+(defn ints [] (make-array Integer/TYPE 2 3))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aset (p/labels) 0 \"value\")
+(aset (p/labels) 0 42)
+(alength (p/ints))")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 20 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest into-array-uses-the-explicit-component-class
   (let [r (checked "(into-array String [\"label\" nil])
 (alength (into-array java.io.File nil))

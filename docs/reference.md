@@ -181,6 +181,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `slurp`, `spit` | check the minimum arity and infer `string?` and `nil?` respectively. Sources, targets, and options remain open to `IOFactory` extensions. |
 | `alength` | checks JVM array arguments and returns `int?`. Array hints such as `^bytes` and `^objects` carry their JVM types. |
 | `byte-array`, `object-array`, other primitive array constructors | infer the concrete JVM array class and check arity and known invalid size arguments. |
+| `make-array` | infers the array class and rank from a class literal, a primitive wrapper's `TYPE` field or literal `Class/forName`. Checks size types, known negative or overflowing dimensions and the JVM rank limit. |
 | `(into-array Class values)` | infers the array class for an explicit reference component and checks known element types. |
 | `aget` | uses the JVM component type at each index. Reference elements may be `nil`. JVM descriptor hints such as `^"[[I"` preserve the array type. |
 | `aset` | checks indices and reference or primitive components. A widened local hint preserves the component inferred from the initializer. The three-argument primitive form returns the component type, while the multi-index form returns the input value's type. Uncertain JVM overloads receive a diagnostic. |

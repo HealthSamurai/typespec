@@ -1312,6 +1312,16 @@
                (not (contains? (get-in env [:ns-defs (:ns file)]) sym)))
       (t/resolve-class (:imports file) sym))))
 
+(defn- literal-for-name-class [ctx node]
+  (when (and (= :list (:op node)) (empty? (:directives node)) (not (env/tag-node node)))
+    (let [[head class-name & more] (:children node)
+          sym (:val head)]
+      (when (and (= :sym (:op head)) (empty? (:directives head)) (not (env/tag-node head))
+                 (= "forName" (name sym)) (= "java.lang.Class" (java-static? ctx sym))
+                 (= :str (:op class-name)) (literal-node? class-name) (empty? more))
+        (when-let [^Class cls (t/load-class (:val class-name))]
+          (when-not (.isPrimitive cls) cls))))))
+
 (defn- probe [ctx f]
   (binding [*types* nil *diags* (atom []) *trust* (atom {:cast 0 :any 0 :ignore 0})
             *ignores* (atom []) *rets* (atom (when *rets* @*rets*))]
@@ -3290,15 +3300,18 @@
     (catch IllegalArgumentException e (ex-message e))
     (catch ArithmeticException e (ex-message e))))
 
+(defn- numeric-literals [env node ty]
+  (if (and (= :char (:op node)) (= ty (t/class-type "java.lang.Character")))
+    [(:val node)]
+    (filter number? (map :val (t/members env ty)))))
+
 (defn- check-primitive-store-value! [ctx head value actual coerce]
   (when-not (= 'aset-boolean head)
-    (let [expected (if (#{'aset-float 'aset-double} head) (t/prim :number) array-index-cast-type)
-          literals (if (and (= :char (:op value)) (= actual (t/class-type "java.lang.Character")))
-                     [(:val value)]
-                     (filter number? (map :val (t/members (:env ctx) actual))))]
+    (let [expected (if (#{'aset-float 'aset-double} head) (t/prim :number) array-index-cast-type)]
       (assignable! ctx value actual expected)
       (when (t/sub? (:env ctx) actual expected)
-        (when-let [message (some #(numeric-coercion-error coerce %) literals)]
+        (when-let [message (some #(numeric-coercion-error coerce %)
+                                 (numeric-literals (:env ctx) value actual))]
           (report! ctx value "TSP2345" (str head " cannot coerce the value (" message ")")))))))
 
 ;; Array.setX accepts the JVM widening conversions from X to the component.
@@ -3349,6 +3362,59 @@
                 (report! ctx size "TSP2345" (str head " expects a size or a seqable value, got " (t/show bad)))))
             (cond-> (t/class-type class-name)
               (not primitive?) (assoc :exact-array? true)))))))
+
+(def ^:private primitive-type-fields
+  (into {"java.lang.Void" Void/TYPE}
+        (map (fn [[primitive ^Class boxed]] [(.getName boxed) (t/load-class (name primitive))]))
+        primitive-boxes))
+
+(defn- make-array-component [ctx node]
+  (or (some-> (class-symbol-name ctx node) t/load-class)
+      (when (and (= :sym (:op node)) (empty? (:directives node)) (not (env/tag-node node))
+                 (= "TYPE" (name (:val node))))
+        (get primitive-type-fields (java-static? ctx (:val node))))
+      (literal-for-name-class ctx node)))
+
+(defn- dimension-error [value]
+  (or (numeric-coercion-error int value)
+      (when (neg? (int value))
+        (str "negative array dimension " (pr-str value)))))
+
+(defmethod special 'make-array [ctx node _]
+  (let [[component & dimensions :as args] (args-of node)
+        [source & sizes :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (< (count args) 2)
+      (do (report! ctx node "TSP2554" "make-array expects a class and at least one dimension")
+          t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [^Class cls (make-array-component ctx component)
+            component-rank (if cls (count (take-while #{\[} (.getName cls))) 0)
+            remaining-rank (- 255 component-rank)]
+        (when-not cls
+          (assignable! ctx component source (t/class-type "java.lang.Class")))
+        (doseq [[dim size] (map vector dimensions sizes)]
+          (assignable! ctx dim size array-index-cast-type)
+          (when-let [message (some dimension-error (numeric-literals (:env ctx) dim size))]
+            (report! ctx dim "TSP2345" (str "make-array cannot use this dimension (" message ")"))))
+        (cond
+          (= Void/TYPE cls)
+          (do (report! ctx component "TSP2345" "make-array cannot use void as its component")
+              t/unknown)
+
+          (> (count dimensions) remaining-rank)
+          (do (report! ctx (nth dimensions remaining-rank) "TSP2345"
+                       "make-array exceeds the JVM limit of 255 array dimensions")
+              t/unknown)
+
+          cls
+          (let [^Class array-class (nth (iterate #(.arrayType ^Class %) cls) (count dimensions))]
+            (assoc (t/class-type (.getName array-class)) :exact-array? true))
+
+          :else t/unknown)))))
 
 (defmethod special 'into-array [ctx node _]
   (let [[component :as args] (args-of node)
@@ -4544,14 +4610,8 @@
     (case (:op target)
       :nil t/nil-t
       :sym (some-> (class-symbol-name ctx target) t/class-type)
-      :list (let [[head class-name & more] (:children target)
-                  sym (:val head)]
-              (when (and (= :sym (:op head)) (empty? (:directives head)) (not (env/tag-node head))
-                         (= "forName" (name sym)) (= "java.lang.Class" (java-static? ctx sym))
-                         (= :str (:op class-name)) (literal-node? class-name) (empty? more))
-                (when-let [^Class cls (t/load-class (:val class-name))]
-                  (when-not (.isPrimitive cls)
-                    (t/class-type (:val class-name))))))
+      :list (when-let [^Class cls (literal-for-name-class ctx target)]
+              (t/class-type (.getName cls)))
       nil)))
 
 (defn- literal-extension-methods [ctx method-map]

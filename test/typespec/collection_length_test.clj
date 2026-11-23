@@ -645,6 +645,52 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest to-array-preserves-reference-array-components-and-checks-inputs
+  (let [r (checked "(to-array (into-array String [\"old\"]))
+(to-array (make-array Integer/TYPE 2 3))
+(let [^objects values (into-array String [\"old\"])] (aset (to-array values) 0 42))
+(aset (to-array [1 2]) 0 :changed)
+(aset (to-array (int-array [1 2])) 1 :boxed)
+(alength (to-array nil))
+(alength (to-array \"𝄞\"))
+(alength (to-array [1 2]))
+(alength (to-array (int-array [1 2])))
+(aset (to-array (java.util.ArrayList. [1])) 0 :ok)
+(to-array {:one 1})
+(to-array true)
+(to-array (StringBuilder. \"xy\"))
+(defn seqable-only [^clojure.lang.Seqable xs] (to-array xs))
+(defn unknown [xs] (to-array xs))
+(to-array)
+(defn wide [^objects values] (aset (to-array values) 0 42))
+(alength (to-array '(1 2)))
+(alength (to-array (list 1 2 3)))
+(alength (to-array (quote ())))
+(defn abstract-list [^clojure.lang.IPersistentList values] (to-array values))" {})]
+    (is (= ["[Ljava.lang.String;" "[[I" ":changed" ":boxed" "0" "2" "2" "2" ":ok"
+            "[Ljava.lang.Object;" "2" "3" "0"]
+           (mapv #(at r %) [2 3 5 6 7 8 9 10 11 12 19 20 21])))
+    (is (= [[4 "TSP2345"] [13 "TSP2345"] [14 "TSP2345"] [15 "TSP2345"]
+            [16 "TSP210-01"] [17 "TSP2554"] [18 "TSP210-01"] [22 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest to-array-preserves-the-component-and-length-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider)
+(defn labels [] (to-array (into-array String [\"first\"])))
+(defn converted [] (to-array [1 2]))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aset (p/labels) 0 \"value\")
+(aset (p/labels) 0 42)
+(aset (p/converted) 0 :tag)
+(aget (p/converted) 2)")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 20 "TSP2345"] ["consumer.clj" 5 21 "TSP330-02"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest jvm-array-access-checks-the-converted-index
   (let [r (checked "(aget (int-array [4 5]) 1)
 (aget (int-array [4 5]) 2)

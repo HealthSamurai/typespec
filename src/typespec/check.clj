@@ -3608,6 +3608,70 @@
             (some? n) (t/with-assumption (t/assumption source))))
         t/unknown))))
 
+(def ^:private to-array-input
+  (t/union t/nil-t (t/prim :string)
+           (t/class-type "java.lang.Iterable") (t/class-type "java.util.Map")))
+
+(defn- converted-object-array [n]
+  (cond-> (assoc (t/class-type (array-constructors 'object-array)) :exact-array? true)
+    (some? n) (assoc :array-length n)))
+
+(defn- to-array-list-length [ctx arg]
+  (when (and (empty? (:directives arg)) (not (env/tag-node arg)))
+    (let [head (builtin-head ctx arg)
+          quoted (case (:op arg)
+                   :quote (first (:children arg))
+                   :list (when (= 'quote head) (second (:children arg)))
+                   nil)]
+      (cond
+        (= 'list head) (count (args-of arg))
+        (= :list (:op quoted)) (count (:children quoted))))))
+
+(defn- to-array-member [ctx member]
+  (if-let [component (array-component member)]
+    ;; RT.toArray returns reference arrays directly and boxes primitive arrays.
+    {:type (if (.isPrimitive component)
+             (converted-object-array (:array-length member))
+             (dissoc member :platform))}
+    (let [object-array (t/class-type (array-constructors 'object-array))]
+      (if (= :any (:t member))
+        {:type object-array}
+        (let [result (t/sub-result (:env ctx) member to-array-input)]
+          (case (:status result)
+            :proved {:type (converted-object-array
+                            (if (and (= :lit (:t member)) (string? (:val member)))
+                              (.length ^String (:val member))
+                              (exact-sequence-length member)))}
+            :inconclusive {:type object-array :reasons (:reasons result)}
+            ;; list? names IPersistentList, which does not require Iterable.
+            :mismatch (if (= "clojure.lang.IPersistentList" (:name member))
+                        {:type (converted-object-array nil) :reasons #{:unsupported}}
+                        {:bad member})))))))
+
+(defmethod special 'to-array [ctx node _]
+  (let [[arg :as args] (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "to-array expects one argument") t/unknown)
+
+      (= t/never source) t/never
+
+      :else
+      (let [n (to-array-list-length ctx arg)
+            results (if (some? n)
+                      [{:type (converted-object-array n)}]
+                      (mapv #(to-array-member ctx %) (t/members (:env ctx) source)))
+            bad (some :bad results)
+            unchecked (into #{} (mapcat :reasons) results)]
+        (cond
+          bad (report! ctx arg "TSP2345"
+                       (str "to-array expects nil, a JVM array, an Iterable, a Map or a string, got " (t/show bad)))
+          (seq unchecked) (report! ctx arg "TSP210-01" "to-array input type is not checked"
+                                   :severity (if (:strict (:opts ctx)) :error :warning)
+                                   :reasons unchecked))
+        (t/with-assumption (apply t/union (keep :type results)) (t/assumption source))))))
+
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))

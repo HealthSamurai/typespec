@@ -183,6 +183,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `byte-array`, `object-array`, other primitive array constructors | infer the concrete JVM array class and check arity and known invalid size arguments. |
 | `make-array` | infers the array class and rank from a class literal, a primitive wrapper's `TYPE` field or literal `Class/forName`. Checks size types, known negative or overflowing dimensions and the JVM rank limit. |
 | `(into-array Class values)` | infers the array class for an explicit reference component and checks known element types. |
+| `to-array` | preserves the component class and length of an existing reference array. Converts primitive arrays, strings, maps, and iterables to `Object[]`, and converts `nil` to an empty `Object[]`. |
 | `aget` | uses the JVM component type at each index and checks known index bounds. Reference elements may be `nil`. JVM descriptor hints such as `^"[[I"` preserve the array type. |
 | `aset` | checks known index bounds and reference or primitive components. A widened local hint preserves the component inferred from the initializer. The three-argument primitive form returns the component type, while the multi-index form returns the input value's type. Uncertain JVM overloads receive a diagnostic. |
 | `aclone` | checks the input and preserves the JVM class of the shallow copy, including a more precise component inferred through a widened hint. |

@@ -16,8 +16,12 @@
 (defn with-assumption [ty reason]
   (if reason (vary-meta ty assoc ::assumption reason) ty))
 
+(defn literal-number-class [ty]
+  (when (and (= :lit (:t ty)) (number? (:val ty)) (not (:ambiguous-number-box? ty)))
+    (class (:val ty))))
+
 ;; These facts do not change the nominal type.
-(defn strip [t] (dissoc t :platform :as :generic-failure :exact-array?))
+(defn strip [t] (dissoc t :platform :as :generic-failure :exact-array? :array-length :ambiguous-number-box?))
 
 (defn union [& ts]
   (let [[flat nullable?]
@@ -30,13 +34,16 @@
                 :union (recur (concat (:types x) more) seen out (or nullable? (:platform x)))
                 :never (recur more seen out nullable?)
                 (if-let [i (get seen shape)]
-                  ;; Preserve platform nil risk and keep exactness only when both paths prove it.
+                  ;; Preserve platform nil risk and retain array facts shared by both paths.
                   (recur more seen
                          (update out i
                                  #(cond-> %
                                     (:platform x) (assoc :platform true)
                                     (not (:generic-failure x)) (dissoc :generic-failure)
-                                    (not (:exact-array? x)) (dissoc :exact-array?)))
+                                    (not (:exact-array? x)) (dissoc :exact-array?)
+                                    (not= (:array-length %) (:array-length x)) (dissoc :array-length)
+                                    (not= (literal-number-class %) (literal-number-class x))
+                                    (assoc :ambiguous-number-box? true)))
                          nullable?)
                   (recur more (assoc seen shape (count out)) (conj out x) nullable?))))
             [out nullable?]))

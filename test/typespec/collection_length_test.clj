@@ -457,7 +457,7 @@
 (int-array \"bad-size\" [1])
 (byte-array :bad-source)
 (object-array 2 nil)")]
-    (is (= ["[B" "[Z" "[Ljava.lang.Object;" "int?"] (mapv #(at r %) [2 3 4 5])))
+    (is (= ["[B" "[Z" "[Ljava.lang.Object;" "2"] (mapv #(at r %) [2 3 4 5])))
     (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
@@ -518,7 +518,7 @@
 (into-array String [42])
 (into-array String true)
 (let [String (class 42)] (into-array String [42]))")]
-    (is (= ["[Ljava.lang.String;" "int?" "t/unknown"] (mapv #(at r %) [2 3 6])))
+    (is (= ["[Ljava.lang.String;" "0" "t/unknown"] (mapv #(at r %) [2 3 6])))
     (is (= [[4 "TSP2345"] [5 "TSP2345"]]
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
@@ -827,6 +827,54 @@
            (sort (map (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r))))
         (pr-str (:diagnostics r)))))
 
+(deftest alength-preserves-known-lengths-and-drops-conflicting-facts
+  (let [r (checked "(alength (aclone (int-array [1 2 3])))
+(alength (amap (byte-array [1]) i copy (byte i)))
+(alength (into-array String [\"a\" \"b\"]))
+(alength (make-array Integer/TYPE 2 3))
+(alength (float-array 2.5 [1.0]))
+(alength (object-array nil))
+(defn same-size [flag]
+  (alength (if flag (int-array 1) (int-array 1))))
+(defn mixed-size [flag]
+  (alength (if flag (int-array 1) (int-array 2))))
+(defn unknown-size [flag ^ints values]
+  (alength (if flag (int-array 1) values)))
+(defn reversed [flag ^ints values]
+  (alength (if flag values (int-array 1))))
+(defn mixed-box [flag]
+  (aset (into-array Long [nil]) 0 (if flag (alength (int-array 3)) 3)))" {})]
+    (is (= ["3" "1" "2" "2" "2" "0"] (mapv #(at r %) (range 2 8))))
+    (is (= ["1" "int?" "int?" "int?"]
+           (mapv #(main/type-at r "length.clj" % 3) [9 11 13 15])))
+    (is (= ["TSP210-01"] (codes r)) (pr-str (:diagnostics r)))))
+
+(deftest areduce-checks-only-reachable-steps-for-zero-and-one-elements
+  (let [r (checked "(areduce (make-array String 0) i acc :empty (inc acc))
+(areduce (int-array [1]) i acc 0 (if (= i 0) \"one\" (inc acc)))
+(areduce (int-array [1]) i acc \"bad\" (inc acc))
+(defn short-array [flag]
+  (areduce (if flag (int-array 0) (long-array 1)) i acc :empty \"one\"))" {})]
+    (is (= [":empty" "\"one\""] (mapv #(at r %) [2 3])))
+    (is (= "#{:empty \"one\"}" (main/type-at r "length.clj" 6 3)))
+    (is (= [[4 "TSP2345"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest a-known-array-length-is-visible-to-other-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider)
+(defn fixed [] (aclone (int-array 3)))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p] [clojure.spec.alpha :as s]))
+(s/fdef three :args (s/cat :value #{3}) :ret #{3})
+(defn three [value] value)
+(three (alength (p/fixed)))
+(three (alength (int-array 2)))")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 5 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest alength-checks-array-hints-and-returns-int
   (let [r (checked "(let [^bytes body (byte-array 3)] (alength body))
 (let [^objects values (object-array 2)] (alength values))
@@ -834,7 +882,7 @@
 (alength nil)
 (alength)
 (defn unchecked [values] (alength values))" {})]
-    (is (= ["int?" "int?"] (mapv #(at r %) [2 3])))
+    (is (= ["3" "2"] (mapv #(at r %) [2 3])))
     (is (= [[4 "TSP2345"] [5 "TSP2531"] [6 "TSP2554"] [7 "TSP210-01"]]
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r))))

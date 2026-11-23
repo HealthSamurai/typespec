@@ -3089,6 +3089,10 @@
       (do (report! ctx node "TSP2554" "aclone expects one JVM array")
           t/unknown))))
 
+(defn- known-array-lengths [members]
+  (when (and (seq members) (every? :array-length members))
+    (into #{} (map :array-length) members)))
+
 (defmethod special 'alength [ctx node _]
   (let [[arg :as args] (args-of node)
         [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
@@ -3099,8 +3103,11 @@
       (= t/never source) t/never
 
       :else
-      (do (checked-array-members ctx arg 'alength source)
-          (t/prim :int)))))
+      (let [members (checked-array-members ctx arg 'alength source)]
+        (if-let [lengths (known-array-lengths members)]
+          (t/with-assumption (apply t/union (map #(t/lit (int %)) (sort lengths)))
+                             (t/assumption source))
+          (t/prim :int))))))
 
 (defn- array-component ^Class [member]
   (when (= :class (:t member))
@@ -3158,18 +3165,23 @@
 
 (defn- boxed-store-problems [ctx value ty component-type class-name]
   (let [env (:env ctx)
-        expected (t/union {:t :class :name class-name} t/nil-t)]
+        expected (t/union {:t :class :name class-name} t/nil-t)
+        unchecked [(unchecked-array-store ctx (str "aset cannot verify the boxed value class for " class-name))]]
     (mapcat (fn [actual]
-              (let [literal (:val actual)]
+              (let [literal (:val actual)
+                    boxed (t/literal-number-class actual)]
                 (cond
-                  (number? literal)
+                  boxed
                   (problems ctx value
-                            {:t :class :name (.getName (class literal)) :as (t/show actual)}
+                            {:t :class :name (.getName ^Class boxed) :as (t/show actual)}
                             expected)
+
+                  (and (:ambiguous-number-box? actual) (t/sub? env (t/lit-prim literal) component-type))
+                  unchecked
 
                   ;; Numeric predicates do not identify the boxed JVM class.
                   (and (= :prim (:t actual)) (t/sub? env component-type actual))
-                  [(unchecked-array-store ctx (str "aset cannot verify the boxed value class for " class-name))]
+                  unchecked
 
                   :else (problems ctx value actual expected))))
             (t/members env ty))))
@@ -3243,7 +3255,8 @@
     (mapcat (fn [member]
               (let [literal (:val member)
                     boxed (or primitive-box
-                              (when (= :lit (:t member)) (class literal))
+                              (when (= :lit (:t member))
+                                (if (number? literal) (t/literal-number-class member) (class literal)))
                               (when (= :class (:t member)) (t/load-class (:name member)))
                               (when (= :boolean (:name member)) Boolean))
                     compiler-class (cond
@@ -3427,6 +3440,25 @@
           (check-primitive-store-value! ctx head (peek args) (eff ctx value-type) coerce)
           (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))))))
 
+(defn- literal-array-size [member]
+  (let [value (:val member)]
+    ;; The constructors have different numeric casts. An in-range
+    ;; nonnegative size truncates to the same int in both paths.
+    (when (and (= :lit (:t member)) (number? value) (<= 0 value Integer/MAX_VALUE))
+      (int value))))
+
+(defn- exact-sequence-length [member]
+  (let [n (case (:t member)
+            :nil 0
+            :coll (let [[lo hi] (length/bounds member)] (when (= lo hi) lo))
+            :class (:array-length member)
+            nil)]
+    (when (and (integer? n) (<= 0 n Integer/MAX_VALUE)) n)))
+
+(defn- shared-length [lengths]
+  (when (and (some? (first lengths)) (apply = lengths))
+    (first lengths)))
+
 (doseq [[head class-name] array-constructors]
   (defmethod special head [ctx node _]
     (let [[size :as args] (args-of node)
@@ -3441,14 +3473,21 @@
         (some #{t/never} types) t/never
 
         :else
-        (do (if (= 2 (count types))
-              (assignable! ctx size source expected-size)
-              (when-let [bad (some #(when-not (t/sub? (:env ctx) % expected-size)
-                                    (unsupported-sequence-member ctx %))
-                                   (t/members (:env ctx) source))]
-                (report! ctx size "TSP2345" (str head " expects a size or a seqable value, got " (t/show bad)))))
-            (cond-> (t/class-type class-name)
-              (not primitive?) (assoc :exact-array? true)))))))
+        (let [members (t/members (:env ctx) source)
+              sized? (= 2 (count types))
+              n (shared-length (map #(or (literal-array-size %)
+                                         (when-not sized? (exact-sequence-length %)))
+                                    members))]
+          (if sized?
+            (assignable! ctx size source expected-size)
+            (when-let [bad (some #(when-not (t/sub? (:env ctx) % expected-size)
+                                  (unsupported-sequence-member ctx %))
+                                 members)]
+              (report! ctx size "TSP2345" (str head " expects a size or a seqable value, got " (t/show bad)))))
+          (cond-> (t/class-type class-name)
+            (not primitive?) (assoc :exact-array? true)
+            (some? n) (assoc :array-length n)
+            (some? n) (t/with-assumption (t/assumption source))))))))
 
 (def ^:private primitive-type-fields
   (into {"java.lang.Void" Void/TYPE}
@@ -3498,8 +3537,11 @@
               t/unknown)
 
           cls
-          (let [^Class array-class (nth (iterate #(.arrayType ^Class %) cls) (count dimensions))]
-            (assoc (t/class-type (.getName array-class)) :exact-array? true))
+          (let [^Class array-class (nth (iterate #(.arrayType ^Class %) cls) (count dimensions))
+                n (shared-length (map literal-array-size (t/members (:env ctx) (first sizes))))]
+            (cond-> (assoc (t/class-type (.getName array-class)) :exact-array? true)
+              (some? n) (assoc :array-length n)
+              (some? n) (t/with-assumption (t/assumption (first sizes)))))
 
           :else t/unknown)))))
 
@@ -3520,15 +3562,19 @@
                             (some-> (class-symbol-name ctx component) t/load-class))]
         (let [component-type (t/class-type (.getName cls))
               expected (t/union component-type t/nil-t)
+              members (t/members (:env ctx) source)
+              n (shared-length (map exact-sequence-length members))
               elements (keep (fn [member]
                                (let [element (if-let [items (:items member)]
                                                (apply t/union items)
                                                (elem-type ctx member))]
                                  (when-not (#{:unknown :any :never} (:t element)) element)))
-                             (t/members (:env ctx) source))]
+                             members)]
           (when (and (seq elements) (not (#{:int :double} (:name component-type))))
             (assignable! ctx (peek args) (apply t/union elements) expected))
-          (assoc (t/class-type (.getName (.arrayType cls))) :exact-array? true))
+          (cond-> (assoc (t/class-type (.getName (.arrayType cls))) :exact-array? true)
+            (some? n) (assoc :array-length n)
+            (some? n) (t/with-assumption (t/assumption source))))
         t/unknown))))
 
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
@@ -4062,6 +4108,37 @@
             (= acc joined) acc
             (< iterations 7) (recur joined (inc iterations))))))))
 
+(defn- array-reduction-result [ctx index target init body lengths]
+  (let [index-sym (:val index)
+        target-sym (:val target)
+        index-ctx (-> (bind-pattern ctx index (t/lit 0))
+                      (assoc-in [:compiler-local-classes index-sym] "long"))
+        initial (infer index-ctx init)
+        infer-step (fn [c acc]
+                     (let [c (bind-pattern c target (dissoc acc :fresh))]
+                       (record! c index (get-in c [:locals index-sym]))
+                       (record! c target (get-in c [:locals target-sym]))
+                       (infer c body)))]
+    (cond
+      (or (= t/never initial) (= #{0} lengths)) initial
+
+      (and lengths (every? #{0 1} lengths))
+      (let [step (infer-step (dissoc index-ctx :recur-types) initial)]
+        (when (= :unknown (:t step))
+          (unchecked-hof! ctx body "areduce accumulator is not checked" :accumulator))
+        (if (contains? lengths 0) (t/union initial step) step))
+
+      :else
+      (let [body-ctx (-> index-ctx
+                         (update-in [:locals index-sym] widen)
+                         (dissoc :recur-types))
+            seed (widen (dissoc initial :fresh))
+            stable (array-reduction-invariant body-ctx seed infer-step)
+            step (infer-step body-ctx (or stable seed))]
+        (when (or (nil? stable) (= :unknown (:t step)))
+          (unchecked-hof! ctx body "areduce accumulator is not checked" :accumulator))
+        (if stable (widen (t/union seed (dissoc step :fresh))) t/unknown)))))
+
 (defmethod special 'areduce [ctx node _]
   (let [[array index target init body :as args] (args-of node)
         source (when array (infer ctx array))
@@ -4079,32 +4156,13 @@
       (= t/never source) t/never
 
       :else
-      (let [members (checked-array-members ctx array 'areduce (eff ctx source))]
-        (if-not (some #(#{:proved :inconclusive} (array-argument-status %)) members)
-          t/never
-          (let [index-sym (:val index)
-                target-sym (:val target)
-                index-ctx (-> (bind-pattern ctx index (t/lit 0))
-                              (assoc-in [:compiler-local-classes index-sym] "long"))
-                initial (infer index-ctx init)]
-            (if (= t/never initial)
-              t/never
-              (let [body-ctx (-> index-ctx
-                                 (update-in [:locals index-sym] widen)
-                                 (dissoc :recur-types))
-                    seed (widen (dissoc initial :fresh))
-                    infer-step (fn [c acc]
-                                 (let [c (bind-pattern c target acc)]
-                                   (record! c target (get-in c [:locals target-sym]))
-                                   (infer c body)))
-                    stable (array-reduction-invariant body-ctx seed infer-step)
-                    _ (record! body-ctx index (get-in body-ctx [:locals index-sym]))
-                    step (infer-step body-ctx (or stable seed))]
-                (when (or (nil? stable) (= :unknown (:t step)))
-                  (unchecked-hof! ctx body "areduce accumulator is not checked" :accumulator))
-                (t/with-assumption
-                 (if stable (widen (t/union seed (dissoc step :fresh))) t/unknown)
-                 (t/assumption source))))))))))
+      (let [members (checked-array-members ctx array 'areduce (eff ctx source))
+            receivers (remove #(#{:nil :mismatch} (array-argument-status %)) members)]
+        (if (seq receivers)
+          (t/with-assumption
+           (array-reduction-result ctx index target init body (known-array-lengths receivers))
+           (t/assumption source))
+          t/never)))))
 
 (defn- reduction-accumulator [ctx f seed inputs empty-call?]
   (loop [acc seed iterations 0]

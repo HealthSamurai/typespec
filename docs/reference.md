@@ -179,7 +179,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | Construct | Rule |
 |---|---|
 | `slurp`, `spit` | check the minimum arity and infer `string?` and `nil?` respectively. Sources, targets, and options remain open to `IOFactory` extensions. |
-| `alength` | checks JVM array arguments and returns `int?`. Array hints such as `^bytes` and `^objects` carry their JVM types. |
+| `alength` | checks JVM array arguments and returns the known literal length or `int?`. Array hints such as `^bytes` and `^objects` carry their JVM types. |
 | `byte-array`, `object-array`, other primitive array constructors | infer the concrete JVM array class and check arity and known invalid size arguments. |
 | `make-array` | infers the array class and rank from a class literal, a primitive wrapper's `TYPE` field or literal `Class/forName`. Checks size types, known negative or overflowing dimensions and the JVM rank limit. |
 | `(into-array Class values)` | infers the array class for an explicit reference component and checks known element types. |
@@ -187,7 +187,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `aset` | checks indices and reference or primitive components. A widened local hint preserves the component inferred from the initializer. The three-argument primitive form returns the component type, while the multi-index form returns the input value's type. Uncertain JVM overloads receive a diagnostic. |
 | `aclone` | checks the input and preserves the JVM class of the shallow copy, including a more precise component inferred through a widened hint. |
 | `amap` | checks the body as a write into a clone with the input array's JVM class. The body sees a JVM `long` index and the clone binding. |
-| `areduce` | checks the array and the body with a JVM `long` index. Joins the initial accumulator with values reached on later iterations and includes the initial type in the result. |
+| `areduce` | uses the initial value on a known empty array and checks a known one-element array at index `0`. For longer or unknown lengths it joins the initial accumulator with values reached on later iterations. |
 | `aset-boolean`, `aset-byte`, `aset-char`, `aset-short`, `aset-int`, `aset-long`, `aset-float`, `aset-double` | check the primitive component using JVM widening rules, validate indices and value coercion, and return the type of the original value. |
 | `defrecord R [a b]` | nominal class + fields + open extra keys; `assoc` preserves `R`, `dissoc` of a field yields a map |
 | `defprotocol` | method `s/fdef` contracts check `reify`, `extend-type`, `extend-protocol`, and literal `extend` method maps across namespaces. `extend-protocol` and `extend` allow partial implementations. [F430](../features/F430-protocols.md) |

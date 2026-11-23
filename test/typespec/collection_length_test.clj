@@ -566,6 +566,58 @@
         (pr-str (:diagnostics r)))
     (is (= "2" (main/type-at r "consumer.clj" 3 1)))))
 
+(deftest explicit-primitive-into-array-checks-casts-and-boxed-values
+  (let [r (checked "(into-array Integer/TYPE [(byte 1) \\b])
+(into-array Byte/TYPE [127])
+(into-array Short/TYPE [32767])
+(into-array Character/TYPE [65535])
+(into-array Float/TYPE [1.25])
+(into-array Boolean/TYPE [true false])
+(into-array Long/TYPE [1 \\a])
+(into-array Double/TYPE [1 2.5 \\a])
+(into-array Double/TYPE (int-array [1 2]))
+(alength (into-array Boolean/TYPE nil))
+(alength (into-array Character/TYPE \"ab\"))
+(aget (into-array Integer/TYPE [1]) 0)
+(into-array Integer/TYPE [nil])
+(into-array Integer/TYPE [\"bad\"])
+(into-array Byte/TYPE [127 128])
+(into-array Short/TYPE [32767 32768])
+(into-array Character/TYPE [65535 65536])
+(into-array Integer/TYPE [2147483647 2147483648])
+(into-array Float/TYPE [1 3.5e38])
+(into-array Float/TYPE [\\a])
+(into-array Boolean/TYPE [1])
+(into-array Long/TYPE [1.5])
+(into-array Long/TYPE [1N])
+(into-array Double/TYPE [1M])
+(into-array Long/TYPE (double-array [1]))
+(into-array Void/TYPE [])
+(defn from-number [^Number n] (into-array Long/TYPE [n]))" {})]
+    (is (= ["[I" "[B" "[S" "[C" "[F" "[Z" "[J" "[D" "[D" "0" "2" "int?"]
+           (mapv #(at r %) (range 2 14))))
+    (is (= (conj (mapv #(vector % "TSP2345") (range 14 28)) [28 "TSP210-01"])
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= 27 (-> r :diagnostics first :pos :col)))))
+
+(deftest explicit-primitive-into-array-preserves-contracts-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:require [clojure.spec.alpha :as s]))
+(s/fdef indices :args (s/cat :values (s/tuple int? int?)) :ret #(instance? int/1 %))
+(defn indices [values] (into-array Integer/TYPE values))
+(defn flags [] (into-array Boolean/TYPE [true false]))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aset-int (p/indices [1 2]) 0 3)
+(alength (p/flags))
+(aset-double (p/indices [1 2]) 0 3.5)")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 4 14 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "2" (main/type-at r "consumer.clj" 3 1)))))
+
 (deftest aclone-preserves-array-classes-for-reads-and-writes
   (let [r (checked "(aclone (into-array String [\"old\"]))
 (aclone (int-array [1]))

@@ -3528,7 +3528,7 @@
         (map (fn [[primitive ^Class boxed]] [(.getName boxed) (t/load-class (name primitive))]))
         primitive-boxes))
 
-(defn- make-array-component [ctx node]
+(defn- array-component-class [ctx node]
   (or (some-> (class-symbol-name ctx node) t/load-class)
       (when (and (= :sym (:op node)) (empty? (:directives node)) (not (env/tag-node node))
                  (= "TYPE" (name (:val node))))
@@ -3551,7 +3551,7 @@
       (some #{t/never} types) t/never
 
       :else
-      (let [^Class cls (make-array-component ctx component)
+      (let [^Class cls (array-component-class ctx component)
             component-rank (if cls (count (take-while #{\[} (.getName cls))) 0)
             remaining-rank (- 255 component-rank)]
         (when-not cls
@@ -3611,22 +3611,30 @@
       (report! ctx node "TSP2345" "into-array exceeds the JVM limit of 255 array dimensions")
       t/never)))
 
+(defn- array-input-vector-forms [arg]
+  (when (and (= :vector (:op arg)) (empty? (:directives arg)) (not (env/tag-node arg)))
+    (:children arg)))
+
+(defn- array-input-length [member]
+  (if (and (= :lit (:t member)) (string? (:val member)))
+    (.length ^String (:val member))
+    (exact-sequence-length member)))
+
+(defn- array-input-element [ctx member]
+  (if-let [component (array-component member)]
+    (if (.isPrimitive component)
+      {:t :class :name (.getName component)}
+      (array-read-type member))
+    (elem-type ctx member)))
+
 (defn- implicit-into-array-member [ctx arg member]
   (let [env (:env ctx)
         items (:items member)
-        forms (when (and (= :vector (:op arg)) (empty? (:directives arg)) (not (env/tag-node arg)))
-                (:children arg))
-        n (if (and (= :lit (:t member)) (string? (:val member)))
-            (.length ^String (:val member))
-            (exact-sequence-length member))]
+        forms (array-input-vector-forms arg)
+        n (array-input-length member)]
     (if (= 0 n)
       (inferred-array-type ctx arg Object 0)
-      (let [element (when-not items
-                      (if-let [component (array-component member)]
-                        (if (.isPrimitive component)
-                          {:t :class :name (.getName component)}
-                          (array-read-type member))
-                        (elem-type ctx member)))
+      (let [element (when-not items (array-input-element ctx member))
             first-type (if items (first items) element)
             classes (distinct (cond-> (mapv #(known-object-class ctx (first forms) %) (t/members env first-type))
                                 (and (nil? n) (zero? (first (length/bounds member)))) (conj Object)))
@@ -3641,6 +3649,40 @@
              (mapcat #(reference-store-problems ctx 'into-array (or form arg) actual %)
                      (remove #{nil Object} classes)))))
         (apply t/union (map #(inferred-array-type ctx arg % n) classes))))))
+
+(defn- into-array-primitive-problems [ctx node form ty component]
+  (let [env (:env ctx)
+        expected (if (= "boolean" component) (t/prim :boolean) array-index-cast-type)]
+    (mapcat (fn [member]
+              (if-let [boxed (known-object-class ctx form member)]
+                (when-not (contains? (second (primitive-array-stores (unboxed boxed))) component)
+                  [["TSP2345" (str "into-array cannot store " (show-ref ctx member) " in " component "[]")]])
+                (or (seq (problems ctx node member expected))
+                    (when-not (#{:any :never} (:t member))
+                      [(unchecked-array-store ctx (str "into-array cannot verify the JVM value type for " component "[]"))]))))
+            (t/members env ty))))
+
+(defn- check-primitive-into-array! [ctx arg members ^Class component]
+  (let [name (.getName component)
+        ;; RT.seqToTypedArray uses checked Clojure casts for these five components.
+        coerce (when (#{"byte" "short" "int" "char" "float"} name)
+                 (first (primitive-array-stores (symbol name))))
+        expected (if (= "float" name) (t/prim :number) array-index-cast-type)
+        forms (array-input-vector-forms arg)]
+    (doseq [member members
+            :when (not= 0 (array-input-length member))
+            [form ty] (if-let [items (:items member)]
+                        (map-indexed (fn [i item] [(get forms i) item]) items)
+                        [[nil (array-input-element ctx member)]])
+            :let [node (or form arg)
+                  actual (eff ctx ty)]]
+      (if coerce
+        (do (assignable! ctx node actual expected)
+            (when (t/sub? (:env ctx) actual expected)
+              (when-let [message (some #(numeric-coercion-error coerce %)
+                                       (numeric-literals (:env ctx) form actual))]
+                (report! ctx node "TSP2345" (str "into-array cannot coerce the value (" message ")")))))
+        (report-store-problem! ctx node (into-array-primitive-problems ctx node form actual name))))))
 
 (defmethod special 'into-array [ctx node _]
   (let [[component :as args] (args-of node)
@@ -3660,22 +3702,26 @@
        (t/assumption source))
 
       :else
-      (if-let [^Class cls (some-> (class-symbol-name ctx component) t/load-class)]
-        (let [component-type (t/class-type (.getName cls))
-              expected (t/union component-type t/nil-t)
-              members (t/members (:env ctx) source)
-              n (shared-length (map exact-sequence-length members))
-              elements (keep (fn [member]
-                               (let [element (if-let [items (:items member)]
-                                               (apply t/union items)
-                                               (elem-type ctx member))]
-                                 (when-not (#{:unknown :any :never} (:t element)) element)))
-                             members)]
-          (when (and (seq elements) (not (#{:int :double} (:name component-type))))
-            (assignable! ctx (peek args) (apply t/union elements) expected))
-          (cond-> (assoc (t/class-type (.getName (.arrayType cls))) :exact-array? true)
-            (some? n) (assoc :array-length n)
-            (some? n) (t/with-assumption (t/assumption source))))
+      (if-let [^Class cls (array-component-class ctx component)]
+        (if (= Void/TYPE cls)
+          (do (report! ctx component "TSP2345" "into-array cannot use void as its component")
+              t/never)
+          (let [members (t/members (:env ctx) source)
+                n (shared-length (map array-input-length members))]
+            (if (.isPrimitive cls)
+              (check-primitive-into-array! ctx (peek args) members cls)
+              (let [component-type (t/class-type (.getName cls))
+                    expected (t/union component-type t/nil-t)
+                    elements (keep (fn [member]
+                                     (let [element (if-let [items (:items member)]
+                                                     (apply t/union items)
+                                                     (elem-type ctx member))]
+                                       (when-not (#{:unknown :any :never} (:t element)) element)))
+                                   members)]
+                (when (and (seq elements) (not (#{:int :double} (:name component-type))))
+                  (assignable! ctx (peek args) (apply t/union elements) expected))))
+            (cond-> (inferred-array-type ctx component cls n)
+              (some? n) (t/with-assumption (t/assumption source)))))
         t/unknown))))
 
 (def ^:private to-array-input

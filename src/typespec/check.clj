@@ -2984,13 +2984,13 @@
     (let [[c] (args-of node)]
       (indexed (elem-type ctx (infer ctx c))))))
 
-(defn- checked-nth-index [value]
+(defn- checked-int-index [value]
   (try (int value)
        (catch IllegalArgumentException _ nil)
        (catch ArithmeticException _ nil)))
 
 (defn- infer-nth-positions [ctx index members values default-type]
-  (let [candidates (mapv (fn [value] [value (checked-nth-index value)]) values)
+  (let [candidates (mapv (fn [value] [value (checked-int-index value)]) values)
         positions (vec (distinct (keep second candidates)))
         accesses (for [i positions, member members]
                    [i member (when (= :coll (:t member)) (length/position member i))])]
@@ -3127,12 +3127,52 @@
 (def ^:private array-index-cast-type
   (t/union (t/prim :number) (t/class-type "java.lang.Character")))
 
-(defn- check-array-indices! [ctx indices index-types]
-  (let [expected (if (= 1 (count indices))
-                   array-index-cast-type
-                   (t/prim :number))]
-    (doseq [[idx ty] (map vector indices index-types)]
-      (assignable! ctx idx ty expected))))
+(defn- numeric-literals [env node ty]
+  (if (and (= :char (:op node)) (= ty (t/class-type "java.lang.Character")))
+    [(:val node)]
+    (filter number? (map :val (t/members env ty)))))
+
+(defn- checked-array-indices [ctx indices index-types inline?]
+  (let [last-index (dec (count indices))]
+    (mapv (fn [idx ty i]
+            (let [char-allowed? (or inline? (< i last-index))
+                  literals (numeric-literals (:env ctx) idx ty)
+                  candidates (mapv (fn [v] [v (checked-int-index v)])
+                                   (if char-allowed? literals (filter number? literals)))]
+              (assignable! ctx idx ty (if char-allowed? array-index-cast-type (t/prim :number)))
+              {:node idx :candidates candidates :library-cast? (not inline?)
+               :complete? (= (count candidates) (count (t/members (:env ctx) ty)))}))
+          indices index-types (range))))
+
+(defn- array-index-out-of-bounds? [member i]
+  (and (some? i) (array-component member)
+       (or (neg? i) (some-> (:array-length member) (<= i)))))
+
+(defn- checked-array-bounds [ctx members {:keys [node candidates library-cast? complete?]}]
+  ;; The fixed arity inlines int at the call site, where unchecked math
+  ;; can change overflow behavior. The library's own casts are checked.
+  (let [overflow (when library-cast? (first (filter (comp nil? second) candidates)))
+        outside (first (for [[value i] candidates, member members
+                             :when (array-index-out-of-bounds? member i)]
+                         [value i member]))
+        always-fails? (and complete? (seq candidates)
+                           (every? (fn [[_ i]]
+                                     (if (nil? i)
+                                       library-cast?
+                                       (every? #(array-index-out-of-bounds? % i) members)))
+                                   candidates))]
+    (cond
+      overflow
+      (report! ctx node "TSP330-02" (str "array index " (pr-str (first overflow)) " cannot be represented as a JVM int"))
+
+      outside
+      (let [[value i member] outside]
+        (report! ctx node "TSP330-02"
+                 (str "array index " (pr-str value)
+                      (when (not= value i) (str " (converted to " i ")"))
+                      (if always-fails? " is" " may be") " out of bounds"
+                      (when-let [n (:array-length member)] (str " for length " n))))))
+    (if always-fails? [] members)))
 
 (defmethod special 'aget [ctx node _]
   (let [[array & indices :as args] (args-of node)
@@ -3144,13 +3184,13 @@
       (some #{t/never} types) t/never
 
       :else
-      (do
-        (check-array-indices! ctx indices index-types)
+      (let [indices (checked-array-indices ctx indices index-types (= 2 (count args)))]
         (t/with-assumption
          (loop [current source, receiver array, [idx & more] indices]
-           (let [element (apply t/union (map array-read-type (checked-array-members ctx receiver 'aget current)))]
+           (let [members (checked-array-members ctx receiver 'aget current)
+                 element (apply t/union (map array-read-type (checked-array-bounds ctx members idx)))]
              (if (and (seq more) (not (#{:unknown :any :never} (:t element))))
-               (recur element idx more)
+               (recur element (:node idx) more)
                element)))
          (t/assumption source))))))
 
@@ -3299,17 +3339,10 @@
 
 (defn- array-store-target [ctx head array source indices]
   (loop [current source, receiver array, [idx & more] indices]
-    (let [members (checked-array-members ctx receiver head current)]
-      (if (seq more)
-        (recur (apply t/union (map array-read-type members)) idx more)
+    (let [members (checked-array-bounds ctx (checked-array-members ctx receiver head current) idx)]
+      (if (and (seq more) (seq members))
+        (recur (apply t/union (map array-read-type members)) (:node idx) more)
         [receiver members]))))
-
-(defn- check-array-store-indices! [ctx indices index-types]
-  ;; Intermediate indices go through aget's int cast. Array.set and
-  ;; Array.setX take their final index from a Number in the Clojure setter.
-  (doseq [[idx ty] (map vector (pop indices) (pop index-types))]
-    (assignable! ctx idx ty array-index-cast-type))
-  (assignable! ctx (peek indices) (peek index-types) (t/prim :number)))
 
 (defn- aset-inline-result [receivers value-type]
   (if (some #(some-> (array-component %) .isPrimitive) receivers)
@@ -3343,13 +3376,13 @@
             value (peek args)
             value-type (peek types)
             compiler-array (when inline? (compiler-value-class ctx (first args)))
+            indices (checked-array-indices ctx indices index-types inline?)
             [_ receivers] (array-store-target ctx 'aset (first args) source indices)]
-        (if inline?
-          (check-array-indices! ctx indices index-types)
-          (check-array-store-indices! ctx indices index-types))
-        (check-array-store-value! ctx value value-type receivers inline? compiler-array)
-        (t/with-assumption (if inline? (aset-inline-result receivers value-type) value-type)
-                           (or (t/assumption value-type) (t/assumption source)))))))
+        (if (seq receivers)
+          (do (check-array-store-value! ctx value value-type receivers inline? compiler-array)
+              (t/with-assumption (if inline? (aset-inline-result receivers value-type) value-type)
+                                 (or (t/assumption value-type) (t/assumption source))))
+          t/never)))))
 
 (defn- array-loop-binding-problem [index target]
   (if-let [malformed (some #(when-not (and (= :sym (:op %)) (simple-symbol? (:val %))) %)
@@ -3375,7 +3408,8 @@
 
       :else
       (let [clone-type (array-clone-type ctx array 'amap source)]
-        (when-not (= t/never clone-type)
+        (when-not (or (= t/never clone-type)
+                      (= #{0} (known-array-lengths (t/members (:env ctx) clone-type))))
           (let [target-sym (:val target)
                 index-sym (:val index)
                 compiler-array (when-not (env/tag-node target)
@@ -3399,11 +3433,6 @@
     nil
     (catch IllegalArgumentException e (ex-message e))
     (catch ArithmeticException e (ex-message e))))
-
-(defn- numeric-literals [env node ty]
-  (if (and (= :char (:op node)) (= ty (t/class-type "java.lang.Character")))
-    [(:val node)]
-    (filter number? (map :val (t/members env ty)))))
 
 (defn- check-primitive-store-value! [ctx head value actual coerce]
   (when-not (= 'aset-boolean head)
@@ -3431,14 +3460,16 @@
         (let [indices (subvec args 1 (dec (count args)))
               index-types (mapv #(eff ctx %) (subvec types 1 (dec (count types))))
               value-type (peek types)
+              indices (checked-array-indices ctx indices index-types false)
               [target receivers] (array-store-target ctx head array (eff ctx source) indices)]
-          (check-array-store-indices! ctx indices index-types)
-          (when-let [bad (some #(when-let [component (array-component %)]
-                                 (when-not (components (.getName component)) %))
-                              receivers)]
-            (report! ctx target "TSP2345" (str head " cannot write to " (t/show bad))))
-          (check-primitive-store-value! ctx head (peek args) (eff ctx value-type) coerce)
-          (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))))))
+          (if (seq receivers)
+            (do (when-let [bad (some #(when-let [component (array-component %)]
+                                      (when-not (components (.getName component)) %))
+                                   receivers)]
+                  (report! ctx target "TSP2345" (str head " cannot write to " (t/show bad))))
+                (check-primitive-store-value! ctx head (peek args) (eff ctx value-type) coerce)
+                (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))
+            t/never))))))
 
 (defn- literal-array-size [member]
   (let [value (:val member)]

@@ -645,6 +645,56 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest jvm-array-access-checks-the-converted-index
+  (let [r (checked "(aget (int-array [4 5]) 1)
+(aget (int-array [4 5]) 2)
+(aget (int-array [4 5]) -1)
+(aget (int-array [4 5]) 1.9)
+(aget (int-array [4 5]) 2.9)
+(aget (int-array [4]) \\u0000)
+(aset (aclone (object-array 1)) 1 \"bad\")
+(aset-int (int-array 1) 4294967296 42)
+(aget (int-array [4]) 4294967296)
+(aset-int (int-array 1) 0 42)
+(defn at-end [^ints values] (aget values -1))
+(defn choice [flag] (aget (int-array 1) (if flag 0 1)))
+(amap (int-array 0) i copy (aget copy 0))" {})]
+    (is (= [[3 "TSP330-02"] [4 "TSP330-02"] [6 "TSP330-02"] [8 "TSP330-02"]
+            [9 "TSP330-02"] [12 "TSP330-02"] [13 "TSP330-02"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?" "t/never" "int?" "int?" "42"]
+           (mapv #(at r %) [2 3 5 7 11])))
+    (is (= "array index 2.9 (converted to 2) is out of bounds for length 2"
+           (:message (nth (:diagnostics r) 2))))
+    (is (= "array index 1 may be out of bounds for length 1"
+           (:message (last (:diagnostics r)))))))
+
+(deftest nested-array-access-reports-the-first-proven-out-of-bounds-index
+  (let [r (checked "(aget (make-array Integer/TYPE 1 1) 1 0)
+(aset (make-array Object 1 1) 1 0 :bad)
+(aset-int (make-array Integer/TYPE 1 1) 1 0 42)
+(aget (make-array Integer/TYPE 1 1) \\u0000 0)
+(aget (make-array Integer/TYPE 1 1) 0 \\u0000)" {})]
+    (is (= [[2 37 "TSP330-02"] [3 31 "TSP330-02"] [4 41 "TSP330-02"]
+            [5 37 "TSP2531"] [6 37 "TSP2531"] [6 39 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest array-index-bounds-use-the-allocated-length-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider)
+(defn values [] (aclone (int-array [4 5])))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aget (p/values) 1)
+(aget (p/values) 2)
+(aset-int (p/values) 2 42)")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 18 "TSP330-02"] ["consumer.clj" 4 22 "TSP330-02"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest aget-uses-the-jvm-component-and-checks-indices
   (let [r (checked "(aget (byte-array [1]) 0)
 (aget (char-array [\\a]) 0)

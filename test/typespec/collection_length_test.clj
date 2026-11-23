@@ -535,6 +535,55 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest primitive-aset-checks-jvm-widening-and-clojure-coercion
+  (let [r (checked "(aset-int (int-array 1) 0 42)
+(aset-int (long-array 1) 0 42)
+(aset-int (short-array 1) 0 42)
+(aset-int (int-array 1) 0 \"forty-two\")
+(aset-boolean (boolean-array 1) 0 nil)
+(aset-boolean (boolean-array 1) 0 \"enabled\")
+(aset-byte (byte-array 1) 0 128)
+(aset-char (int-array 1) 0 \\a)
+(aset-char (short-array 1) 0 \\a)
+(aset-float (double-array 1) 0 \\a)
+(aset-float (double-array 1) 0 1.0)
+(aset-long (double-array 1) 0 42)
+(aset-double (float-array 1) 0 42)
+(aset-short (int-array 1) 0 0)
+(aset-byte (object-array 1) 0 42)
+(aset-byte)
+(aset-byte nil 0 42)
+(aset-int (int-array 1) \\u0000 42)
+(defn update-first [^int/2 matrix]
+  (when-some [row (aget matrix 0)] (aset-int row 0 5)))
+(defn update-matrix [^int/2 matrix]
+  (aset-int matrix \\u0000 0 5))" {})]
+    (is (= [[4 "TSP2345"] [5 "TSP2345"] [8 "TSP2345"] [10 "TSP2345"]
+            [11 "TSP2345"] [14 "TSP2345"] [16 "TSP2345"] [17 "TSP2554"]
+            [18 "TSP2531"] [19 "TSP2345"] [23 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["42" "42" "nil?" "\"enabled\"" "java.lang.Character" "1.0"]
+           (mapv #(at r %) [2 3 6 7 9 12])))))
+
+(deftest primitive-aset-works-in-a-cross-namespace-spec-contract
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider
+  (:refer-clojure :exclude [aset-int])
+  (:require [clojure.spec.alpha :as s]))
+(s/fdef store! :args (s/cat :target #(instance? long/1 %) :value number?) :ret number?)
+(defn store! [target value] (clojure.core/aset-int target 0 value))
+(defn aset-int [array index value] value)")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(p/store! (long-array 1) 42)
+(p/store! (int-array 1) 42)
+(p/aset-int (short-array 1) 0 \"value\")")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 11 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest array-class-symbol-hints-check-array-contracts-across-namespaces
   (let [files [(parse/parse-string "provider.clj"
                                   "(ns provider (:import [java.io File]))

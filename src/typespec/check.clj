@@ -3063,9 +3063,12 @@
              t/unknown)
     t/unknown))
 
+(def ^:private array-index-cast-type
+  (t/union (t/prim :number) (t/class-type "java.lang.Character")))
+
 (defn- check-array-indices! [ctx indices index-types]
   (let [expected (if (= 1 (count indices))
-                   (t/union (t/prim :number) (t/class-type "java.lang.Character"))
+                   array-index-cast-type
                    (t/prim :number))]
     (doseq [[idx ty] (map vector indices index-types)]
       (assignable! ctx idx ty expected))))
@@ -3133,6 +3136,13 @@
                        (not (#{:nil :any} (:t (t/resolve-t (:env ctx) ty)))))
               [(unchecked-array-store ctx (str "aset runtime array component may be narrower than " name))]))))))
 
+(defn- array-store-target [ctx head array source indices]
+  (loop [current source, receiver array, [idx & more] indices]
+    (let [members (checked-array-members ctx receiver head current)]
+      (if (seq more)
+        (recur (apply t/union (map array-read-type members)) idx more)
+        [receiver members]))))
+
 (defmethod special 'aset [ctx node _]
   (let [args (args-of node)
         types (mapv #(infer ctx %) args)
@@ -3148,18 +3158,68 @@
             value (peek args)
             value-type (peek types)
             ty (eff ctx value-type)
-            receivers (loop [current source, receiver (first args), remaining indices]
-                        (let [members (checked-array-members ctx receiver 'aset current)]
-                          (if (next remaining)
-                            (recur (apply t/union (map array-read-type members))
-                                   (first remaining) (next remaining))
-                            members)))
+            [_ receivers] (array-store-target ctx 'aset (first args) source indices)
             issues (mapcat #(array-store-problems ctx value ty %) receivers)]
         (check-array-indices! ctx indices (map #(eff ctx %) (subvec types 1 (dec (count types)))))
         (when-let [[code message extra] (or (first (remove #(= "TSP210-01" (first %)) issues)) (first issues))]
           (apply report! ctx value code message (mapcat identity extra)))
         (if (some #(some-> (array-component %) .isPrimitive) receivers)
           t/unknown
+          (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))))))
+
+(defn- numeric-coercion-error [coerce value]
+  (try
+    (coerce value)
+    nil
+    (catch IllegalArgumentException e (ex-message e))
+    (catch ArithmeticException e (ex-message e))))
+
+(defn- check-primitive-store-value! [ctx head value actual coerce]
+  (when-not (= 'aset-boolean head)
+    (let [expected (if (#{'aset-float 'aset-double} head) (t/prim :number) array-index-cast-type)
+          literals (if (and (= :char (:op value)) (= actual (t/class-type "java.lang.Character")))
+                     [(:val value)]
+                     (filter number? (map :val (t/members (:env ctx) actual))))]
+      (assignable! ctx value actual expected)
+      (when (t/sub? (:env ctx) actual expected)
+        (when-let [message (some #(numeric-coercion-error coerce %) literals)]
+          (report! ctx value "TSP2345" (str head " cannot coerce the value (" message ")")))))))
+
+;; Array.setX accepts the JVM widening conversions from X to the component.
+(doseq [[head [coerce components]]
+        {'aset-boolean [boolean #{"boolean"}]
+         'aset-byte    [byte    #{"byte" "short" "int" "long" "float" "double"}]
+         'aset-char    [char    #{"char" "int" "long" "float" "double"}]
+         'aset-short   [short   #{"short" "int" "long" "float" "double"}]
+         'aset-int     [int     #{"int" "long" "float" "double"}]
+         'aset-long    [long    #{"long" "float" "double"}]
+         'aset-float   [float   #{"float" "double"}]
+         'aset-double  [double  #{"double"}]}]
+  (defmethod special head [ctx node _]
+    (let [[array :as args] (args-of node)
+          [source :as types] (mapv #(infer ctx %) args)]
+      (cond
+        (< (count args) 3)
+        (do (report! ctx node "TSP2554" (str head " expects an array, at least one index and a value"))
+            t/unknown)
+
+        (some #{t/never} types) t/never
+
+        :else
+        (let [indices (subvec args 1 (dec (count args)))
+              index-types (mapv #(eff ctx %) (subvec types 1 (dec (count types))))
+              value-type (peek types)
+              [target receivers] (array-store-target ctx head array (eff ctx source) indices)]
+          ;; Intermediate indices go through aget's int cast. Array.setX takes
+          ;; its final index from a Number in the Clojure setter.
+          (doseq [[idx ty] (map vector (pop indices) (pop index-types))]
+            (assignable! ctx idx ty array-index-cast-type))
+          (assignable! ctx (peek indices) (peek index-types) (t/prim :number))
+          (when-let [bad (some #(when-let [component (array-component %)]
+                                 (when-not (components (.getName component)) %))
+                              receivers)]
+            (report! ctx target "TSP2345" (str head " cannot write to " (t/show bad))))
+          (check-primitive-store-value! ctx head (peek args) (eff ctx value-type) coerce)
           (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))))))
 
 (doseq [[head class-name] {'boolean-array "[Z" 'byte-array "[B" 'char-array "[C"

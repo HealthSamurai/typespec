@@ -14,7 +14,8 @@
             [typespec.core-types :as core]
             [typespec.guards :as guards]
             [typespec.macro-contracts :as macros])
-  (:import [java.lang.reflect Modifier]))
+  (:import [clojure.lang Reflector]
+           [java.lang.reflect Modifier]))
 
 (def ^:dynamic *diags* nil)
 (def ^:dynamic *types* nil)
@@ -293,11 +294,12 @@
 
 ;; ---- locals and narrowing ----
 
-(defn- bind [ctx sym ty & {:keys [why hinted param]}]
+(defn- bind [ctx sym ty & {:keys [why hinted param array-class]}]
   (-> ctx
       (assoc-in [:locals sym] ty)
       (update :why #(if why (assoc % sym why) (dissoc % sym)))
       (update :hinted #(if hinted (conj (or % #{}) sym) (disj (or % #{}) sym)))
+      (update :compiler-array-classes #(if array-class (assoc % sym array-class) (dissoc % sym)))
       (update :params #(if param (conj (or % #{}) sym) (disj (or % #{}) sym)))
       (assoc-in [:binding-ids sym] (Object.))
       (update :projections dissoc sym)
@@ -923,6 +925,10 @@
                  (str "hint " (t/show h) " contradicts the " what ": " (t/show (dissoc actual :platform))))))
     h))
 
+(defn- array-hint-class [hint]
+  (when (and (= :class (:t hint)) (str/starts-with? (:name hint) "["))
+    (:name hint)))
+
 (defn bind-pattern
   ([ctx pattern ty] (bind-pattern ctx pattern ty nil))
   ([ctx pattern ty why] (bind-pattern ctx pattern ty why nil))
@@ -934,7 +940,8 @@
                 use-hint? (and h (or (#{:unknown :any} (:t (t/resolve-t env ty)))
                                      (not (t/sub? env (t/remove-nil env (eff ctx ty)) h))))
                 [c origin path] (if (and projection (not use-hint?)) (track-path ctx projection) [ctx])]
-            (cond-> (bind c (:val pattern) (if use-hint? h ty) :why (when-not use-hint? why) :hinted (boolean h))
+            (cond-> (bind c (:val pattern) (if use-hint? h ty)
+                          :why (when-not use-hint? why) :hinted (boolean h) :array-class (array-hint-class h))
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
      :vector (let [members (t/members (:env ctx) ty)
@@ -1458,6 +1465,17 @@
                           (or (core/stdlib-tagged? full)
                               (get-in (:env ctx) [:vars full :tagged?]))))))))))))
 
+(def ^:private array-constructors
+  {'boolean-array "[Z" 'byte-array "[B" 'char-array "[C" 'short-array "[S"
+   'int-array "[I" 'long-array "[J" 'float-array "[F" 'double-array "[D"
+   'object-array "[Ljava.lang.Object;"})
+
+(defn- compiler-array-class [ctx node]
+  (cond
+    (env/tag-node node) (array-hint-class (env/hint-type (:file ctx) node))
+    (= :sym (:op node)) (get-in ctx [:compiler-array-classes (:val node)])
+    :else (get array-constructors (builtin-head ctx node))))
+
 (defn- bind-pairs [ctx bindings & [on-init]]
   (reduce (fn [ctx [p init]]
             (let [sym (when (= :sym (:op p)) (:val p))
@@ -1477,10 +1495,12 @@
                   _ (when on-init (on-init ctx p init ty))
                   why (why-of ctx init ty)
                   captured (when (and sym (not (env/tag-node p))) (condition-capture ctx init))
+                  array-class (when (and sym (not (env/tag-node p))) (compiler-array-class ctx init))
                   ctx' (bind-pattern ctx p ty why (stable-path ctx init))]
               (when-not callback (record! ctx p (get-in ctx' [:locals (:val p)] ty)))
               (cond-> ctx'
                 captured (assoc-in [:conditions sym] captured)
+                array-class (assoc-in [:compiler-array-classes sym] array-class)
                 (and sym (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) sym))))
           ctx (partition 2 (:children bindings))))
 
@@ -3120,10 +3140,87 @@
                   :else (problems ctx value actual expected))))
             (t/members env ty))))
 
-(defn- array-store-problems [ctx value ty member]
+(def ^:private primitive-array-stores
+  {'boolean [boolean #{"boolean"}]
+   'byte    [byte    #{"byte" "short" "int" "long" "float" "double"}]
+   'char    [char    #{"char" "int" "long" "float" "double"}]
+   'short   [short   #{"short" "int" "long" "float" "double"}]
+   'int     [int     #{"int" "long" "float" "double"}]
+   'long    [long    #{"long" "float" "double"}]
+   'float   [float   #{"float" "double"}]
+   'double  [double  #{"double"}]})
+
+(def ^:private primitive-boxes
+  {'boolean Boolean 'byte Byte 'char Character 'short Short
+   'int Integer 'long Long 'float Float 'double Double})
+
+(def ^:private unboxed
+  (into {} (map (fn [[name boxed]] [boxed name])) primitive-boxes))
+
+(defn- reflected-aset-match? [component boxed]
+  ;; Clojure 1.12's Reflector retries with widened boxed arguments.
+  (let [widened (case (unboxed boxed)
+                  (byte short int) Long
+                  float Double
+                  boxed)]
+    (or (Reflector/paramArgTypeMatch component boxed)
+        (Reflector/paramArgTypeMatch component widened))))
+
+(defn- inline-aset-status [^Class component boxed compiler-class static-array? literal]
+  (let [candidate (or compiler-class (some-> (unboxed boxed) str t/load-class))
+        compiled? (and candidate (Reflector/paramArgTypeMatch component candidate))
+        reflected? (reflected-aset-match? component boxed)
+        overflow? (and compiled? (= Integer/TYPE component) (= Long boxed) (number? literal)
+                       (not (<= Integer/MIN_VALUE literal Integer/MAX_VALUE)))]
+    (cond
+      overflow? :overflow-risk
+      (or reflected? (and compiled? static-array? compiler-class)) :proved
+      compiled? :inconclusive
+      :else :mismatch)))
+
+(defn- primitive-aset-problems [ctx value ty ^Class component inline? static-array?]
+  (let [env (:env ctx)
+        name (.getName component)
+        cast (when (= 2 (count (:children value))) (builtin-head ctx value))
+        cast-box (primitive-boxes cast)
+        expected (case name
+                   "boolean" (t/prim :boolean)
+                   "char" (t/class-type "java.lang.Character")
+                   (if (and (not inline?) (contains? (second (primitive-array-stores 'char)) name))
+                     array-index-cast-type
+                     (t/prim :number)))]
+    (mapcat (fn [member]
+              (let [literal (:val member)
+                    boxed (or cast-box
+                              (when (= :lit (:t member)) (class literal))
+                              (when (= :class (:t member)) (t/load-class (:name member)))
+                              (when (= :boolean (:name member)) Boolean))
+                    compiler-class (cond
+                                     cast-box (t/load-class (str cast))
+                                     (and (= :num (:op value)) (#{Long Double} boxed))
+                                     (t/load-class (str (unboxed boxed)))
+                                     (#{:num :bool :char} (:op value)) boxed)
+                    status (cond
+                             (#{:any :never} (:t member)) :proved
+                             (= :nil (:t member)) :mismatch
+                             (nil? boxed) (if (= :mismatch (:status (t/sub-result env member expected)))
+                                            :mismatch :inconclusive)
+                             inline? (inline-aset-status component boxed compiler-class static-array? literal)
+                             (contains? (second (primitive-array-stores (unboxed boxed))) name) :proved
+                             :else :mismatch)]
+                (case status
+                  :proved nil
+                  :mismatch [["TSP2345" (str "aset cannot store " (if cast-box (.getSimpleName ^Class cast-box)
+                                                                   (show-ref ctx member))
+                                             " in " name "[]")]]
+                  :overflow-risk [(unchecked-array-store ctx "aset int conversion may overflow with checked math")]
+                  :inconclusive [(unchecked-array-store ctx (str "aset cannot verify the JVM value type for " name "[]"))])))
+            (t/members env ty))))
+
+(defn- array-store-problems [ctx value ty member inline? compiler-array]
   (when-let [component (array-component member)]
     (if (.isPrimitive component)
-      [(unchecked-array-store ctx "aset cannot verify the primitive array store")]
+      (primitive-aset-problems ctx value ty component inline? (= compiler-array (:name member)))
       (let [name (.getName component)
             component-type (t/class-type name)
             expected (t/union component-type t/nil-t)
@@ -3143,6 +3240,22 @@
         (recur (apply t/union (map array-read-type members)) idx more)
         [receiver members]))))
 
+(defn- check-array-store-indices! [ctx indices index-types]
+  ;; Intermediate indices go through aget's int cast. Array.set and
+  ;; Array.setX take their final index from a Number in the Clojure setter.
+  (doseq [[idx ty] (map vector (pop indices) (pop index-types))]
+    (assignable! ctx idx ty array-index-cast-type))
+  (assignable! ctx (peek indices) (peek index-types) (t/prim :number)))
+
+(defn- aset-inline-result [receivers value-type]
+  (if (some #(some-> (array-component %) .isPrimitive) receivers)
+    (apply t/union
+           (for [member receivers :when (not (#{:nil :never} (:t member)))]
+             (if-let [component (array-component member)]
+               (if (.isPrimitive component) (array-read-type member) value-type)
+               t/unknown)))
+    value-type))
+
 (defmethod special 'aset [ctx node _]
   (let [args (args-of node)
         types (mapv #(infer ctx %) args)
@@ -3155,17 +3268,20 @@
 
       :else
       (let [indices (subvec args 1 (dec (count args)))
+            index-types (mapv #(eff ctx %) (subvec types 1 (dec (count types))))
+            inline? (= 1 (count indices))
             value (peek args)
             value-type (peek types)
-            ty (eff ctx value-type)
+            compiler-array (when inline? (compiler-array-class ctx (first args)))
             [_ receivers] (array-store-target ctx 'aset (first args) source indices)
-            issues (mapcat #(array-store-problems ctx value ty %) receivers)]
-        (check-array-indices! ctx indices (map #(eff ctx %) (subvec types 1 (dec (count types)))))
+            issues (mapcat #(array-store-problems ctx value (eff ctx value-type) % inline? compiler-array) receivers)]
+        (if inline?
+          (check-array-indices! ctx indices index-types)
+          (check-array-store-indices! ctx indices index-types))
         (when-let [[code message extra] (or (first (remove #(= "TSP210-01" (first %)) issues)) (first issues))]
           (apply report! ctx value code message (mapcat identity extra)))
-        (if (some #(some-> (array-component %) .isPrimitive) receivers)
-          t/unknown
-          (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))))))
+        (t/with-assumption (if inline? (aset-inline-result receivers value-type) value-type)
+                           (or (t/assumption value-type) (t/assumption source)))))))
 
 (defn- numeric-coercion-error [coerce value]
   (try
@@ -3186,15 +3302,8 @@
           (report! ctx value "TSP2345" (str head " cannot coerce the value (" message ")")))))))
 
 ;; Array.setX accepts the JVM widening conversions from X to the component.
-(doseq [[head [coerce components]]
-        {'aset-boolean [boolean #{"boolean"}]
-         'aset-byte    [byte    #{"byte" "short" "int" "long" "float" "double"}]
-         'aset-char    [char    #{"char" "int" "long" "float" "double"}]
-         'aset-short   [short   #{"short" "int" "long" "float" "double"}]
-         'aset-int     [int     #{"int" "long" "float" "double"}]
-         'aset-long    [long    #{"long" "float" "double"}]
-         'aset-float   [float   #{"float" "double"}]
-         'aset-double  [double  #{"double"}]}]
+(doseq [[cast [coerce components]] primitive-array-stores
+        :let [head (symbol (str "aset-" cast))]]
   (defmethod special head [ctx node _]
     (let [[array :as args] (args-of node)
           [source :as types] (mapv #(infer ctx %) args)]
@@ -3210,11 +3319,7 @@
               index-types (mapv #(eff ctx %) (subvec types 1 (dec (count types))))
               value-type (peek types)
               [target receivers] (array-store-target ctx head array (eff ctx source) indices)]
-          ;; Intermediate indices go through aget's int cast. Array.setX takes
-          ;; its final index from a Number in the Clojure setter.
-          (doseq [[idx ty] (map vector (pop indices) (pop index-types))]
-            (assignable! ctx idx ty array-index-cast-type))
-          (assignable! ctx (peek indices) (peek index-types) (t/prim :number))
+          (check-array-store-indices! ctx indices index-types)
           (when-let [bad (some #(when-let [component (array-component %)]
                                  (when-not (components (.getName component)) %))
                               receivers)]
@@ -3222,9 +3327,7 @@
           (check-primitive-store-value! ctx head (peek args) (eff ctx value-type) coerce)
           (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))))))
 
-(doseq [[head class-name] {'boolean-array "[Z" 'byte-array "[B" 'char-array "[C"
-                           'short-array "[S" 'int-array "[I" 'long-array "[J"
-                           'float-array "[F" 'double-array "[D" 'object-array "[Ljava.lang.Object;"}]
+(doseq [[head class-name] array-constructors]
   (defmethod special head [ctx node _]
     (let [[size :as args] (args-of node)
           [source :as types] (mapv #(eff ctx (infer ctx %)) args)

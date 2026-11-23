@@ -515,10 +515,45 @@
 (aset (object-array 1) 0)
 (aset (int-array 1) 0 42)" {})]
     (is (= [[3 "TSP2345"] [5 "TSP210-01"] [8 "TSP2531"] [8 "TSP2345"]
-            [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2531"] [12 "TSP2554"] [13 "TSP210-01"]]
+            [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2531"] [12 "TSP2554"]]
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))
-    (is (= "t/unknown" (at r 13)))))
+    (is (= "int?" (at r 13)))))
+
+(deftest aset-checks-primitive-overloads-and-returns-the-stored-type
+  (let [r (checked "(aset (byte-array 1) 0 42)
+(aset (byte-array 1) 0 (byte 42))
+(let [^bytes values (byte-array 1)] (aset values 0 42))
+(aset (boolean-array 1) 0 true)
+(aset (boolean-array 1) 0 nil)
+(aset (int-array 1) 0 3.5)
+(aset (int-array 1) 0 (byte 42))
+(aset (float-array 1) 0 3.5)
+(let [a (float-array 1) alias a] (aset alias 0 3.5))
+(let [^Object a (float-array 1)] (aset a 0 3.5))
+(aset (int-array 1) 0 2147483648)
+(aset (char-array 1) 0 \\a)" {})]
+    (is (= [[2 "TSP2345"] [4 "TSP2345"] [6 "TSP2345"] [7 "TSP2345"]
+            [11 "TSP210-01"] [12 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?" "boolean?" "int?" "double?" "double?" "java.lang.Character"]
+           (mapv #(at r %) [3 5 8 9 10 13])))))
+
+(deftest variadic-aset-uses-array-set-and-preserves-the-original-value
+  (let [r (checked "(defn put-long [^long/2 matrix]
+  (aset matrix \\u0000 0 42))
+(defn wrong-width [^int/2 matrix]
+  (aset matrix 0 0 42))
+(defn put-int [^int/2 matrix]
+  (aset matrix 0 0 (byte 42)))
+(defn wrong-index [^int/2 matrix]
+  (aset matrix 0 \\u0000 (int 42)))" {})]
+    (is (= [[3 "TSP2531"] [5 "TSP2531"] [5 "TSP2345"] [7 "TSP2531"]
+            [9 "TSP2531"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "42" (main/type-at r "length.clj" 3 3)))))
 
 (deftest aset-uses-array-classes-from-another-namespace
   (let [files [(parse/parse-string "provider.clj"
@@ -534,6 +569,21 @@
     (is (= [["consumer.clj" 3 20 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
+
+(deftest aset-infers-a-primitive-result-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider)
+(defn store! [^float/1 values] (aset values 0 3.5))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p] [clojure.spec.alpha :as s]))
+(s/fdef store-float! :args (s/cat) :ret double?)
+(defn store-float! [] (p/store! (float-array 1)))
+(p/store! (double-array 1))")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 4 11 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "double?" (main/type-at r "consumer.clj" 3 23)))))
 
 (deftest primitive-aset-checks-jvm-widening-and-clojure-coercion
   (let [r (checked "(aset-int (int-array 1) 0 42)

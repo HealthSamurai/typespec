@@ -691,6 +691,46 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest to-array-2d-checks-its-collection-and-row-conversions
+  (let [r (checked "(to-array-2d [[1 2] [3]])
+(alength (to-array-2d [[1 2] [3]]))
+(alength (to-array-2d (list [1] [2])))
+(alength (to-array-2d '()))
+(alength (to-array-2d [(int-array [1 2]) nil \"ab\" {:a 1} '(1)]))
+(to-array-2d [[1] true])
+(to-array-2d (list [1] false))
+(to-array-2d nil)
+(to-array-2d {:a [1]})
+(to-array-2d (int-array [1]))
+(to-array-2d)
+(defn opaque [^java.util.Collection rows] (to-array-2d rows))
+(defn iterable [^Iterable rows] (to-array-2d rows))
+(aset (to-array-2d [[1]]) 0 (to-array [2]))
+(aset (to-array-2d [[1]]) 0 \"not a row\")" {})]
+    (is (= ["[[Ljava.lang.Object;" "2" "2" "0" "5" "[Ljava.lang.Object;"]
+           (mapv #(at r %) [2 3 4 5 6 15])))
+    (is (= [[7 19 "TSP2345"] [8 24 "TSP2345"] [9 14 "TSP2531"]
+            [10 14 "TSP2345"] [11 14 "TSP2345"] [12 1 "TSP2554"]
+            [13 56 "TSP210-01"] [14 46 "TSP2345"] [16 29 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest to-array-2d-preserves-outer-array-facts-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider)
+(defn grid [] (to-array-2d [[1 2] [3]]))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(alength (p/grid))
+(aset (p/grid) 0 (to-array [3]))
+(aget (p/grid) 2)
+(aset (p/grid) 0 \"bad\")")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 4 16 "TSP330-02"] ["consumer.clj" 5 18 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "2" (main/type-at r "consumer.clj" 2 1)))))
+
 (deftest jvm-array-access-checks-the-converted-index
   (let [r (checked "(aget (int-array [4 5]) 1)
 (aget (int-array [4 5]) 2)

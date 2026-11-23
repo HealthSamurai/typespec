@@ -3648,6 +3648,21 @@
                         {:type (converted-object-array nil) :reasons #{:unsupported}}
                         {:bad member})))))))
 
+(defn- array-conversion-results [ctx form source]
+  (if-some [n (to-array-list-length ctx form)]
+    [{:type (converted-object-array n)}]
+    (mapv #(to-array-member ctx %) (t/members (:env ctx) source))))
+
+(defn- report-array-conversion! [ctx node label results]
+  (let [bad (some :bad results)
+        unchecked (into #{} (mapcat :reasons) results)]
+    (cond
+      bad (report! ctx node "TSP2345"
+                   (str label " expects nil, a JVM array, an Iterable, a Map or a string, got " (t/show bad)))
+      (seq unchecked) (report! ctx node "TSP210-01" (str label " input type is not checked")
+                               :severity (if (:strict (:opts ctx)) :error :warning)
+                               :reasons unchecked))))
+
 (defmethod special 'to-array [ctx node _]
   (let [[arg :as args] (args-of node)
         [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
@@ -3658,19 +3673,67 @@
       (= t/never source) t/never
 
       :else
-      (let [n (to-array-list-length ctx arg)
-            results (if (some? n)
-                      [{:type (converted-object-array n)}]
-                      (mapv #(to-array-member ctx %) (t/members (:env ctx) source)))
-            bad (some :bad results)
-            unchecked (into #{} (mapcat :reasons) results)]
-        (cond
-          bad (report! ctx arg "TSP2345"
-                       (str "to-array expects nil, a JVM array, an Iterable, a Map or a string, got " (t/show bad)))
-          (seq unchecked) (report! ctx arg "TSP210-01" "to-array input type is not checked"
-                                   :severity (if (:strict (:opts ctx)) :error :warning)
-                                   :reasons unchecked))
+      (let [results (array-conversion-results ctx arg source)]
+        (report-array-conversion! ctx arg "to-array" results)
         (t/with-assumption (apply t/union (keep :type results)) (t/assumption source))))))
+
+(defn- array-rows-result [env member known-list?]
+  (cond
+    known-list? {:status :proved}
+    (= "clojure.lang.IPersistentList" (:name member)) {:status :inconclusive :reasons #{:unsupported}}
+    :else (t/sub-result env member (t/class-type "java.util.Collection"))))
+
+(defn- check-array-rows! [ctx arg member forms n]
+  (when (and (not= :any (:t member)) (not= 0 n) (not= 0 (second (length/bounds member))))
+    (if-let [items (:items member)]
+      (doseq [[i ty] (map-indexed vector items)
+              :let [form (get forms i)]]
+        (report-array-conversion! ctx (or form arg) "to-array-2d row"
+                                  (array-conversion-results ctx form (eff ctx ty))))
+      (report-array-conversion! ctx arg "to-array-2d row"
+                                (array-conversion-results ctx nil (eff ctx (elem-type ctx member)))))))
+
+(defmethod special 'to-array-2d [ctx node _]
+  (let [[arg :as args] (args-of node)]
+    (if (not= 1 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "to-array-2d expects one argument")
+          t/unknown)
+      (let [list? (= 'list (builtin-head ctx arg))
+            forms (cond
+                    list? (args-of arg)
+                    (= :vector (:op arg)) (:children arg))
+            source (eff ctx
+                        (if list?
+                          (let [items (mapv #(dissoc (infer ctx %) :fresh) forms)]
+                            (record! ctx arg (if (some #{t/never} items) t/never
+                                                (assoc (t/tuple items) :kind :seq))))
+                          (infer ctx arg)))
+            env (:env ctx)
+            n (to-array-list-length ctx arg)
+            members (remove #(= :never (:t %)) (t/members env source))
+            results (mapv #(vector % (array-rows-result env % (some? n))) members)
+            rejected (keep (fn [[m r]] (when (= :mismatch (:status r)) m)) results)
+            bad (first (remove #(= :nil (:t %)) rejected))
+            unchecked (into #{} (comp (map second) (mapcat :reasons)) results)
+            accepted (keep (fn [[m r]] (when (= :proved (:status r)) m)) results)]
+        (cond
+          bad
+          (report! ctx arg "TSP2345" (str "to-array-2d expects a java.util.Collection, got " (t/show bad)))
+          (seq rejected)
+          (report! ctx arg "TSP2531" "to-array-2d collection may be nil")
+          (seq unchecked)
+          (report! ctx arg "TSP210-01" "to-array-2d collection type is not checked"
+                   :severity (if (:strict (:opts ctx)) :error :warning) :reasons unchecked))
+        (doseq [member accepted]
+          (check-array-rows! ctx arg member forms n))
+        (if (or (seq accepted) (seq unchecked))
+          (let [row-count (or n (when-not (seq unchecked) (shared-length (map exact-sequence-length accepted))))]
+            (t/with-assumption
+             (cond-> (assoc (t/class-type "[[Ljava.lang.Object;") :exact-array? true)
+               (some? row-count) (assoc :array-length row-count))
+             (t/assumption source)))
+          t/never)))))
 
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
   (defmethod special h [ctx node _]

@@ -523,6 +523,51 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest into-array-checks-class-and-sequence-inputs
+  (let [r (checked "(into-array 42 [])
+(into-array nil [])
+(into-array \"java.lang.String\" [])
+(let [String 42] (into-array String []))
+(let [component (class \"example\")] (into-array component [\"ok\"]))
+(into-array (Object.))
+(into-array Object (java.util.Date.))
+(into-array Object (java.util.Collections/emptyIterator))
+(into-array (StringBuilder. \"abc\"))
+(into-array Object (java.util.ArrayList. [\"ok\"]))
+(into-array Object {:answer 42})
+(into-array Object (list :a :b))
+(into-array Object (int-array [1 2]))
+(into-array Object nil)
+(into-array Object true)
+(into-array (reify clojure.lang.Seqable (seq [_] (seq [\"ok\"]))))
+(defn unknown-items [items] (into-array items))" {})]
+    (is (= [[2 13] [3 13] [4 13] [5 30] [7 13] [8 20] [9 20] [16 20]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos)) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (every? #(= "TSP2345" (:code %)) (:diagnostics r)))
+    (is (= (repeat 7 "[Ljava.lang.Object;") (mapv #(at r %) [10 11 12 13 14 15 17])))
+    (is (= "[Ljava.lang.Object;" (main/type-at r "length.clj" 18 29)))
+    (is (= "t/unknown" (at r 6)))))
+
+(deftest into-array-checks-inputs-across-namespace-contracts
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:require [clojure.spec.alpha :as s]))
+(s/fdef component :args (s/cat :name string?) :ret #(instance? Class %))
+(defn component [^String name] (Class/forName name))
+(s/fdef timestamp :args (s/cat) :ret #(instance? java.util.Date %))
+(defn timestamp [] (java.util.Date.))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(into-array (p/component \"java.lang.String\") [\"ok\"])
+(into-array (p/timestamp) [])
+(into-array (p/timestamp))
+(alength (into-array String [\"ok\"]))")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 13 "TSP2345"] ["consumer.clj" 4 13 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "1" (main/type-at r "consumer.clj" 5 1)))))
+
 (deftest explicit-reference-into-array-checks-boxed-components
   (let [r (checked "(into-array Integer [(int 42) nil])
 (into-array Integer [42])

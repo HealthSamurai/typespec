@@ -3651,7 +3651,7 @@
             (report-store-problem!
              ctx (or form arg)
              (mapcat #(reference-store-problems ctx 'into-array (or form arg) actual %)
-                     (remove #{nil Object} classes)))))
+                     (filter #(and % (not= Object %)) classes)))))
         (apply t/union (map #(inferred-array-type ctx arg % n) classes))))))
 
 (defn- into-array-primitive-problems [ctx node form ty component]
@@ -3699,6 +3699,11 @@
                 (report! ctx node "TSP2345" (str "into-array cannot coerce the value (" message ")")))))
         (report-store-problem! ctx node (into-array-primitive-problems ctx node form actual name))))))
 
+(def ^:private into-array-input
+  (t/union t/nil-t
+           (t/class-type "clojure.lang.Seqable") (t/class-type "java.lang.Iterable")
+           (t/class-type "java.lang.CharSequence") (t/class-type "java.util.Map")))
+
 (defmethod special 'into-array [ctx node _]
   (let [[component :as args] (args-of node)
         types (mapv #(eff ctx (infer ctx %)) args)
@@ -3709,26 +3714,42 @@
 
       (some #{t/never} types) t/never
 
-      (report-invalid-sequence-args! ctx 'into-array [(peek args)] [source]) t/unknown
-
-      (= 1 (count args))
-      (t/with-assumption
-       (apply t/union (map #(implicit-into-array-member ctx component %) (t/members (:env ctx) source)))
-       (t/assumption source))
-
       :else
-      (if-let [^Class cls (array-component-class ctx component)]
-        (if (= Void/TYPE cls)
+      (let [env (:env ctx)
+            arg (peek args)
+            members (t/members env source)
+            explicit? (= 2 (count args))
+            ^Class cls (when explicit? (array-component-class ctx component))
+            expected-class (t/class-type "java.lang.Class")
+            bad (some #(when (and (not (array-component %))
+                                  (= :mismatch (:status (t/sub-result env % into-array-input))))
+                         %)
+                      members)]
+        (when (and explicit? (not cls)
+                   (= :mismatch (:status (t/sub-result env (first types) expected-class))))
+          (assignable! ctx component (first types) expected-class))
+        (cond
+          bad
+          (do (report! ctx arg "TSP2345" (str "into-array cannot sequence " (t/show bad)))
+              t/unknown)
+
+          (not explicit?)
+          (t/with-assumption (apply t/union (map #(implicit-into-array-member ctx arg %) members))
+                             (t/assumption source))
+
+          (= Void/TYPE cls)
           (do (report! ctx component "TSP2345" "into-array cannot use void as its component")
               t/never)
-          (let [members (t/members (:env ctx) source)
-                n (shared-length (map array-input-length members))]
+
+          cls
+          (let [n (shared-length (map array-input-length members))]
             (if (.isPrimitive cls)
-              (check-primitive-into-array! ctx (peek args) members cls)
-              (check-reference-into-array! ctx (peek args) members cls))
+              (check-primitive-into-array! ctx arg members cls)
+              (check-reference-into-array! ctx arg members cls))
             (cond-> (inferred-array-type ctx component cls n)
-              (some? n) (t/with-assumption (t/assumption source)))))
-        t/unknown))))
+              (some? n) (t/with-assumption (t/assumption source))))
+
+          :else t/unknown)))))
 
 (def ^:private to-array-input
   (t/union t/nil-t (t/prim :string)

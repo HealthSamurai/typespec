@@ -523,6 +523,62 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest explicit-reference-into-array-checks-boxed-components
+  (let [r (checked "(into-array Integer [(int 42) nil])
+(into-array Integer [42])
+(into-array Long [42 nil])
+(into-array Long [(int 42)])
+(into-array Byte [(byte 42) nil])
+(into-array Byte [(short 42)])
+(into-array Short [(short 42)])
+(into-array Short [(byte 42)])
+(into-array Float [(float 1.5)])
+(into-array Float [1.5])
+(into-array Double [1.5 nil])
+(into-array Double [(float 1.5)])
+(into-array Number [42 (int 42) 1.5 nil])
+(into-array Integer (int-array [42]))
+(into-array Long (int-array [42]))
+(into-array Integer (make-array Integer 1))
+(into-array Long (into-array Integer [(int 42)]))
+(into-array String (int-array [42]))
+(into-array String (into-array Long [42]))
+(into-array Character \"abc\")
+(into-array String \"abc\")
+(into-array String/1 [(into-array String [\"ok\"]) nil])
+(into-array String/1 [(object-array [\"bad\"])])
+(alength (into-array Long (int-array 0)))
+(alength (into-array String \"\"))
+(defn opaque [^Number x] (into-array Integer [x]))
+(defn from-unknown [xs] (into-array Integer xs))" {})]
+    (is (= ["[Ljava.lang.Integer;" "[Ljava.lang.Long;" "[Ljava.lang.Byte;" "[Ljava.lang.Short;"
+            "[Ljava.lang.Float;" "[Ljava.lang.Double;" "[Ljava.lang.Number;" "[Ljava.lang.Integer;"
+            "[Ljava.lang.Integer;" "[Ljava.lang.Character;" "[[Ljava.lang.String;" "0" "0"]
+           (mapv #(at r %) [2 4 6 8 10 12 14 15 17 21 23 25 26])))
+    (is (= (conj (mapv #(vector % "TSP2345") [3 5 7 9 11 13 16 18 19 20 22 24]) [27 "TSP210-01"])
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= 22 (-> r :diagnostics first :pos :col)))
+    (is (= "java.lang.Short is not assignable to (s/nilable java.lang.Byte)"
+           (-> r :diagnostics (nth 2) :message)))))
+
+(deftest explicit-reference-into-array-preserves-contracts-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:require [clojure.spec.alpha :as s]))
+(s/fdef boxed :args (s/cat :items (s/tuple int?)) :ret #(instance? Integer/1 %))
+(defn boxed [[item]] (into-array Integer [(int item) nil]))
+(defn flags [] (into-array Boolean [true false]))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(into-array Integer (p/boxed [42]))
+(alength (into-array Boolean (p/flags)))
+(into-array Long (p/boxed [42]))")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 4 18 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "2" (main/type-at r "consumer.clj" 3 1)))))
+
 (deftest implicit-into-array-checks-the-first-runtime-component
   (let [r (checked "(into-array [\"one\" nil \"two\"])
 (into-array [nil \"one\" 42])

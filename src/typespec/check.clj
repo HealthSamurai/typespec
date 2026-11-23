@@ -3598,7 +3598,8 @@
   (apply t/union
          (for [member (t/members (:env ctx) ty)]
            (if-let [^Class cls (when-not (= :nil (:t member)) (known-object-class ctx form member))]
-             {:t :class :name (.getName cls) :as (t/show member)}
+             (cond-> {:t :class :name (.getName cls)}
+               (= :lit (:t member)) (assoc :as (t/show member)))
              member))))
 
 (defn- inferred-array-type [ctx node ^Class component n]
@@ -3622,9 +3623,12 @@
 
 (defn- array-input-element [ctx member]
   (if-let [component (array-component member)]
-    (if (.isPrimitive component)
-      {:t :class :name (.getName component)}
-      (array-read-type member))
+    (let [name (.getName component)
+          exact-class {:t :class :name name}]
+      (cond
+        (.isPrimitive component) exact-class
+        (#{:int :double} (t/class->prim name)) (t/union exact-class t/nil-t)
+        :else (array-read-type member)))
     (elem-type ctx member)))
 
 (defn- implicit-into-array-member [ctx arg member]
@@ -3662,18 +3666,29 @@
                       [(unchecked-array-store ctx (str "into-array cannot verify the JVM value type for " component "[]"))]))))
             (t/members env ty))))
 
+(defn- explicit-into-array-elements [ctx arg members]
+  (let [forms (array-input-vector-forms arg)]
+    (mapcat (fn [member]
+              (when (not= 0 (array-input-length member))
+                (if-let [items (:items member)]
+                  (map vector (concat forms (repeat nil)) items)
+                  [[nil (array-input-element ctx member)]])))
+            members)))
+
+(defn- check-reference-into-array! [ctx arg members component]
+  (doseq [[form ty] (explicit-into-array-elements ctx arg members)
+          :let [node (or form arg)
+                actual (into-array-element-type ctx form (eff ctx ty))]
+          :when (not= :unknown (:t actual))]
+    (report-store-problem! ctx node (reference-store-problems ctx 'into-array node actual component))))
+
 (defn- check-primitive-into-array! [ctx arg members ^Class component]
   (let [name (.getName component)
         ;; RT.seqToTypedArray uses checked Clojure casts for these five components.
         coerce (when (#{"byte" "short" "int" "char" "float"} name)
                  (first (primitive-array-stores (symbol name))))
-        expected (if (= "float" name) (t/prim :number) array-index-cast-type)
-        forms (array-input-vector-forms arg)]
-    (doseq [member members
-            :when (not= 0 (array-input-length member))
-            [form ty] (if-let [items (:items member)]
-                        (map-indexed (fn [i item] [(get forms i) item]) items)
-                        [[nil (array-input-element ctx member)]])
+        expected (if (= "float" name) (t/prim :number) array-index-cast-type)]
+    (doseq [[form ty] (explicit-into-array-elements ctx arg members)
             :let [node (or form arg)
                   actual (eff ctx ty)]]
       (if coerce
@@ -3710,16 +3725,7 @@
                 n (shared-length (map array-input-length members))]
             (if (.isPrimitive cls)
               (check-primitive-into-array! ctx (peek args) members cls)
-              (let [component-type (t/class-type (.getName cls))
-                    expected (t/union component-type t/nil-t)
-                    elements (keep (fn [member]
-                                     (let [element (if-let [items (:items member)]
-                                                     (apply t/union items)
-                                                     (elem-type ctx member))]
-                                       (when-not (#{:unknown :any :never} (:t element)) element)))
-                                   members)]
-                (when (and (seq elements) (not (#{:int :double} (:name component-type))))
-                  (assignable! ctx (peek args) (apply t/union elements) expected))))
+              (check-reference-into-array! ctx (peek args) members cls))
             (cond-> (inferred-array-type ctx component cls n)
               (some? n) (t/with-assumption (t/assumption source)))))
         t/unknown))))

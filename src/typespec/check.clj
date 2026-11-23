@@ -3314,22 +3314,24 @@
         (t/with-assumption (if inline? (aset-inline-result receivers value-type) value-type)
                            (or (t/assumption value-type) (t/assumption source)))))))
 
+(defn- array-loop-binding-problem [index target]
+  (if-let [malformed (some #(when-not (and (= :sym (:op %)) (simple-symbol? (:val %))) %)
+                           [index target])]
+    [malformed "expects a local symbol for this binding"]
+    (when (= (:val index) (:val target))
+      [index "requires distinct index and result bindings"])))
+
 (defmethod special 'amap [ctx node _]
   (let [[array index target body :as args] (args-of node)
         source (when array (infer ctx array))
-        malformed (some #(when-not (and (= :sym (:op %)) (simple-symbol? (:val %))) %)
-                        [index target])]
+        [bad-binding message] (array-loop-binding-problem index target)]
     (cond
       (not= 4 (count args))
       (do (report! ctx node "TSP2554" "amap expects an array, an index name, a result name and an expression")
           t/unknown)
 
-      malformed
-      (do (report! ctx malformed "TSP2345" "amap expects a local symbol for this binding")
-          t/unknown)
-
-      (= (:val index) (:val target))
-      (do (report! ctx index "TSP2345" "amap index shadows the result binding")
+      bad-binding
+      (do (report! ctx bad-binding "TSP2345" (str "amap " message))
           t/unknown)
 
       (= t/never source) t/never
@@ -4027,6 +4029,61 @@
     (update (dissoc acc :items :min-count :max-count) :of t/union (:of step))
     (let [joined (t/union acc step)]
       (or (widen-vector-growth (:env ctx) joined) joined))))
+
+(defn- array-reduction-invariant [ctx seed infer-step]
+  (loop [acc seed, iterations 0]
+    (let [step (probe ctx #(infer-step % acc))]
+      (when-not (= :unknown (:t step))
+        ;; Join even nominally equal classes. A later value can lose the
+        ;; exact runtime component of a covariant JVM array accumulator.
+        (let [joined (join-accumulator ctx acc (widen (dissoc step :fresh)))]
+          (cond
+            (= acc joined) acc
+            (< iterations 7) (recur joined (inc iterations))))))))
+
+(defmethod special 'areduce [ctx node _]
+  (let [[array index target init body :as args] (args-of node)
+        source (when array (infer ctx array))
+        [bad-binding message] (array-loop-binding-problem index target)]
+    (cond
+      (not= 5 (count args))
+      (do (report! ctx node "TSP2554"
+                   "areduce expects an array, an index name, an accumulator name, an initial value and an expression")
+          t/unknown)
+
+      bad-binding
+      (do (report! ctx bad-binding "TSP2345" (str "areduce " message))
+          t/unknown)
+
+      (= t/never source) t/never
+
+      :else
+      (let [members (checked-array-members ctx array 'areduce (eff ctx source))]
+        (if-not (some #(#{:proved :inconclusive} (array-argument-status %)) members)
+          t/never
+          (let [index-sym (:val index)
+                target-sym (:val target)
+                index-ctx (-> (bind-pattern ctx index (t/lit 0))
+                              (assoc-in [:compiler-local-classes index-sym] "long"))
+                initial (infer index-ctx init)]
+            (if (= t/never initial)
+              t/never
+              (let [body-ctx (-> index-ctx
+                                 (update-in [:locals index-sym] widen)
+                                 (dissoc :recur-types))
+                    seed (widen (dissoc initial :fresh))
+                    infer-step (fn [c acc]
+                                 (let [c (bind-pattern c target acc)]
+                                   (record! c target (get-in c [:locals target-sym]))
+                                   (infer c body)))
+                    stable (array-reduction-invariant body-ctx seed infer-step)
+                    _ (record! body-ctx index (get-in body-ctx [:locals index-sym]))
+                    step (infer-step body-ctx (or stable seed))]
+                (when (or (nil? stable) (= :unknown (:t step)))
+                  (unchecked-hof! ctx body "areduce accumulator is not checked" :accumulator))
+                (t/with-assumption
+                 (if stable (widen (t/union seed (dissoc step :fresh))) t/unknown)
+                 (t/assumption source))))))))))
 
 (defn- reduction-accumulator [ctx f seed inputs empty-call?]
   (loop [acc seed iterations 0]

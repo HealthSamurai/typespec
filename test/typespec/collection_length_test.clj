@@ -523,6 +523,55 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest areduce-checks-the-types-reached-on-later-iterations
+  (let [r (checked "(let [a (int-array [1 2])]
+  (areduce a i acc 0 (+ acc (aget a i))))
+(areduce (int-array [1 2]) i acc 0 (if (number? acc) \"text\" acc))
+(areduce (int-array [1 2]) i acc 0 (if (= i 0) \"text\" (inc acc)))
+(areduce (int-array [1 2]) i acc nil (str acc))
+(areduce [:not-array] i acc 0 acc)
+(areduce nil i acc 0 acc)
+(areduce (int-array 1) i acc 0)
+(areduce (int-array 1) :idx acc 0 acc)
+(areduce (int-array 1) i i 0 i)
+(defn opaque [^ints a f] (areduce a i acc 0 (f acc)))
+(areduce (int-array [1 2]) i acc i (inc acc))
+(areduce (int-array [1 2]) i acc [] (conj acc i))
+(areduce (int-array [1 2]) i acc nil (clojure.lang.Reduced. i))" {})]
+    (is (= [[5 "TSP2345"] [7 "TSP2345"] [8 "TSP2531"] [9 "TSP2554"]
+            [10 "TSP2345"] [11 "TSP2345"] [12 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?" "(t/or int? string?)" "(s/nilable string?)" "int?"
+            "(s/nilable clojure.lang.Reduced)"]
+           (mapv #(at r %) [2 4 6 13 15])))
+    (is (= #{:accumulator} (:reasons (last (:diagnostics r)))))))
+
+(deftest areduce-joins-array-evidence-on-the-back-edge
+  (let [r (checked "(defn replace-array [^ints input ^objects alternate]
+  (areduce input i acc (object-array 1)
+    (do (aset acc 0 42) alternate)))" {})]
+    (is (= [[4 21 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest areduce-preserves-the-result-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:require [clojure.spec.alpha :as s]))
+(s/fdef sum-array :args (s/cat :values #(instance? int/1 %)) :ret int?)
+(defn sum-array [values] (areduce values i acc 0 (+ acc (aget values i))))
+(defn states [^ints values]
+  (areduce values i acc 0 (if (number? acc) \"ready\" acc)))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(inc (p/sum-array (int-array [1 2])))
+(inc (p/states (int-array [1 2])))
+(p/sum-array (long-array 1))")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 6 "TSP2345"] ["consumer.clj" 4 14 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest amap-checks-the-value-written-to-the-clone
   (let [r (checked "(amap (into-array String [\"old\"]) i copy \"label\")
 (amap (into-array String [\"old\"]) i copy 42)

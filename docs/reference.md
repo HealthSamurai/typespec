@@ -186,6 +186,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `aget` | uses the JVM component type at each index. Reference elements may be `nil`. JVM descriptor hints such as `^"[[I"` preserve the array type. |
 | `aset` | checks indices and reference or primitive components. A widened local hint preserves the component inferred from the initializer. The three-argument primitive form returns the component type, while the multi-index form returns the input value's type. Uncertain JVM overloads receive a diagnostic. |
 | `amap` | checks the body as a write into a clone with the input array's JVM class. The body sees a JVM `long` index and the clone binding. |
+| `areduce` | checks the array and the body with a JVM `long` index. Joins the initial accumulator with values reached on later iterations and includes the initial type in the result. |
 | `aset-boolean`, `aset-byte`, `aset-char`, `aset-short`, `aset-int`, `aset-long`, `aset-float`, `aset-double` | check the primitive component using JVM widening rules, validate indices and value coercion, and return the type of the original value. |
 | `defrecord R [a b]` | nominal class + fields + open extra keys; `assoc` preserves `R`, `dissoc` of a field yields a map |
 | `defprotocol` | method `s/fdef` contracts check `reify`, `extend-type`, `extend-protocol`, and literal `extend` method maps across namespaces. `extend-protocol` and `extend` allow partial implementations. [F430](../features/F430-protocols.md) |

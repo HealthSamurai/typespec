@@ -487,6 +487,54 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest aset-preserves-reference-array-components-through-local-hints
+  (let [r (checked "(let [^objects values (into-array String [\"param\"])]
+  (aset values 0 42))
+(let [^objects values (into-array String [\"param\"]) alias values]
+  (clojure.core/aset alias 0 \"value\"))
+(let [^objects values (object-array 1)] (aset values 0 42))
+(aset (into-array String [\"param\"]) 0 nil)
+(aset (into-array Integer [nil]) 0 42)
+(aset (into-array Long [nil]) 0 42)" {})]
+    (is (= [[3 18 "TSP2345"] [8 36 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"value\"" "42" "nil?" "42"] (mapv #(at r %) [4 6 7 9])))))
+
+(deftest aset-checks-each-array-alternative
+  (let [r (checked "(defn checked-write [flag]
+  (aset (if flag (object-array 1) (into-array String [\"x\"])) 0 42))
+(defn unchecked-write [flag ^objects external]
+  (aset (if flag (object-array 1) external) 0 42))
+(defn nil-write [^objects external] (aset external 0 nil))
+(defn nested [^\"[[Ljava.lang.String;\" matrix]
+  (clojure.core/aset matrix 0 0 42))
+(aset (object-array 1) :bad-index nil)
+(aset [] 0 nil)
+(aset nil 0 nil)
+(aset (object-array 1) 0)
+(aset (int-array 1) 0 42)" {})]
+    (is (= [[3 "TSP2345"] [5 "TSP210-01"] [8 "TSP2531"] [8 "TSP2345"]
+            [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2531"] [12 "TSP2554"] [13 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "t/unknown" (at r 13)))))
+
+(deftest aset-uses-array-classes-from-another-namespace
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider)
+(defn labels ^\"[Ljava.lang.String;\" [] (into-array String [\"label\"]))
+(defn aset [array index value] value)")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aset (p/labels) 0 \"value\")
+(aset (p/labels) 0 42)
+(p/aset (p/labels) 0 42)")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 20 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest alength-checks-array-hints-and-returns-int
   (let [r (checked "(let [^bytes body (byte-array 3)] (alength body))
 (let [^objects values (object-array 2)] (alength values))

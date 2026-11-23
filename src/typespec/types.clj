@@ -16,8 +16,8 @@
 (defn with-assumption [ty reason]
   (if reason (vary-meta ty assoc ::assumption reason) ty))
 
-;; :generic-failure is a checker note on a result, not part of the type's identity.
-(defn strip [t] (dissoc t :platform :as :generic-failure))
+;; These facts do not change the nominal type.
+(defn strip [t] (dissoc t :platform :as :generic-failure :exact-array?))
 
 (defn union [& ts]
   (let [[flat nullable?]
@@ -30,12 +30,13 @@
                 :union (recur (concat (:types x) more) seen out (or nullable? (:platform x)))
                 :never (recur more seen out nullable?)
                 (if-let [i (get seen shape)]
-                  ;; Preserve the risk when either branch is a platform value.
+                  ;; Preserve platform nil risk and keep exactness only when both paths prove it.
                   (recur more seen
                          (update out i
                                  #(cond-> %
                                     (:platform x) (assoc :platform true)
-                                    (not (:generic-failure x)) (dissoc :generic-failure)))
+                                    (not (:generic-failure x)) (dissoc :generic-failure)
+                                    (not (:exact-array? x)) (dissoc :exact-array?)))
                          nullable?)
                   (recur more (assoc seen shape (count out)) (conj out x) nullable?))))
             [out nullable?]))

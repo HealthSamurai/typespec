@@ -13,7 +13,8 @@
             [typespec.java :as java]
             [typespec.core-types :as core]
             [typespec.guards :as guards]
-            [typespec.macro-contracts :as macros]))
+            [typespec.macro-contracts :as macros])
+  (:import [java.lang.reflect Modifier]))
 
 (def ^:dynamic *diags* nil)
 (def ^:dynamic *types* nil)
@@ -3047,16 +3048,27 @@
       (do (checked-array-members ctx arg 'alength source)
           (t/prim :int)))))
 
+(defn- array-component ^Class [member]
+  (when (= :class (:t member))
+    (some-> ^Class (t/load-class (:name member)) .getComponentType)))
+
 (defn- array-read-type [member]
   (case (:t member)
     (:nil :never) t/never
     :any t/any
-    :class (if-let [^Class component (some-> (t/load-class (:name member)) (.getComponentType))]
+    :class (if-let [component (array-component member)]
              (let [name (.getName component)
                    elem (t/class-type (if (= "char" name) "java.lang.Character" name))]
                (if (.isPrimitive component) elem (t/union elem t/nil-t)))
              t/unknown)
     t/unknown))
+
+(defn- check-array-indices! [ctx indices index-types]
+  (let [expected (if (= 1 (count indices))
+                   (t/union (t/prim :number) (t/class-type "java.lang.Character"))
+                   (t/prim :number))]
+    (doseq [[idx ty] (map vector indices index-types)]
+      (assignable! ctx idx ty expected))))
 
 (defmethod special 'aget [ctx node _]
   (let [[array & indices :as args] (args-of node)
@@ -3068,11 +3080,8 @@
       (some #{t/never} types) t/never
 
       :else
-      (let [index-type (if (= 2 (count args))
-                         (t/union (t/prim :number) (t/class-type "java.lang.Character"))
-                         (t/prim :number))]
-        (doseq [[idx ty] (map vector indices index-types)]
-          (assignable! ctx idx ty index-type))
+      (do
+        (check-array-indices! ctx indices index-types)
         (t/with-assumption
          (loop [current source, receiver array, [idx & more] indices]
            (let [element (apply t/union (map array-read-type (checked-array-members ctx receiver 'aget current)))]
@@ -3080,6 +3089,78 @@
                (recur element idx more)
                element)))
          (t/assumption source))))))
+
+(defn- fixed-array-component? [^Class component]
+  (if (.isArray component)
+    (recur (.getComponentType component))
+    (Modifier/isFinal (.getModifiers component))))
+
+(defn- unchecked-array-store [ctx message]
+  ["TSP210-01" message {:severity (if (:strict (:opts ctx)) :error :warning)
+                         :reasons #{:unsupported}}])
+
+(defn- boxed-store-problems [ctx value ty component-type class-name]
+  (let [env (:env ctx)
+        expected (t/union {:t :class :name class-name} t/nil-t)]
+    (mapcat (fn [actual]
+              (let [literal (:val actual)]
+                (cond
+                  (number? literal)
+                  (problems ctx value
+                            {:t :class :name (.getName (class literal)) :as (t/show actual)}
+                            expected)
+
+                  ;; Numeric predicates do not identify the boxed JVM class.
+                  (and (= :prim (:t actual)) (t/sub? env component-type actual))
+                  [(unchecked-array-store ctx (str "aset cannot verify the boxed value class for " class-name))]
+
+                  :else (problems ctx value actual expected))))
+            (t/members env ty))))
+
+(defn- array-store-problems [ctx value ty member]
+  (when-let [component (array-component member)]
+    (if (.isPrimitive component)
+      [(unchecked-array-store ctx "aset cannot verify the primitive array store")]
+      (let [name (.getName component)
+            component-type (t/class-type name)
+            expected (t/union component-type t/nil-t)
+            checks (if (#{:int :double} (:name component-type))
+                     (boxed-store-problems ctx value ty component-type name)
+                     (problems ctx value ty expected))]
+        (or (seq checks)
+            (when (and (not (:exact-array? member))
+                       (not (fixed-array-component? component))
+                       (not (#{:nil :any} (:t (t/resolve-t (:env ctx) ty)))))
+              [(unchecked-array-store ctx (str "aset runtime array component may be narrower than " name))]))))))
+
+(defmethod special 'aset [ctx node _]
+  (let [args (args-of node)
+        types (mapv #(infer ctx %) args)
+        source (eff ctx (first types))]
+    (cond
+      (< (count args) 3)
+      (do (report! ctx node "TSP2554" "aset expects an array, at least one index and a value") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [indices (subvec args 1 (dec (count args)))
+            value (peek args)
+            value-type (peek types)
+            ty (eff ctx value-type)
+            receivers (loop [current source, receiver (first args), remaining indices]
+                        (let [members (checked-array-members ctx receiver 'aset current)]
+                          (if (next remaining)
+                            (recur (apply t/union (map array-read-type members))
+                                   (first remaining) (next remaining))
+                            members)))
+            issues (mapcat #(array-store-problems ctx value ty %) receivers)]
+        (check-array-indices! ctx indices (map #(eff ctx %) (subvec types 1 (dec (count types)))))
+        (when-let [[code message extra] (or (first (remove #(= "TSP210-01" (first %)) issues)) (first issues))]
+          (apply report! ctx value code message (mapcat identity extra)))
+        (if (some #(some-> (array-component %) .isPrimitive) receivers)
+          t/unknown
+          (t/with-assumption value-type (or (t/assumption value-type) (t/assumption source))))))))
 
 (doseq [[head class-name] {'boolean-array "[Z" 'byte-array "[B" 'char-array "[C"
                            'short-array "[S" 'int-array "[I" 'long-array "[J"
@@ -3103,7 +3184,8 @@
                                     (unsupported-sequence-member ctx %))
                                    (t/members (:env ctx) source))]
                 (report! ctx size "TSP2345" (str head " expects a size or a seqable value, got " (t/show bad)))))
-            (t/class-type class-name))))))
+            (cond-> (t/class-type class-name)
+              (not primitive?) (assoc :exact-array? true)))))))
 
 (defmethod special 'into-array [ctx node _]
   (let [[component :as args] (args-of node)
@@ -3130,7 +3212,7 @@
                              (t/members (:env ctx) source))]
           (when (and (seq elements) (not (#{:int :double} (:name component-type))))
             (assignable! ctx (peek args) (apply t/union elements) expected))
-          (t/class-type (.getName (.arrayType cls))))
+          (assoc (t/class-type (.getName (.arrayType cls))) :exact-array? true))
         t/unknown))))
 
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]

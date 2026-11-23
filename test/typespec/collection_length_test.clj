@@ -523,6 +523,41 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest amap-checks-the-value-written-to-the-clone
+  (let [r (checked "(amap (into-array String [\"old\"]) i copy \"label\")
+(amap (into-array String [\"old\"]) i copy 42)
+(amap (int-array [4 5]) i copy i)
+(amap (byte-array [1]) i copy i)
+(amap (byte-array [1]) i copy (byte i))
+(amap (byte-array [1]) i copy (aget copy i))
+(amap (float-array [1.0]) i copy 3.5)
+(amap (make-array Float/TYPE 1) i copy 3.5)
+(amap [:not-array] i copy \"label\")
+(let [^objects values (into-array String [\"old\"])] (amap values i copy i))
+(let [mapped (amap (make-array Object 1) i copy :label)] (aset mapped 0 42))
+(amap (int-array [1]) i i 0)
+(amap (int-array [1]) :idx copy 0)
+(amap (int-array [1]) i copy)" {})]
+    (is (= [[3 "TSP2345"] [5 "TSP2345"] [9 "TSP210-01"] [10 "TSP2345"]
+            [11 "TSP2345"] [13 "TSP2345"] [14 "TSP2345"] [15 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["[Ljava.lang.String;" "[I" "[B" "[B" "[F" "42"]
+           (mapv #(at r %) [2 4 6 7 8 12])))))
+
+(deftest amap-preserves-the-result-array-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider)
+(defn labels [] (amap (into-array String [\"old\"]) i copy (aget copy i)))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aset (p/labels) 0 \"value\")
+(aset (p/labels) 0 42)")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 20 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest aget-uses-the-jvm-component-and-checks-indices
   (let [r (checked "(aget (byte-array [1]) 0)
 (aget (char-array [\\a]) 0)

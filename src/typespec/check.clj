@@ -294,12 +294,12 @@
 
 ;; ---- locals and narrowing ----
 
-(defn- bind [ctx sym ty & {:keys [why hinted param array-class]}]
+(defn- bind [ctx sym ty & {:keys [why hinted param compiler-class]}]
   (-> ctx
       (assoc-in [:locals sym] ty)
       (update :why #(if why (assoc % sym why) (dissoc % sym)))
       (update :hinted #(if hinted (conj (or % #{}) sym) (disj (or % #{}) sym)))
-      (update :compiler-array-classes #(if array-class (assoc % sym array-class) (dissoc % sym)))
+      (update :compiler-local-classes #(if compiler-class (assoc % sym compiler-class) (dissoc % sym)))
       (update :params #(if param (conj (or % #{}) sym) (disj (or % #{}) sym)))
       (assoc-in [:binding-ids sym] (Object.))
       (update :projections dissoc sym)
@@ -941,7 +941,7 @@
                                      (not (t/sub? env (t/remove-nil env (eff ctx ty)) h))))
                 [c origin path] (if (and projection (not use-hint?)) (track-path ctx projection) [ctx])]
             (cond-> (bind c (:val pattern) (if use-hint? h ty)
-                          :why (when-not use-hint? why) :hinted (boolean h) :array-class (array-hint-class h))
+                          :why (when-not use-hint? why) :hinted (boolean h) :compiler-class (array-hint-class h))
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
      :vector (let [members (t/members (:env ctx) ty)
@@ -1480,10 +1480,10 @@
    'int-array "[I" 'long-array "[J" 'float-array "[F" 'double-array "[D"
    'object-array "[Ljava.lang.Object;"})
 
-(defn- compiler-array-class [ctx node]
+(defn- compiler-value-class [ctx node]
   (cond
     (env/tag-node node) (array-hint-class (env/hint-type (:file ctx) node))
-    (= :sym (:op node)) (get-in ctx [:compiler-array-classes (:val node)])
+    (= :sym (:op node)) (get-in ctx [:compiler-local-classes (:val node)])
     :else (get array-constructors (builtin-head ctx node))))
 
 (defn- bind-pairs [ctx bindings & [on-init]]
@@ -1505,12 +1505,12 @@
                   _ (when on-init (on-init ctx p init ty))
                   why (why-of ctx init ty)
                   captured (when (and sym (not (env/tag-node p))) (condition-capture ctx init))
-                  array-class (when (and sym (not (env/tag-node p))) (compiler-array-class ctx init))
+                  compiler-class (when (and sym (not (env/tag-node p))) (compiler-value-class ctx init))
                   ctx' (bind-pattern ctx p ty why (stable-path ctx init))]
               (when-not callback (record! ctx p (get-in ctx' [:locals (:val p)] ty)))
               (cond-> ctx'
                 captured (assoc-in [:conditions sym] captured)
-                array-class (assoc-in [:compiler-array-classes sym] array-class)
+                compiler-class (assoc-in [:compiler-local-classes sym] compiler-class)
                 (and sym (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) sym))))
           ctx (partition 2 (:children bindings))))
 
@@ -3188,11 +3188,28 @@
       compiled? :inconclusive
       :else :mismatch)))
 
+(defn- compiler-primitive-operand ^Class [ctx value]
+  (let [head (builtin-head ctx value)
+        args (args-of value)]
+    (cond
+      (and (= 1 (count args)) (primitive-boxes head))
+      (t/load-class (str head))
+
+      (and (= 'aget head) (= 2 (count args)))
+      (when-let [^Class component (some-> ^Class (some-> (compiler-value-class ctx (first args)) t/load-class)
+                                          .getComponentType)]
+        (when (.isPrimitive component) component))
+
+      :else
+      (when-let [sym (plain-local ctx value)]
+        (let [class-name (get-in ctx [:compiler-local-classes sym])]
+          (when (t/primitives class-name) (t/load-class class-name)))))))
+
 (defn- primitive-aset-problems [ctx value ty ^Class component inline? static-array?]
   (let [env (:env ctx)
         name (.getName component)
-        cast (when (= 2 (count (:children value))) (builtin-head ctx value))
-        cast-box (primitive-boxes cast)
+        primitive (compiler-primitive-operand ctx value)
+        primitive-box (when primitive (primitive-boxes (symbol (.getName primitive))))
         expected (case name
                    "boolean" (t/prim :boolean)
                    "char" (t/class-type "java.lang.Character")
@@ -3201,12 +3218,12 @@
                      (t/prim :number)))]
     (mapcat (fn [member]
               (let [literal (:val member)
-                    boxed (or cast-box
+                    boxed (or primitive-box
                               (when (= :lit (:t member)) (class literal))
                               (when (= :class (:t member)) (t/load-class (:name member)))
                               (when (= :boolean (:name member)) Boolean))
                     compiler-class (cond
-                                     cast-box (t/load-class (str cast))
+                                     primitive primitive
                                      (and (= :num (:op value)) (#{Long Double} boxed))
                                      (t/load-class (str (unboxed boxed)))
                                      (#{:num :bool :char} (:op value)) boxed)
@@ -3220,7 +3237,7 @@
                              :else :mismatch)]
                 (case status
                   :proved nil
-                  :mismatch [["TSP2345" (str "aset cannot store " (if cast-box (.getSimpleName ^Class cast-box)
+                  :mismatch [["TSP2345" (str "aset cannot store " (if primitive-box (.getSimpleName ^Class primitive-box)
                                                                    (show-ref ctx member))
                                              " in " name "[]")]]
                   :overflow-risk [(unchecked-array-store ctx "aset int conversion may overflow with checked math")]
@@ -3266,6 +3283,12 @@
                t/unknown)))
     value-type))
 
+(defn- check-array-store-value! [ctx value value-type receivers inline? compiler-array]
+  (let [ty (eff ctx value-type)
+        issues (mapcat #(array-store-problems ctx value ty % inline? compiler-array) receivers)]
+    (when-let [[code message extra] (or (first (remove #(= "TSP210-01" (first %)) issues)) (first issues))]
+      (apply report! ctx value code message (mapcat identity extra)))))
+
 (defmethod special 'aset [ctx node _]
   (let [args (args-of node)
         types (mapv #(infer ctx %) args)
@@ -3282,16 +3305,57 @@
             inline? (= 1 (count indices))
             value (peek args)
             value-type (peek types)
-            compiler-array (when inline? (compiler-array-class ctx (first args)))
-            [_ receivers] (array-store-target ctx 'aset (first args) source indices)
-            issues (mapcat #(array-store-problems ctx value (eff ctx value-type) % inline? compiler-array) receivers)]
+            compiler-array (when inline? (compiler-value-class ctx (first args)))
+            [_ receivers] (array-store-target ctx 'aset (first args) source indices)]
         (if inline?
           (check-array-indices! ctx indices index-types)
           (check-array-store-indices! ctx indices index-types))
-        (when-let [[code message extra] (or (first (remove #(= "TSP210-01" (first %)) issues)) (first issues))]
-          (apply report! ctx value code message (mapcat identity extra)))
+        (check-array-store-value! ctx value value-type receivers inline? compiler-array)
         (t/with-assumption (if inline? (aset-inline-result receivers value-type) value-type)
                            (or (t/assumption value-type) (t/assumption source)))))))
+
+(defmethod special 'amap [ctx node _]
+  (let [[array index target body :as args] (args-of node)
+        source (when array (infer ctx array))
+        malformed (some #(when-not (and (= :sym (:op %)) (simple-symbol? (:val %))) %)
+                        [index target])]
+    (cond
+      (not= 4 (count args))
+      (do (report! ctx node "TSP2554" "amap expects an array, an index name, a result name and an expression")
+          t/unknown)
+
+      malformed
+      (do (report! ctx malformed "TSP2345" "amap expects a local symbol for this binding")
+          t/unknown)
+
+      (= (:val index) (:val target))
+      (do (report! ctx index "TSP2345" "amap index shadows the result binding")
+          t/unknown)
+
+      (= t/never source) t/never
+
+      :else
+      (let [members (checked-array-members ctx array 'amap (eff ctx source))
+            clone-type (t/with-assumption
+                        (apply t/union (map #(dissoc % :platform)
+                                            (remove #(#{:nil :mismatch} (array-argument-status %)) members)))
+                        (t/assumption source))]
+        (when-not (= t/never clone-type)
+          (let [target-sym (:val target)
+                index-sym (:val index)
+                compiler-array (when-not (env/tag-node target) (compiler-value-class ctx array))
+                target-ctx (cond-> (bind-pattern ctx target clone-type)
+                             compiler-array (assoc-in [:compiler-local-classes target-sym] compiler-array)
+                             compiler-array (update :hinted conj target-sym))
+                body-ctx (-> (bind-pattern target-ctx index (t/prim :int))
+                             (assoc-in [:compiler-local-classes index-sym] "long")
+                             (dissoc :recur-types))
+                target-type (record! target-ctx target (get-in target-ctx [:locals target-sym]))
+                _ (record! body-ctx index (get-in body-ctx [:locals index-sym]))
+                body-type (infer body-ctx body)]
+            (check-array-store-value! body-ctx body body-type (t/members (:env ctx) (eff ctx target-type))
+                                      true (get-in target-ctx [:compiler-local-classes target-sym]))))
+        clone-type))))
 
 (defn- numeric-coercion-error [coerce value]
   (try

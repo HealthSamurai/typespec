@@ -3203,10 +3203,10 @@
   ["TSP210-01" message {:severity (if (:strict (:opts ctx)) :error :warning)
                          :reasons #{:unsupported}}])
 
-(defn- boxed-store-problems [ctx value ty component-type class-name]
+(defn- boxed-store-problems [ctx head value ty component-type class-name]
   (let [env (:env ctx)
         expected (t/union {:t :class :name class-name} t/nil-t)
-        unchecked [(unchecked-array-store ctx (str "aset cannot verify the boxed value class for " class-name))]]
+        unchecked [(unchecked-array-store ctx (str head " cannot verify the boxed value class for " class-name))]]
     (mapcat (fn [actual]
               (let [literal (:val actual)
                     boxed (t/literal-number-class actual)]
@@ -3321,21 +3321,22 @@
                   :inconclusive [(unchecked-array-store ctx (str "aset cannot verify the JVM value type for " name "[]"))])))
             (t/members env ty))))
 
+(defn- reference-store-problems [ctx head value ty ^Class component]
+  (let [name (.getName component)
+        component-type (t/class-type name)]
+    (if (#{:int :double} (:name component-type))
+      (boxed-store-problems ctx head value ty component-type name)
+      (problems ctx value ty (t/union component-type t/nil-t)))))
+
 (defn- array-store-problems [ctx value ty member inline? compiler-array]
   (when-let [component (array-component member)]
     (if (.isPrimitive component)
       (primitive-aset-problems ctx value ty component inline? (= compiler-array (:name member)))
-      (let [name (.getName component)
-            component-type (t/class-type name)
-            expected (t/union component-type t/nil-t)
-            checks (if (#{:int :double} (:name component-type))
-                     (boxed-store-problems ctx value ty component-type name)
-                     (problems ctx value ty expected))]
-        (or (seq checks)
-            (when (and (not (:exact-array? member))
-                       (not (fixed-array-component? component))
-                       (not (#{:nil :any} (:t (t/resolve-t (:env ctx) ty)))))
-              [(unchecked-array-store ctx (str "aset runtime array component may be narrower than " name))]))))))
+      (or (seq (reference-store-problems ctx 'aset value ty component))
+          (when (and (not (:exact-array? member))
+                     (not (fixed-array-component? component))
+                     (not (#{:nil :any} (:t (t/resolve-t (:env ctx) ty)))))
+            [(unchecked-array-store ctx (str "aset runtime array component may be narrower than " (.getName component)))])))))
 
 (defn- array-store-target [ctx head array source indices]
   (loop [current source, receiver array, [idx & more] indices]
@@ -3353,11 +3354,13 @@
                t/unknown)))
     value-type))
 
+(defn- report-store-problem! [ctx value issues]
+  (when-let [[code message extra] (or (first (remove #(= "TSP210-01" (first %)) issues)) (first issues))]
+    (apply report! ctx value code message (mapcat identity extra))))
+
 (defn- check-array-store-value! [ctx value value-type receivers inline? compiler-array]
-  (let [ty (eff ctx value-type)
-        issues (mapcat #(array-store-problems ctx value ty % inline? compiler-array) receivers)]
-    (when-let [[code message extra] (or (first (remove #(= "TSP210-01" (first %)) issues)) (first issues))]
-      (apply report! ctx value code message (mapcat identity extra)))))
+  (let [ty (eff ctx value-type)]
+    (report-store-problem! ctx value (mapcat #(array-store-problems ctx value ty % inline? compiler-array) receivers))))
 
 (defmethod special 'aset [ctx node _]
   (let [args (args-of node)
@@ -3576,6 +3579,69 @@
 
           :else t/unknown)))))
 
+(defn- known-object-class ^Class [ctx form member]
+  (if-let [primitive (when form (compiler-primitive-operand ctx form))]
+    (primitive-boxes (symbol (.getName primitive)))
+    (case (:t member)
+      :nil Object
+      :lit (let [v (:val member)] (if (number? v) (t/literal-number-class member) (class v)))
+      :class (when-let [^Class cls (t/load-class (:name member))]
+               (cond
+                 (.isPrimitive cls) (primitive-boxes (symbol (.getName cls)))
+                 (or (:exact-array? member) (fixed-array-component? cls)) cls))
+      :prim (when-not (#{:int :double :number} (:name member))
+              (when-let [^Class cls (some-> (t/prim->class (:name member)) t/load-class)]
+                (when (Modifier/isFinal (.getModifiers cls)) cls)))
+      nil)))
+
+(defn- into-array-element-type [ctx form ty]
+  (apply t/union
+         (for [member (t/members (:env ctx) ty)]
+           (if-let [^Class cls (when-not (= :nil (:t member)) (known-object-class ctx form member))]
+             {:t :class :name (.getName cls) :as (t/show member)}
+             member))))
+
+(defn- inferred-array-type [ctx node ^Class component n]
+  (try
+    (let [^Class cls (or component Object)]
+      (cond-> (t/class-type (.getName (.arrayType cls)))
+        component (assoc :exact-array? true)
+        (some? n) (assoc :array-length n)))
+    (catch IllegalArgumentException _
+      (report! ctx node "TSP2345" "into-array exceeds the JVM limit of 255 array dimensions")
+      t/never)))
+
+(defn- implicit-into-array-member [ctx arg member]
+  (let [env (:env ctx)
+        items (:items member)
+        forms (when (and (= :vector (:op arg)) (empty? (:directives arg)) (not (env/tag-node arg)))
+                (:children arg))
+        n (if (and (= :lit (:t member)) (string? (:val member)))
+            (.length ^String (:val member))
+            (exact-sequence-length member))]
+    (if (= 0 n)
+      (inferred-array-type ctx arg Object 0)
+      (let [element (when-not items
+                      (if-let [component (array-component member)]
+                        (if (.isPrimitive component)
+                          {:t :class :name (.getName component)}
+                          (array-read-type member))
+                        (elem-type ctx member)))
+            first-type (if items (first items) element)
+            classes (distinct (cond-> (mapv #(known-object-class ctx (first forms) %) (t/members env first-type))
+                                (and (nil? n) (zero? (first (length/bounds member)))) (conj Object)))
+            tail (cond
+                   items (map-indexed (fn [i item] [(get forms (inc i)) item]) (rest items))
+                   (= 1 n) []
+                   :else [[nil element]])]
+        (doseq [[form ty] tail]
+          (let [actual (into-array-element-type ctx form (eff ctx ty))]
+            (report-store-problem!
+             ctx (or form arg)
+             (mapcat #(reference-store-problems ctx 'into-array (or form arg) actual %)
+                     (remove #{nil Object} classes)))))
+        (apply t/union (map #(inferred-array-type ctx arg % n) classes))))))
+
 (defmethod special 'into-array [ctx node _]
   (let [[component :as args] (args-of node)
         types (mapv #(eff ctx (infer ctx %)) args)
@@ -3588,9 +3654,13 @@
 
       (report-invalid-sequence-args! ctx 'into-array [(peek args)] [source]) t/unknown
 
+      (= 1 (count args))
+      (t/with-assumption
+       (apply t/union (map #(implicit-into-array-member ctx component %) (t/members (:env ctx) source)))
+       (t/assumption source))
+
       :else
-      (if-let [^Class cls (when (= 2 (count args))
-                            (some-> (class-symbol-name ctx component) t/load-class))]
+      (if-let [^Class cls (some-> (class-symbol-name ctx component) t/load-class)]
         (let [component-type (t/class-type (.getName cls))
               expected (t/union component-type t/nil-t)
               members (t/members (:env ctx) source)

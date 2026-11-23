@@ -183,6 +183,7 @@ Clojure 1.12.4 is pinned in `deps.edn` and used by the runtime tests. Validation
 | `byte-array`, `object-array`, other primitive array constructors | infer the concrete JVM array class and check arity and known invalid size arguments. |
 | `make-array` | infers the array class and rank from a class literal, a primitive wrapper's `TYPE` field or literal `Class/forName`. Checks size types, known negative or overflowing dimensions and the JVM rank limit. |
 | `(into-array Class values)` | infers the array class for an explicit reference component and checks known element types. |
+| `(into-array values)` | uses the known runtime class of the first value and checks later values against it. An empty input or a first value of `nil` produces `Object[]`. An unknown component keeps the covariant `Object[]` type, with the length when known. |
 | `to-array` | preserves the component class and length of an existing reference array. Converts primitive arrays, strings, maps, and iterables to `Object[]`, and converts `nil` to an empty `Object[]`. |
 | `to-array-2d` | checks an outer Java `Collection` and converts its rows using the `to-array` rules. Returns `Object[][]` with the known outer length when available. |
 | `aget` | uses the JVM component type at each index and checks known index bounds. Reference elements may be `nil`. JVM descriptor hints such as `^"[[I"` preserve the array type. |

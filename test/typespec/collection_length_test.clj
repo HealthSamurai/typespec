@@ -523,6 +523,49 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest implicit-into-array-checks-the-first-runtime-component
+  (let [r (checked "(into-array [\"one\" nil \"two\"])
+(into-array [nil \"one\" 42])
+(into-array [])
+(alength (into-array nil))
+(into-array [42 43])
+(into-array [(byte 1) (byte 2)])
+(into-array (int-array [1 2]))
+(alength (into-array \"ab\"))
+(into-array [\"one\" 42])
+(into-array [42 4.5])
+(into-array [(byte 1) 2])
+(aset (into-array [\"one\"]) 0 42)
+(aset (into-array [nil]) 0 42)
+(defn opaque [x] (into-array [x]))
+(defn written [x] (aset (into-array [x]) 0 42))" {})]
+    (is (= ["[Ljava.lang.String;" "[Ljava.lang.Object;" "[Ljava.lang.Object;" "0"
+            "[Ljava.lang.Long;" "[Ljava.lang.Byte;" "[Ljava.lang.Integer;" "2" "42"]
+           (mapv #(at r %) [2 3 4 5 6 7 8 9 14])))
+    (is (= "[Ljava.lang.Object;" (main/type-at r "length.clj" 15 18)))
+    (is (= [[10 20 "TSP2345"] [11 17 "TSP2345"] [12 23 "TSP2345"]
+            [13 30 "TSP2345"] [16 44 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest implicit-into-array-preserves-contracts-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:require [clojure.spec.alpha :as s]))
+(s/fdef from-spec :args (s/cat :items (s/coll-of string? :kind vector? :min-count 1))
+  :ret #(instance? String/1 %))
+(defn from-spec [items] (into-array items))
+(defn labels [] (into-array [\"one\" \"two\"]))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(aset (p/from-spec [\"one\"]) 0 \"new\")
+(alength (p/labels))
+(aset (p/labels) 0 42)")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 4 20 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "2" (main/type-at r "consumer.clj" 3 1)))))
+
 (deftest aclone-preserves-array-classes-for-reads-and-writes
   (let [r (checked "(aclone (into-array String [\"old\"]))
 (aclone (int-array [1]))

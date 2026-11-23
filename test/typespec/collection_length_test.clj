@@ -535,6 +535,27 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest array-class-symbol-hints-check-array-contracts-across-namespaces
+  (let [files [(parse/parse-string "provider.clj"
+                                  "(ns provider (:import [java.io File]))
+(defn labels-count [^String/1 values] (alength values))
+(defn files-count [^File/1 files] (alength files))
+(defn row-value [^int/2 matrix] (when-some [row (aget matrix 0)] (aget row 0)))
+(defn wrong-store [^String/1 values] (aset values 0 42))")
+               (parse/parse-string "consumer.clj"
+                                   "(ns consumer (:require [provider :as p]))
+(p/labels-count (into-array String [\"value\"]))
+(p/labels-count (int-array 1))
+(p/files-count (into-array java.io.File nil))
+(p/files-count (object-array 1))
+(p/row-value (into-array int/1 [(int-array [42])]))")]
+        r (check/check-files files {})]
+    (is (= [["consumer.clj" 3 17 "TSP2345"]
+            ["consumer.clj" 5 16 "TSP2345"]
+            ["provider.clj" 5 53 "TSP2345"]]
+           (sort (map (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics r))))
+        (pr-str (:diagnostics r)))))
+
 (deftest alength-checks-array-hints-and-returns-int
   (let [r (checked "(let [^bytes body (byte-array 3)] (alength body))
 (let [^objects values (object-array 2)] (alength values))

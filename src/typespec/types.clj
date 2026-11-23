@@ -118,11 +118,14 @@
         :else (assoc t :platform true :as shown)))
 
 (defn resolve-class
-  "Full class name for a symbol in a file with these imports, or nil."
+  "JVM class name for a symbol (including Clojure array class symbols), or nil."
   [imports s]
   (let [s (str s)]
     (or (get imports (symbol s))
         (when (primitives s) s)
+        (when-let [[_ component rank] (re-matches #"([^/]+)/([1-9])" s)]
+          (when-let [cls (some-> (resolve-class imports component) load-class)]
+            (.getName ^Class (nth (iterate #(.arrayType ^Class %) cls) (parse-long rank)))))
         (when (and (str/includes? s ".") (load-class s)) s)
         (when (and (re-matches #"[A-Z]\w*" s) (load-class (str "java.lang." s))) (str "java.lang." s)))))
 

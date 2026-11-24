@@ -4949,13 +4949,13 @@
         (record! ctx xf (t/prim :fn))
         out)
 
-      (and (#{'map 'map-indexed 'filter 'keep 'keep-indexed} head) f (empty? more))
+      (and (#{'map 'map-indexed 'filter 'keep 'keep-indexed 'mapcat} head) f (empty? more))
       (let [out (case head
                   map (apply-fn-node ctx f [input])
-                  (map-indexed keep keep-indexed)
+                  (map-indexed keep keep-indexed mapcat)
                   (if (= t/never input)
                     (do (infer ctx f) t/never)
-                    (if (= 'keep head)
+                    (if (#{'keep 'mapcat} head)
                       (apply-fn-node ctx f [input])
                       (apply-indexed-callback ctx f input)))
                   filter (let [[ret yes] (apply-predicate ctx f input true)]
@@ -4964,6 +4964,12 @@
         (cond
           (= t/never input) t/never
           (#{'keep 'keep-indexed} head) (t/remove-nil (:env ctx) (eff ctx out))
+          (= 'mapcat head)
+          (let [result (eff ctx out)]
+            (if-let [bad (unsupported-sequence-member ctx result)]
+              (do (report! ctx f "TSP2345" (str "mapcat cannot reduce callback result " (t/show bad)))
+                  t/unknown)
+              (transducer-element ctx result)))
           :else out))
 
       :else

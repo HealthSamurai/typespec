@@ -139,6 +139,39 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest into-mapcat-checks-the-callback-and-flattens-its-result
+  (let [result (check-source "(into [] (comp (mapcat (fn [v] [v])) (map str/upper-case)) [\"a\"])
+(into [] (mapcat (fn [_] 42)) [\"a\"])
+(into [] (mapcat (fn [s] s)) [\"abc\"])
+(into [:seed] (mapcat (fn [_] nil)) [1])
+(second (into [:seed] (mapcat (fn [_ _] :unused)) []))
+(into [] (mapcat (fn [_] (eduction (map inc) [1 2]))) [1])")
+        ds (:diagnostics result)]
+    (is (= [[6 "TSP2345" "mapcat cannot reduce callback result 42"]]
+           (mapv (juxt (comp :row :pos) :code :message) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of string? :kind vector?)"
+            "(s/coll-of java.lang.Character :kind vector?)"
+            "(s/coll-of keyword? :kind vector?)"
+            "nil?"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 7 8 9])))))
+
+(deftest into-mapcat-uses-a-callback-contract-from-another-namespace
+  (let [api (parse/parse-string
+             "parts.clj"
+             "(ns parts (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef words :args (s/cat :text string?) :ret (s/nilable (s/coll-of string? :kind vector?)))
+(defn words [text] (when-not (str/blank? text) (str/split text #\":\")))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [parts :as p] [clojure.string :as str]))
+(into [] (comp (mapcat p/words) (map str/upper-case)) [\"a:b\" \"\"])
+(into [] (mapcat p/words) [42])")
+        ds (:diagnostics (check/check-files [api client] {:strict-nil true}))]
+    (is (= [["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

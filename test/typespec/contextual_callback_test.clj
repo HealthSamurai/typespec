@@ -337,6 +337,46 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest into-partition-by-checks-the-key-function-and-emits-nonempty-vectors
+  (let [result (check-source "(into [] (comp (take 1) (partition-by identity) (map first)) [\"ant\" \"arc\"])
+(into [] (partition-by {1 nil 2 false}) [1 1 2])
+(into [] (partition-by (fn [_] nil)) [1 2])
+(into [] (partition-by (fn [v] (subs v 0 1))) [1])
+(into [] (partition-by (fn [a b] a)) [:a])
+(second (into [:seed] (comp (take 0) (partition-by (fn [a b] a))) [1]))
+(let [partition-by (fn [_] identity)] (into [] (partition-by identity) [1]))"
+                             {:strict-nil true})
+        ds (:diagnostics result)]
+    (is (= [[8 "TSP2345"] [9 "TSP2554"] [11 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of string? :kind vector?)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
+            "nil?"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 10])))))
+
+(deftest into-partition-by-checks-the-key-contract-from-another-namespace
+  (let [api (parse/parse-string
+             "items.clj"
+             "(ns items (:require [clojure.spec.alpha :as s]))
+(s/fdef items :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn items [] [\"ant\" \"arc\" \"bee\"])
+(s/fdef bucket :args (s/cat :item string?) :ret (s/nilable string?))
+(defn bucket [item] (when (not= item \"nil\") (subs item 0 1)))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [items :as i] [clojure.spec.alpha :as s]))
+(s/def ::group (s/coll-of string? :kind vector? :min-count 1))
+(s/fdef groups :args (s/cat) :ret (s/coll-of ::group :kind vector?))
+(defn groups [] (into [] (clojure.core/partition-by i/bucket) (i/items)))
+(into [] (partition-by i/bucket) [42])
+(into [] (comp (partition-by i/bucket) (map inc)) (i/items))")
+        ds (:diagnostics (check/check-files [api client] {:strict-nil true}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

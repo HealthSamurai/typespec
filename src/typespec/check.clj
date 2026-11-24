@@ -5020,7 +5020,7 @@
           input))
 
       (and (#{'map 'map-indexed 'filter 'remove 'take-while 'drop-while
-              'keep 'keep-indexed 'mapcat} head) f (empty? more))
+              'keep 'keep-indexed 'mapcat 'partition-by} head) f (empty? more))
       (let [indexed? (#{'map-indexed 'keep-indexed} head)]
         (record! ctx xf (t/prim :fn))
         (if (= t/never input)
@@ -5030,13 +5030,14 @@
               (infer ctx f))
             t/never)
           (let [out (case head
-                      (map keep mapcat) (apply-fn-node ctx f [input])
+                      (map keep mapcat partition-by) (apply-fn-node ctx f [input])
                       (map-indexed keep-indexed) (apply-indexed-callback ctx f input)
                       (filter remove take-while drop-while)
                       (predicate-transducer-element ctx head f input))]
             (case head
               (keep keep-indexed) (t/remove-nil (:env ctx) (eff ctx out))
               mapcat (flatten-transducer-element ctx f "mapcat cannot reduce callback result " out)
+              partition-by (length/with-bounds (coll-of :vector input) 1 nil)
               out))))
 
       :else

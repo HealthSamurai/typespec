@@ -26,7 +26,7 @@
 (def ^:dynamic *rets* nil)
 
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
-         assoc-map-key specialize-map-return dynamic-definition?)
+         assoc-map-key specialize-map-return dynamic-definition? read-map-of)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -784,9 +784,9 @@
   (and (= :map (:op pattern))
        (some (fn [[k _]] (or (:bang? (keys-directive k)) (has-bang? k))) (partition 2 (:children pattern)))))
 
-(defn- bind-map-entry [ctx pattern node key ty outer-why projection defaults]
+(defn- bind-map-entry [ctx pattern node key ty outer-why projection defaults & [selected]]
   (let [env (:env ctx)
-        {:keys [type optional? declared? status]} (key-info ctx ty key node)
+        {:keys [type optional? declared? status]} (or selected (key-info ctx ty key node))
         local (when (= :sym (:op pattern)) (:val pattern))
         default (get defaults local)
         default-type (when default (infer ctx default))
@@ -807,6 +807,17 @@
                                     :else type)
                   why
                   (when-not (or default bang?) projection))))
+
+(defn- bind-map-selector [ctx pattern selector source why project defaults]
+  (let [literal (static-map-key selector)
+        selector-type (when-not literal (t/resolve-t (:env ctx) (eff ctx (infer ctx selector))))
+        value (when (= :lit (:t selector-type)) (:val selector-type))
+        key (or literal (when (or (keyword? value) (string? value) (symbol? value)) value))]
+    (if key
+      (bind-map-entry ctx pattern selector key source why (project key) defaults)
+      (bind-map-entry ctx pattern selector (str "value selected by " (parse/unparse selector))
+                      source why nil defaults
+                      {:type (read-map-of ctx source selector-type t/never) :optional? true}))))
 
 (defn- destructure-map [ctx pattern ty outer-why projection]
   (let [env (:env ctx)
@@ -853,10 +864,8 @@
                    (reduce #(bind %1 (:val %2) t/unknown) ctx (filter #(= :sym (:op %)) (:children v)))
 
                    :else
-                   (if-let [key (static-map-key v)]
-                     (let [binding (if (#{:sym :kw} (:op k)) (assoc k :op :sym :val (symbol (name (:val k)))) k)]
-                       (bind-map-entry ctx binding v key ty outer-why (project key) defaults))
-                     ctx))))
+                   (let [binding (if (#{:sym :kw} (:op k)) (assoc k :op :sym :val (symbol (name (:val k)))) k)]
+                     (bind-map-selector ctx binding v ty outer-why project defaults)))))
              ctx (sort-by (fn [[k _]] (if (keys-directive k) 1 0)) pairs))]
     ctx))
 

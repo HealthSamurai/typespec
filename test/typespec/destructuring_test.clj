@@ -103,6 +103,38 @@
 (let [{:strs [^String label]} {\"label\" 7}] (.substring label 1))")]
     (is (= [[3 "TSP2322"]] (locations issues)) (pr-str issues))))
 
+(deftest computed-selectors-check-the-expression-and-bind-the-selected-field
+  (let [issues (diagnostics "(let [key :n {n key} {:n 2}] (inc n))
+(let [key \"n\" {n key} {\"n\" \"bad\"}] (inc n))
+(let [key :missing {n key :or {n 7}} {:n nil}] (inc n))
+(let [key :n {n key :or {n 7}} {:n nil}] (inc n))
+(let [key :outer {{:strs [n]} key} {:outer {\"n\" 2}}] (inc n))
+(let [{n (:selector m) :as m} {:selector :n :n 2}] (inc n))
+(let [{n (inc \"bad\")} {:n 2}] n)")]
+    (is (= [[3 "TSP2345"] [5 "TSP2531"] [8 "TSP2345"]] (locations issues))
+        (pr-str issues))
+    (is (str/includes? (:message (second issues)) ":or applies only when the key is absent"))))
+
+(deftest computed-selectors-use-map-of-contracts-across-namespaces
+  (let [api (parse/parse-string
+             "lookup.clj"
+             "(ns lookup (:require [clojure.spec.alpha :as s]))
+(s/fdef read-at :args (s/cat :selector string? :values (s/map-of string? int?)) :ret int?)
+(defn read-at [selector {value selector :or {value 0}}] (inc value))
+(s/fdef nilable-at :args (s/cat :selector string? :values (s/map-of string? (s/nilable int?))) :ret int?)
+(defn nilable-at [selector {value selector :or {value 0}}] (inc value))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [lookup :as l]))
+(l/read-at \"n\" {\"n\" 2})
+(l/read-at \"missing\" {\"n\" 2})
+(l/read-at \"n\" {\"n\" \"bad\"})")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["lookup.clj" 5 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (str/includes? (:message (second issues)) "value selected by selector is (s/nilable int?)"))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil
@@ -111,4 +143,9 @@
                {a "fixture/a"} {"fixture/a" 1}
                {:fixture/syms [c]} {'fixture/c 3}
                {:syms [fixture/d]} {'fixture/d 4}]
-           [absent n present a c d]))))
+           [absent n present a c d])))
+  (is (= [2 1]
+         (let [calls (atom 0)
+               selector (fn [] (swap! calls inc) :n)
+               {value (selector)} {:n 2}]
+           [value @calls]))))

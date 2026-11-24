@@ -206,6 +206,45 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest into-take-and-drop-preserve-types-and-check-the-count
+  (let [result (check-source "(into [] (comp (drop 1) (take 2) (map str/upper-case)) [\"a\" \"b\" \"c\"])
+(second (into [:seed] (comp (take 0) (map (fn [a b] :unused)) (filter (fn [] true))) [1]))
+(second (into [:seed] (take -1) [1]))
+(into [] (take 1.5) [1 2 3])
+(into [] (drop \"bad\") [1])
+(into [] (take nil) [1])
+(into [:seed] (take \"unused\") [])
+(into [] (map #(inc %)) [])
+(let [take (fn [_] identity)] (into [] (take 1) [1]))")
+        ds (:diagnostics result)]
+    (is (= [[9 "TSP2345"] [10 "TSP2345"] [13 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of string? :kind vector?)"
+            "nil?"
+            "nil?"
+            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of keyword? :kind vector?)"
+            "(s/coll-of t/never :kind vector?)"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 8 11 12])))))
+
+(deftest into-take-and-drop-preserve-source-contracts-from-another-namespace
+  (let [source (parse/parse-string
+                "labels.clj"
+                "(ns labels (:require [clojure.spec.alpha :as s]))
+(s/fdef labels :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn labels [] [\"a\" \"b\"])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [labels :as labels] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef render :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn render [] (into [] (comp (drop 1) (clojure.core/take 2) (map str/upper-case)) (labels/labels)))
+(into [] (comp (drop 1) (take 2) (map inc)) (labels/labels))")
+        ds (:diagnostics (check/check-files [source client] {}))]
+    (is (= [["client.clj" 4 "TSP2345" "inc takes number?, but gets string?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

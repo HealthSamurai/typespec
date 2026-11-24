@@ -4962,23 +4962,34 @@
         (record! ctx xf (t/prim :fn))
         out)
 
-      (and (#{'map 'map-indexed 'filter 'keep 'keep-indexed 'mapcat} head) f (empty? more))
-      (let [out (case head
-                  map (apply-fn-node ctx f [input])
-                  (map-indexed keep keep-indexed mapcat)
-                  (if (= t/never input)
-                    (do (infer ctx f) t/never)
-                    (if (#{'keep 'mapcat} head)
-                      (apply-fn-node ctx f [input])
-                      (apply-indexed-callback ctx f input)))
-                  filter (let [[ret yes] (apply-predicate ctx f input true)]
-                           (if (= t/never (truth-part (:env ctx) (eff ctx ret) true)) t/never yes)))]
+      (and (#{'take 'drop} head) f (empty? more))
+      (let [amount (infer ctx f)
+            n (:val f)]
         (record! ctx xf (t/prim :fn))
-        (cond
-          (= t/never input) t/never
-          (#{'keep 'keep-indexed} head) (t/remove-nil (:env ctx) (eff ctx out))
-          (= 'mapcat head) (flatten-transducer-element ctx f "mapcat cannot reduce callback result " out)
-          :else out))
+        (when-not (= t/never input)
+          (assignable! ctx f amount (t/prim :number)))
+        (if (and (= 'take head) (literal-node? f) (number? n) (not (pos? n)))
+          t/never
+          input))
+
+      (and (#{'map 'map-indexed 'filter 'keep 'keep-indexed 'mapcat} head) f (empty? more))
+      (let [indexed? (#{'map-indexed 'keep-indexed} head)]
+        (record! ctx xf (t/prim :fn))
+        (if (= t/never input)
+          (let [params (if indexed? [(t/prim :int) input] [input])]
+            (if (callback-node? ctx f)
+              (infer ctx f {:t :fn :arities [{:params params :ret t/unknown}]})
+              (infer ctx f))
+            t/never)
+          (let [out (case head
+                      (map keep mapcat) (apply-fn-node ctx f [input])
+                      (map-indexed keep-indexed) (apply-indexed-callback ctx f input)
+                      filter (let [[ret yes] (apply-predicate ctx f input true)]
+                               (if (= t/never (truth-part (:env ctx) (eff ctx ret) true)) t/never yes)))]
+            (case head
+              (keep keep-indexed) (t/remove-nil (:env ctx) (eff ctx out))
+              mapcat (flatten-transducer-element ctx f "mapcat cannot reduce callback result " out)
+              out))))
 
       :else
       (do (infer ctx xf)

@@ -11,10 +11,13 @@ origin: Clojure
 # F235 · Композиция трансдьюсеров в `into`
 
 В трёхаргументном `into` чекер проверяет прямой `(comp ...)` из
-`map`, `filter`, `map-indexed`, `keep`, `keep-indexed`, `mapcat`,
-`cat`, `take` и `drop`. Тип элемента передаётся от первого шага
-к последнему. `filter` сужает вход следующего
-колбэка, а `keep` и `keep-indexed` исключают `nil` из его входа.
+`map`, `map-indexed`, `filter`, `remove`, `keep`, `keep-indexed`,
+`mapcat`, `cat`, `take`, `drop`, `take-while` и `drop-while`.
+Тип элемента передаётся от первого шага к последнему. `filter` и
+`take-while` передают тип из истинной ветки предиката, `remove`
+передаёт тип из ложной, а `drop-while` сохраняет тип входа для
+оставшихся элементов. `keep` и `keep-indexed` исключают `nil` из
+входа следующего колбэка.
 Колбэки `map-indexed` и `keep-indexed` получают индекс и текущий элемент.
 `mapcat` передаёт дальше тип элемента возвращённой коллекции.
 `(comp (map f) cat)` выводит тот же тип элемента. `take` и `drop`

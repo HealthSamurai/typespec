@@ -245,6 +245,51 @@
            (mapv (juxt :file (comp :row :pos) :code :message) ds))
         (pr-str ds))))
 
+(deftest into-predicate-transducers-select-the-emitted-elements
+  (let [result (check-source "(into [] (comp (remove nil?) (map inc)) [nil 1 2])
+(into [] (comp (take-while string?) (map str/upper-case)) [\"a\" 1 \"b\"])
+(into [] (drop-while string?) [\"a\" 1 \"b\"])
+(second (into [:seed] (drop-while string?) [\"a\" \"b\"]))
+(second (into [:seed] (remove (fn [_] :skip)) [1]))
+(second (into [:seed] (take-while (fn [_] nil)) [1]))
+(into [] (remove nil?) [nil false])
+(into [] (comp (drop-while string?) (map inc)) [\"a\" 1 \"b\"])
+(into [] (take-while (fn [_ _] true)) [1])
+(into [:seed] (drop-while (fn [_ _] true)) [])
+(let [remove (fn [_] identity)] (into [] (remove string?) [1]))"
+                             {:strict-nil true})
+        ds (:diagnostics result)]
+    (is (= [[12 "TSP2345"] [13 "TSP2554"] [15 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of int? :kind vector?)"
+            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of (t/or string? int?) :kind vector?)"
+            "nil?"
+            "nil?"
+            "nil?"
+            "(s/coll-of boolean? :kind vector?)"
+            "(s/coll-of keyword? :kind vector?)"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 8 9 10 11 14])))))
+
+(deftest into-predicate-transducers-use-guards-from-another-namespace
+  (let [api (parse/parse-string
+             "parts.clj"
+             "(ns parts (:require [clojure.spec.alpha :as s]))
+(s/fdef numeric? :args (s/cat :value any?) :ret boolean?)
+(defn numeric? [value] (number? value))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [parts :as p] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef upper :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn upper [] (into [] (comp (remove p/numeric?) (map str/upper-case)) [\"a\" 1 \"b\"]))
+(into [] (comp (take-while p/numeric?) (map inc)) [1 \"a\" 2])
+(into [] (comp (remove p/numeric?) (map inc)) [1 \"a\"])")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345" "inc takes number?, but gets string?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

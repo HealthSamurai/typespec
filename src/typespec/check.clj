@@ -4940,6 +4940,17 @@
           t/unknown)
       (transducer-element ctx input))))
 
+(defn- predicate-transducer-element [ctx head f input]
+  (let [[ret yes no] (apply-predicate ctx f input true)
+        truthy? (contains? #{'filter 'take-while} head)]
+    (if (= t/never (truth-part (:env ctx) (eff ctx ret) truthy?))
+      t/never
+      (case head
+        (filter take-while) yes
+        remove no
+        ;; Once dropping ends, later inputs pass without a predicate call.
+        drop-while (if (= t/never no) t/never input)))))
+
 (defn- apply-transducer
   "Infer the emitted element type. A nil result means a stage could not be modeled."
   [ctx xf input]
@@ -4972,7 +4983,8 @@
           t/never
           input))
 
-      (and (#{'map 'map-indexed 'filter 'keep 'keep-indexed 'mapcat} head) f (empty? more))
+      (and (#{'map 'map-indexed 'filter 'remove 'take-while 'drop-while
+              'keep 'keep-indexed 'mapcat} head) f (empty? more))
       (let [indexed? (#{'map-indexed 'keep-indexed} head)]
         (record! ctx xf (t/prim :fn))
         (if (= t/never input)
@@ -4984,8 +4996,8 @@
           (let [out (case head
                       (map keep mapcat) (apply-fn-node ctx f [input])
                       (map-indexed keep-indexed) (apply-indexed-callback ctx f input)
-                      filter (let [[ret yes] (apply-predicate ctx f input true)]
-                               (if (= t/never (truth-part (:env ctx) (eff ctx ret) true)) t/never yes)))]
+                      (filter remove take-while drop-while)
+                      (predicate-transducer-element ctx head f input))]
             (case head
               (keep keep-indexed) (t/remove-nil (:env ctx) (eff ctx out))
               mapcat (flatten-transducer-element ctx f "mapcat cannot reduce callback result " out)

@@ -5042,6 +5042,10 @@
         (record! ctx xf (t/prim :fn))
         out)
 
+      (and (#{'distinct 'dedupe} head) (empty? args))
+      (do (record! ctx xf (t/prim :fn))
+          input)
+
       (and (= 'partition-all head) f (empty? more))
       (let [out (partition-transducer-element ctx f input)]
         (record! ctx xf (t/prim :fn))

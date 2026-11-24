@@ -416,6 +416,40 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest into-distinct-and-dedupe-preserve-the-input-type
+  (let [r (check-source "(into [] (distinct) [nil nil false nil false])
+(into [] (dedupe) [nil nil false false nil])
+(into [] (comp (distinct) (dedupe) (map inc)) [1 1 2 1])
+(second (into [:seed] (comp (distinct) (dedupe) (map (fn [_ _] :unused))) []))
+(let [distinct (fn [] identity)] (into [] (distinct) [1]))"
+                        {:strict-nil true})
+        ds (:diagnostics r)]
+    (is (= [[9 "TSP210-01"]] (mapv (juxt (comp :row :pos) :code) ds)) (pr-str ds))
+    (is (= ["(s/coll-of (s/nilable boolean?) :kind vector?)"
+            "(s/coll-of (s/nilable boolean?) :kind vector?)"
+            "(s/coll-of int? :kind vector?)"
+            "nil?"]
+           (mapv #(main/type-at r "callbacks.clj" % 1) (range 5 9))))))
+
+(deftest into-distinct-and-dedupe-preserve-source-contracts-from-another-namespace
+  (let [api (parse/parse-string
+             "items.clj"
+             "(ns items (:require [clojure.spec.alpha :as s]))
+(s/fdef items :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn items [] [\"ant\" \"ant\" \"bee\" \"ant\"])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [items :as i] [clojure.spec.alpha :as s] [clojure.core :as c] [clojure.string :as str]))
+(s/fdef clean :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn clean [] (into [] (comp (dedupe) (c/distinct) (map str/upper-case)) (i/items)))
+(into [] (comp (distinct) (map inc)) (i/items))
+(into [] (comp (dedupe) (map inc)) (i/items))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345" "inc takes number?, but gets string?"]
+            ["client.clj" 5 "TSP2345" "inc takes number?, but gets string?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

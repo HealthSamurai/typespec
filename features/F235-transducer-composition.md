@@ -13,7 +13,7 @@ origin: Clojure
 В трёхаргументном `into` чекер проверяет прямой `(comp ...)` из
 `map`, `map-indexed`, `filter`, `remove`, `keep`, `keep-indexed`,
 `mapcat`, `cat`, `take`, `drop`, `take-while`, `drop-while`,
-`partition-all`, `partition-by`, `distinct` и `dedupe`.
+`partition-all`, `partition-by`, `distinct`, `dedupe` и `interpose`.
 Тип элемента передаётся от первого шага к последнему. `filter` и
 `take-while` передают тип из истинной ветки предиката, `remove`
 передаёт тип из ложной, а `drop-while` сохраняет тип входа для
@@ -28,6 +28,11 @@ origin: Clojure
 следующих шагов проверяются как значения, а их вызовы пропускаются. Вложенный
 `comp` обрабатывается по тем же правилам, а пустой сохраняет
 тип элемента источника.
+
+`interpose` передаёт тип разделителя дальше, если на его входе может
+быть больше одного элемента. Чекер берёт верхнюю границу из литерала
+или Spec и переносит её через шаги композиции. Например, после
+`(take 1)` следующий `interpose` сохраняет исходный тип.
 
 ```clojure example
 (ns example)

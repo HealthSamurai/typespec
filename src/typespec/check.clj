@@ -4072,7 +4072,7 @@
   (cond-> (assoc (t/class-type (array-constructors 'object-array)) :exact-array? true)
     (some? n) (assoc :array-length n)))
 
-(defn- to-array-list-length [ctx arg]
+(defn- list-expression-length [ctx arg]
   (when (and (empty? (:directives arg)) (not (env/tag-node arg)))
     (let [head (builtin-head ctx arg)
           quoted (case (:op arg)
@@ -4105,7 +4105,7 @@
                         {:bad member})))))))
 
 (defn- array-conversion-results [ctx form source]
-  (if-some [n (to-array-list-length ctx form)]
+  (if-some [n (list-expression-length ctx form)]
     [{:type (converted-object-array n)}]
     (mapv #(to-array-member ctx %) (t/members (:env ctx) source))))
 
@@ -4166,7 +4166,7 @@
                                                 (assoc (t/tuple items) :kind :seq))))
                           (infer ctx arg)))
             env (:env ctx)
-            n (to-array-list-length ctx arg)
+            n (list-expression-length ctx arg)
             members (remove #(= :never (:t %)) (t/members env source))
             results (mapv #(vector % (array-rows-result env % (some? n))) members)
             rejected (keep (fn [[m r]] (when (= :mismatch (:status r)) m)) results)
@@ -4261,6 +4261,12 @@
   (when (some? size)
     (if (zero? size) 0 (dec' (*' 2 size)))))
 
+(defn- interposed-element [element separator upper]
+  (cond
+    (or (= 0 upper) (= t/never separator)) t/never
+    (= 1 upper) element
+    :else (t/union element separator)))
+
 (defmethod special 'interpose [ctx node _]
   (let [[_ coll :as args] (args-of node)
         [separator-type source :as types] (mapv #(eff ctx (infer ctx %)) args)]
@@ -4279,10 +4285,7 @@
                 (for [member (t/members (:env ctx) source)
                       :let [element (elem-type ctx member)
                             [lo hi] (if (= t/never element) [0 0] (length/bounds member))
-                            output (cond
-                                     (= 0 hi) t/never
-                                     (= 1 hi) element
-                                     :else (t/union element separator-type))]]
+                            output (interposed-element element separator-type hi)]]
                   (length/with-bounds (coll-of :seq output) (interposed-length lo) (interposed-length hi))))
          (t/assumption source))))))
 
@@ -4982,6 +4985,31 @@
               (elem-type ctx member))))
    (t/assumption ty)))
 
+(defn- transducer-output [element upper]
+  (if (or (= t/never element) (= 0 upper))
+    {:element t/never :upper 0}
+    {:element element :upper upper}))
+
+(defn- transducer-source [ctx node source]
+  (let [upper (reduce (fn [maximum member]
+                        (let [bound (case (:t member)
+                                      :never 0
+                                      :map (when (:complete-keys? member)
+                                             (+ (count (:req member)) (count (:opt member))))
+                                      (or (:array-length member) (second (sequence-member-bounds member))))]
+                          (if (some? bound) (max maximum bound) (reduced nil))))
+                      0 (t/members (:env ctx) source))]
+    (transducer-output (transducer-element ctx source)
+                       (or upper (list-expression-length ctx node)))))
+
+(defn- literal-transducer-limit [node]
+  (let [n (:val node)]
+    (when (and (literal-node? node) (number? n))
+      (cond
+        (not (pos? n)) 0
+        (<= n 1) 1
+        (integer? n) n))))
+
 (defn- flatten-transducer-element [ctx node message input]
   (let [input (eff ctx input)]
     (if-let [bad (unsupported-sequence-member ctx input)]
@@ -5021,8 +5049,8 @@
                           (when (and capacity (pos? capacity)) capacity)))))
 
 (defn- apply-transducer
-  "Infer the emitted element type. A nil result means a stage could not be modeled."
-  [ctx xf input]
+  "Infer the emitted element type and its upper count bound. Nil denotes an opaque stage."
+  [ctx xf {:keys [element upper] :as input}]
   (let [[f & more :as args] (args-of xf)
         head (when (empty? (:directives (first (:children xf)))) (builtin-head ctx xf))]
     (cond
@@ -5030,14 +5058,14 @@
            (= 'cat (t/core-name (:file ctx) (:val xf)))
            (empty? (:directives xf)) (not (env/tag-node xf)))
       (do (record! ctx xf (t/prim :fn))
-          (flatten-transducer-element ctx xf "cat cannot reduce input " input))
+          (transducer-output (flatten-transducer-element ctx xf "cat cannot reduce input " element) nil))
 
       (= 'comp head)
       (let [out (reduce (fn [current stage]
                           ;; An opaque stage can also change completion. Keep the
                           ;; chain incomplete while still checking following forms.
-                          (let [next-type (apply-transducer ctx stage (or current t/unknown))]
-                            (when current next-type)))
+                          (let [output (apply-transducer ctx stage (or current {:element t/unknown}))]
+                            (when current output)))
                         input args)]
         (record! ctx xf (t/prim :fn))
         out)
@@ -5047,40 +5075,49 @@
           input)
 
       (and (= 'partition-all head) f (empty? more))
-      (let [out (partition-transducer-element ctx f input)]
+      (let [out (partition-transducer-element ctx f element)]
         (record! ctx xf (t/prim :fn))
-        out)
+        (transducer-output out upper))
+
+      (and (= 'interpose head) f (empty? more))
+      (let [separator (eff ctx (infer ctx f))]
+        (record! ctx xf (t/prim :fn))
+        (transducer-output (interposed-element element separator upper)
+                           (interposed-length upper)))
 
       (and (#{'take 'drop} head) f (empty? more))
       (let [amount (infer ctx f)
-            n (:val f)]
+            limit (literal-transducer-limit f)
+            maximum (cond
+                      (nil? limit) upper
+                      (= 'take head) (if upper (min upper limit) limit)
+                      upper (max 0 (- upper limit)))]
         (record! ctx xf (t/prim :fn))
-        (when-not (= t/never input)
+        (when-not (= t/never element)
           (assignable! ctx f amount (t/prim :number)))
-        (if (and (= 'take head) (literal-node? f) (number? n) (not (pos? n)))
-          t/never
-          input))
+        (transducer-output element maximum))
 
       (and (#{'map 'map-indexed 'filter 'remove 'take-while 'drop-while
               'keep 'keep-indexed 'mapcat 'partition-by} head) f (empty? more))
       (let [indexed? (#{'map-indexed 'keep-indexed} head)]
         (record! ctx xf (t/prim :fn))
-        (if (= t/never input)
-          (let [params (if indexed? [(t/prim :int) input] [input])]
+        (if (= t/never element)
+          (let [params (if indexed? [(t/prim :int) element] [element])]
             (if (callback-node? ctx f)
               (infer ctx f {:t :fn :arities [{:params params :ret t/unknown}]})
               (infer ctx f))
-            t/never)
+            input)
           (let [out (case head
-                      (map keep mapcat partition-by) (apply-fn-node ctx f [input])
-                      (map-indexed keep-indexed) (apply-indexed-callback ctx f input)
+                      (map keep mapcat partition-by) (apply-fn-node ctx f [element])
+                      (map-indexed keep-indexed) (apply-indexed-callback ctx f element)
                       (filter remove take-while drop-while)
-                      (predicate-transducer-element ctx head f input))]
-            (case head
-              (keep keep-indexed) (t/remove-nil (:env ctx) (eff ctx out))
-              mapcat (flatten-transducer-element ctx f "mapcat cannot reduce callback result " out)
-              partition-by (length/with-bounds (coll-of :vector input) 1 nil)
-              out))))
+                      (predicate-transducer-element ctx head f element))
+                output (case head
+                         (keep keep-indexed) (t/remove-nil (:env ctx) (eff ctx out))
+                         mapcat (flatten-transducer-element ctx f "mapcat cannot reduce callback result " out)
+                         partition-by (length/with-bounds (coll-of :vector element) 1 nil)
+                         out)]
+            (transducer-output output (when-not (= 'mapcat head) upper)))))
 
       :else
       (do (infer ctx xf)
@@ -5119,7 +5156,8 @@
                 :else (dissoc target :fresh)))
       3 (let [target (infer ctx to)
               source (infer ctx from)
-              out (or (apply-transducer ctx second-arg (transducer-element ctx (eff ctx source))) t/unknown)]
+              output (apply-transducer ctx second-arg (transducer-source ctx from (eff ctx source)))
+              out (get output :element t/unknown)]
           (when-let [bad (unsupported-sequence-member ctx source)]
             (report! ctx from "TSP2345" (str "into cannot reduce " (t/show bad))))
           (if (= t/never source) t/never (into-transformed ctx target out)))

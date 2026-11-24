@@ -450,6 +450,65 @@
            (mapv (juxt :file (comp :row :pos) :code :message) ds))
         (pr-str ds))))
 
+(deftest into-interpose-includes-the-separator-when-the-input-can-repeat
+  (let [r (check-source "(into [] (interpose nil) [1 2])
+(into [] (interpose false) [1 2])
+(into [] (comp (interpose :sep) (map inc)) [1])
+(into [] (comp (take 0.5) (interpose :sep) (map inc)) [1 2])
+(into [] (comp (interpose 0) (drop 2) (interpose :sep) (map inc)) [1 2])
+(second (into [:seed] (comp (drop 2) (interpose :sep) (map (fn [_ _] :unused))) [1 2]))
+(second (into [:seed] (comp (interpose :sep) (map (fn [_ _] :unused))) []))
+(into [] (interpose :sep) {:key 1})
+(into [] (comp cat (interpose :sep) (map inc)) [[1 2]])
+(into [] (comp (mapcat (fn [group] group)) (interpose :sep) (map inc)) [[1 2]])
+(into [] (comp (interpose :sep) (map inc)) [1 2])
+(into [] (interpose (inc \"bad\")) [])
+(into [] (comp (interpose (throw (Exception.))) (map (fn [_ _] :unused))) [1])
+(into [] (interpose :sep) '(1))
+(into [] (interpose :sep) (list 1))
+(into [] (interpose :sep) (long-array 1))"
+                        {:strict-nil true})
+        ds (:diagnostics r)]
+    (is (= [[13 "TSP2345"] [14 "TSP2345"] [15 "TSP2345"] [16 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of (s/nilable int?) :kind vector?)"
+            "(s/coll-of (t/or int? boolean?) :kind vector?)"
+            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of int? :kind vector?)"
+            "nil?"
+            "nil?"
+            "(s/coll-of vector? :kind vector?)"
+            "(s/coll-of t/unknown :kind vector?)"
+            "(s/coll-of t/unknown :kind vector?)"
+            "(s/coll-of t/unknown :kind vector?)"]
+           (mapv #(main/type-at r "callbacks.clj" % 1) (concat (range 5 13) [18 19 20]))))))
+
+(deftest into-interpose-uses-spec-bounds-from-another-namespace
+  (let [api (parse/parse-string
+             "items.clj"
+             "(ns items (:require [clojure.spec.alpha :as s]))
+(s/fdef one :args (s/cat) :ret (s/coll-of int? :kind vector? :min-count 1 :max-count 1))
+(defn one [] [10])
+(s/fdef two :args (s/cat) :ret (s/coll-of int? :kind vector? :min-count 2 :max-count 2))
+(defn two [] [10 20])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [items :as i] [clojure.spec.alpha :as s] [clojure.core :as c]))
+(s/def ::numbers (s/coll-of int? :kind vector?))
+(s/fdef single :args (s/cat) :ret ::numbers)
+(defn single [] (into [] (comp (c/interpose :sep) (map inc)) (i/one)))
+(s/fdef prefix :args (s/cat) :ret ::numbers)
+(defn prefix [] (into [] (comp (take 1) (map inc) (interpose :sep) (map inc)) (i/two)))
+(s/fdef suffix :args (s/cat) :ret ::numbers)
+(defn suffix [] (into [] (comp (drop 1) (interpose :sep) (map inc)) (i/two)))
+(into [] (comp (interpose :sep) (map inc)) (i/two))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

@@ -58,6 +58,15 @@
     (project source "{app/f [int? :-> int?] :api/name string?}" {}
              #(is (contains? (codes %) "TSP2790")))))
 
+(deftest record-factories-accept-externs-with-the-generated-arity
+  (project "(ns app) (defrecord Entry [label]) (->Entry \"ok\") (->Entry 42) (map->Entry {}) (map->Entry)"
+           "{app/->Entry [string? :-> map?] app/map->Entry [:-> map?]}" {}
+           (fn [res]
+             (is (= ["TSP2790" "TSP2345" "TSP2554"] (mapv :code (:diagnostics res)))
+                 (pr-str (:diagnostics res)))
+             (is (= :extern (get-in res [:env :vars 'app/->Entry :source])))
+             (is (= :record (get-in res [:env :vars 'app/map->Entry :source]))))))
+
 (deftest core-policy
   (project "(ns app) (inc 1)" "{clojure.core/inc [string? :-> string?]}" {}
            #(is (contains? (codes %) "TSP9003")))

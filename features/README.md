@@ -69,7 +69,7 @@ This file is generated from the card headers by `clojure -M:test --update`.
 | [F330](F330-tuples-and-nonempty.md) | Tuples, длина и непустые коллекции | `implemented` | `implemented` | data | Clojure |
 | [F331](F331-fixed-vector-positions.md) | Длина и позиции в s/tuple | `implemented` | `implemented` | data | Clojure |
 | [F340](F340-mutation-and-variance.md) | Изменяемые значения и variance | `designed` | `partial` | core | Typespec |
-| [F350](F350-records.md) | Records и номинальные классы | `designed` | `not-implemented` | data | Clojure |
+| [F350](F350-records.md) | Records и номинальные классы | `designed` | `partial` | data | Clojure |
 | [F410](F410-arities-and-apply.md) | Арности, перегрузки и apply | `designed` | `partial` | functions | Clojure |
 | [F411](F411-apply-fixed-tail.md) | Проверка apply с известными позициями хвоста | `implemented` | `implemented` | functions | Clojure |
 | [F412](F412-spec-regex-arities.md) | Арности из s/+ и конечных s/alt | `implemented` | `implemented` | functions | Clojure |

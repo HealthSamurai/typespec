@@ -148,6 +148,12 @@
           vars (normalize (scope specs) (:vars contracts))]
       (assoc contracts :specs specs :vars vars :diagnostics @diags ::normalized true))))
 
+(defn- factory-signature? [arity ty]
+  (let [ty (if (= :all (:t ty)) (:body ty) ty)
+        arities (:arities ty)]
+    (and (seq arities)
+         (every? #(and (= arity (count (:params %))) (not (:rest %)) (not (:kwargs %))) arities))))
+
 (defn merge-contracts
   "Merges externs with source declarations. Source contracts win conflicts.
   An unannotated source function keeps its body and receives the extern signature."
@@ -162,12 +168,22 @@
                   (reduce-kv
                    (fn [env k ext]
                      (let [old (get-in env [bucket k])
-                           source-contract? (and old (or (= bucket :specs) (not= :hints (:source old)) (:tagged? old)))]
-                       (if source-contract?
+                           source-contract? (and old (or (= bucket :specs)
+                                                         (not (#{:hints :record} (:source old)))
+                                                         (:tagged? old)))
+                           factory-arity (:factory-arity old)]
+                       (cond
+                         (and (some? factory-arity) (not (factory-signature? factory-arity (:type ext))))
+                         (do (swap! diags conj (diagnostic (:file ext) "TSP2790"
+                                                         (str "extern " k " must have the generated factory arity "
+                                                              factory-arity)))
+                             env)
+                         source-contract?
                          (do (when (not (t/alpha-equivalent? (:type old) (:type ext)))
                                (swap! diags conj (diagnostic (:file ext) "TSP2790"
                                                             (str "extern " k " conflicts with source contract in " (:file old)))))
                              env)
+                         :else
                          (assoc-in env [bucket k]
                                    (if old (merge old (select-keys ext [:type :source :extern/path :extern/resource :complete?])) ext)))))
                    env (get externs bucket {})))

@@ -5101,6 +5101,7 @@
         nm (:name parts)
         sym (symbol (str (:ns file)) (str (:val nm)))
         v (get-in env [:vars sym])
+        v (or (:prior-defn v) v)
         ftype (if (= :all (:t (:type v))) (solver/open-rigid (:type v)) (:type v))
         bodies (:arities parts)
         plans (when (and (= :fdef (:source v))

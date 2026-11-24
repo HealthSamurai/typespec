@@ -72,6 +72,14 @@
   (when (and (= :sym (:op node)) (simple-symbol? (:val node)))
     (symbol (str (:ns file)) (name (:val node)))))
 
+(defn- record-factories [file form]
+  (let [[_ target fields] (:children form)]
+    (when (and (var-name file target) (= :vector (:op fields))
+               (every? #(and (= :sym (:op %)) (simple-symbol? (:val %))) (:children fields)))
+      (for [[prefix arity] [["->" (count (:children fields))] ["map->" 1]]]
+        [(symbol (str (:ns file)) (str prefix (:val target)))
+         {:file file :pos (:pos target) :factory-arity arity}]))))
+
 (defn definition-initializer [form]
   (last (drop 2 (:children form))))
 
@@ -131,14 +139,16 @@
             (let [[head-node target] (:children form)
                   name (var-name file target)
                   operator (when-not (contains? macros (var-name file head-node)) (head file form))
+                  factories (when (and at-load? (= 'defrecord operator)) (record-factories file form))
                   data? (or (= 'def operator)
                             (and (#{'defonce 'declare} operator)
                                  (or at-load? (namespace (:val head-node)))))
                   names (cond
+                          (seq factories) (map first factories)
                           (and data? (= 'declare operator)) (keep #(var-name file %) (rest (:children form)))
                           (and name (or data? (and at-load? (#{'defn 'defn-} operator)))) [name])
                   init? (and at-load?
-                             (or (#{'defn 'defn-} operator) (initialized-var file form)))
+                             (or (seq factories) (#{'defn 'defn-} operator) (initialized-var file form)))
                   by-name (reduce (fn [acc sym]
                                     (cond-> acc
                                       data? (assoc-in [sym :tracks-root?] true)
@@ -361,6 +371,15 @@
              (assoc-in acc [:protocols (symbol (str (:ns file)) (name (:val nm)))] (protocol-methods file forms))
              acc))
 
+         (= 'defrecord (t/core-name file (:val (first (:children form)))))
+         (reduce (fn [acc [sym factory]]
+                   (let [prior (get-in acc [:defns sym])
+                         prior-defn (if (:parts prior) prior (:prior-defn prior))]
+                     (-> acc
+                         (update-in [:root-definitions sym] (fnil inc 0))
+                         (assoc-in [:defns sym] (cond-> factory prior-defn (assoc :prior-defn prior-defn))))))
+                 acc (record-factories file form))
+
          (= 'defmulti (t/core-name file (:val (first (:children form)))))
          (let [[_ target & forms] (:children form)]
            (if-let [sym (var-name file target)]
@@ -387,6 +406,8 @@
                sym (qualify (:val target))
                init (definition-initializer form)]
            (cond-> (update-in acc [:root-definitions sym] (fnil inc 0))
+             (and (= 'def h) init (contains? (get-in acc [:defns sym]) :factory-arity))
+             (update :defns dissoc sym)
              (and (= :list (:op init)) (= 'atom (t/core-name file (:val (first (:children init)))))
                   (not-any? #(or (= :dynamic (:val %)) (:dynamic (parse/node->data %))) (:meta target)))
              (assoc-in [:atom-initializers sym] {:file file :node init})))
@@ -415,6 +436,46 @@
                   :type {:t :fn :arities (into (vec valid)
                                               (for [n arities :when (not (contains? covered n))]
                                                 {:params (vec (repeat n t/unknown)) :ret t/unknown}))}}]))))
+
+(defn- factory-var [sym {:keys [file pos factory-arity]} fdef diags]
+  (let [contracts (get-in fdef [:type :arities])
+        matches? (fn [arity] (and (= factory-arity (count (:params arity)))
+                                  (not (:rest arity)) (not (:kwargs arity))))
+        valid (vec (filter matches? contracts))]
+    (when (and fdef (some (complement matches?) contracts))
+      (note diags fdef fdef "TSP2790"
+            (str "s/fdef of " sym " must have the generated factory arity " factory-arity)))
+    {:file (:file file) :pos pos :factory-arity factory-arity
+     :source (if (seq valid) :fdef :record)
+     :contract (when (seq valid) (select-keys fdef [:file :pos]))
+     :type {:t :fn :arities (if (seq valid) valid
+                              [{:params (vec (repeat factory-arity t/unknown)) :ret t/unknown}])}}))
+
+(defn- function-var [env operator-env sym d fd diags]
+  (let [sig (when (:sig d)
+              (operators/normalize operator-env (:sig d)
+                                   (operator-errors diags (:file d) (:sig-pos d))))
+        declared (or sig (:type fd))
+        invalid? (operators/invalid? sig)
+        hints (when-not declared (hints-sig env (:file d) (:parts d)))]
+    (when (and sig fd (not invalid?) (not (t/alpha-equivalent? sig (:type fd))))
+      (note diags (:file d) (:name (:parts d)) "TSP2790"
+            (str "t/sig and s/fdef of " (name sym) " disagree: "
+                 (t/show sig) " vs " (t/show (:type fd)))))
+    {:parts (:parts d) :pfile (:file d) :definition (:definition d)
+     :type (or declared hints)
+     :contract (if sig {:file (:file (:file d)) :pos (:sig-pos d)}
+                   (select-keys fd [:file :pos]))
+     :source (cond sig :sig fd :fdef :else :hints)
+     :tagged? (boolean (or (some #(tag-node (:params %)) (:arities (:parts d)))
+                           (tag-node (:name (:parts d)))))
+     :complete? (if declared
+                  (not invalid?)
+                  (every? (fn [a] (and (not= :unknown (:t (:ret a)))
+                                       (not-any? #(= :unknown (:t %)) (:params a))))
+                          (:arities hints)))
+     :private? (:private? (:parts d))
+     :file (:file (:file d)) :pos (:pos d)}))
 
 (defn build
   "Environment from parsed files: {:specs :vars :macros :key-nss}. Returns [env diagnostics]."
@@ -445,31 +506,12 @@
                    :key-nss (set (keep namespace (keys (:specs acc)))))
         vars (into {}
                    (for [[sym d] (:defns acc)
-                         :let [fd (get-in acc [:fdefs sym])
-                               sig (when (:sig d)
-                                     (operators/normalize operator-env (:sig d)
-                                                          (operator-errors diags (:file d) (:sig-pos d))))
-                               declared (or sig (:type fd))
-                               invalid? (operators/invalid? sig)]]
-                     (do
-                       (when (and sig fd (not invalid?) (not (t/alpha-equivalent? sig (:type fd))))
-                         (note diags (:file d) (:name (:parts d)) "TSP2790"
-                               (str "t/sig and s/fdef of " (name sym) " disagree: "
-                                    (t/show sig) " vs " (t/show (:type fd)))))
-                       [sym {:parts (:parts d) :pfile (:file d) :definition (:definition d)
-                             :type (or declared (hints-sig env (:file d) (:parts d)))
-                             :contract (if sig {:file (:file (:file d)) :pos (:sig-pos d)}
-                                           (select-keys fd [:file :pos]))
-                             :source (cond sig :sig fd :fdef :else :hints)
-                             :tagged? (boolean (or (some #(tag-node (:params %)) (:arities (:parts d)))
-                                                   (tag-node (:name (:parts d)))))
-                             :complete? (if declared
-                                          (not invalid?)
-                                            (every? (fn [a] (and (not= :unknown (:t (:ret a)))
-                                                                 (not-any? #(= :unknown (:t %)) (:params a))))
-                                                    (:arities (hints-sig env (:file d) (:parts d)))))
-                             :private? (:private? (:parts d))
-                             :file (:file (:file d)) :pos (:pos d)}])))
+                         :let [fd (get-in acc [:fdefs sym])]]
+                     [sym (if (contains? d :factory-arity)
+                            (cond-> (factory-var sym d fd diags)
+                              (:prior-defn d) (assoc :prior-defn
+                                                     (function-var env operator-env sym (:prior-defn d) nil diags)))
+                            (function-var env operator-env sym d fd diags))]))
         only-fdef (for [[sym fd] (:fdefs acc) :when (not (contains? vars sym))]
                     [sym {:type (:type fd) :source :fdef :file (:file fd) :pos (:pos fd)}])]
     (let [vars (merge (into vars only-fdef) (protocol-vars (:protocols acc) (:fdefs acc) diags))

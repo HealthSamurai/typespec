@@ -63,6 +63,7 @@
                        (case (:source v)
                          :sig "t/sig" :fdef "s/fdef"
                          :protocol "defprotocol"
+                         :record "defrecord"
                          :extern (str "extern " (:extern/path v))
                          :hints (cond (some :inferred (:arities ty)) "the body"
                                       :else "hints")))))))))

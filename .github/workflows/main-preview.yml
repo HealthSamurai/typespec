@@ -1,0 +1,82 @@
+name: Main preview
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    concurrency:
+      group: main-preview
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '25'
+      - name: Install Clojure CLI
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://github.com/clojure/brew-install/releases/download/1.12.6.1673/linux-install.sh \
+            --output clojure-install.sh
+          echo '5ae63b082ed33bf4c29bf1a8317c5c15249d1bc753676b2f5177fb3804ad6f77  clojure-install.sh' | sha256sum --check
+          bash clojure-install.sh --prefix "$RUNNER_TEMP/clojure"
+          echo "$RUNNER_TEMP/clojure/bin" >> "$GITHUB_PATH"
+      - name: Test
+        run: clojure -M:test
+      - name: Build executable JAR
+        run: clojure -T:build uber
+      - name: Check packaged CLI
+        run: |
+          project=$(mktemp -d)
+          mkdir "$project/src"
+          cat > "$project/src/library.clj" <<'EOF'
+          (ns library (:require [clojure.spec.alpha :as s]))
+          (s/fdef upper :args (s/cat :value string?) :ret string?)
+          (defn upper [value] (clojure.string/upper-case value))
+          EOF
+          cat > "$project/src/client.clj" <<'EOF'
+          (ns client (:require [library :as library]))
+          (library/upper "text")
+          EOF
+          java -jar target/typespec.jar check --root "$project"
+          echo '(library/upper 42)' >> "$project/src/client.clj"
+          status=0
+          diagnostics=$(java -jar target/typespec.jar check --root "$project") || status=$?
+          echo "$diagnostics"
+          test "$status" -eq 1
+          grep -F 'src/client.clj:3:16  TSP2345' <<< "$diagnostics"
+      - name: Publish main preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          head_sha=$(gh api "repos/$GH_REPO/git/ref/heads/main" --jq .object.sha)
+          if [[ "$head_sha" != "$GITHUB_SHA" ]]; then
+            echo "Main has moved since this build started."
+            exit 0
+          fi
+
+          tag=main-preview
+          jar=target/typespec.jar
+          checksum=$(sha256sum "$jar" | cut -d ' ' -f 1)
+          notes=$(printf 'Build of `%s` from `main`.\n\nSHA-256 (`typespec.jar`) `%s`\n' "$GITHUB_SHA" "$checksum")
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$jar" --clobber
+            gh release edit "$tag" --prerelease --latest=false --notes "$notes"
+          else
+            gh release create "$tag" "$jar" --target "$GITHUB_SHA" \
+              --title 'Main preview' --prerelease --latest=false --notes "$notes"
+          fi
+          gh api --method PATCH "repos/$GH_REPO/git/refs/tags/$tag" \
+            -f sha="$GITHUB_SHA" -F force=true --silent

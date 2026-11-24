@@ -72,6 +72,23 @@ src/app/patients.clj:25:30  TSP2345  42 is not assignable to :patient/id (string
 
 ## Попробовать
 
+Скачайте `typespec.jar` из [пререлиза main](https://github.com/HealthSamurai/typespec/releases/tag/main-preview)
+и запустите на Java 25 или новее.
+
+```sh
+java -jar typespec.jar check --root path/to/project
+```
+
+Чтобы проверить Java-типы и декларации из зависимостей проекта, запустите
+команду из проекта с его classpath.
+
+```sh
+java -cp "/path/to/typespec.jar:$(clojure -Spath)" typespec.main check
+```
+
+Пререлиз обновляется после успешной проверки пуша в `main`. Локальная
+команда `clojure -T:build uber` собирает `target/typespec.jar`.
+
 ```
 git clone https://github.com/HealthSamurai/typespec && cd typespec
 clojure -M:check check --root demo        # маленькое приложение клиники с 23 заложенными ошибками

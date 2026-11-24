@@ -72,6 +72,23 @@ This is the real output of the prototype. The code is plain `clojure.spec`: `s/f
 
 ## Try it
 
+Download `typespec.jar` from the [main preview](https://github.com/HealthSamurai/typespec/releases/tag/main-preview)
+and run it with Java 25 or newer.
+
+```sh
+java -jar typespec.jar check --root path/to/project
+```
+
+For Java types and declaration resources supplied by a Clojure CLI project's
+dependencies, run from that project with its classpath.
+
+```sh
+java -cp "/path/to/typespec.jar:$(clojure -Spath)" typespec.main check
+```
+
+Each tested push to `main` updates the preview. To build the same standalone
+JAR locally, run `clojure -T:build uber` and use `target/typespec.jar`.
+
 ```
 git clone https://github.com/HealthSamurai/typespec && cd typespec
 clojure -M:check check --root demo        # a small clinic app with 23 planted mistakes

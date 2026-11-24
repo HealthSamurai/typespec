@@ -9,7 +9,8 @@
             [typespec.check :as check]
             [typespec.externs :as externs]
             [typespec.contract-diff :as contract-diff]
-            [typespec.project-contracts :as project-contracts]))
+            [typespec.project-contracts :as project-contracts])
+  (:gen-class))
 
 (defn source-files [paths]
   (->> paths

@@ -110,15 +110,19 @@
     (catch LinkageError _ nil)
     (catch SecurityException _ nil)))
 
-(defn field-class
-  "The declared JVM type of a public field with the requested staticness."
+(defn field-info
+  "The declared JVM type and final modifier of a public field."
   [cname fname static?]
   (when-let [^Class cls (t/load-class cname)]
     (try
       (when-let [^Field field (Reflector/getField cls fname static?)]
-        (.getName (.getType field)))
+        {:type (.getType field)
+         :final? (Modifier/isFinal (.getModifiers field))})
       (catch LinkageError _ nil)
       (catch SecurityException _ nil))))
+
+(defn field-class [cname fname static?]
+  (some-> ^Class (:type (field-info cname fname static?)) .getName))
 
 (defn has-field? [cname fname]
   (boolean (or (field-class cname fname true) (field-class cname fname false))))

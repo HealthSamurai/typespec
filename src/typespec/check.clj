@@ -1966,21 +1966,59 @@
                   (when-let [w (or (:null-return (meta ty)) (when (= :sym (:op target)) (get-in ctx [:why (:val target)])))]
                     (str ": " w))))))
 
+(defn- instance-field-owner [ctx target]
+  (let [ty (java-receiver-type ctx target)]
+    (check-nil-receiver! ctx target ty)
+    (if (class-symbol-name ctx target) "java.lang.Class" (class-of ctx ty))))
+
+(defn- lookup-java-field [ctx node cname fname static?]
+  (when (and cname (java/has-class? cname))
+    (or (java/field-info cname fname static?)
+        (report! ctx node "TSP2339"
+                 (str (java/short-name cname) " has no public "
+                      (if static? "static" "instance") " field " fname)))))
+
 (defn- instance-field-call [ctx node fname]
   (let [[head target & more] (:children node)]
     (if (or (nil? target) (seq more))
       (do (run! #(infer ctx %) (args-of node))
           (report! ctx node "TSP2554" (str ".-" fname " expects one receiver"))
           t/unknown)
-      (let [ty (java-receiver-type ctx target)
-            cname (if (class-symbol-name ctx target) "java.lang.Class" (class-of ctx ty))]
-        (check-nil-receiver! ctx target ty)
-        (if (and cname (java/has-class? cname))
-          (if-let [class-name (java/field-class cname fname false)]
-            (java-field-type class-name)
-            (do (report! ctx head "TSP2339" (str (java/short-name cname) " has no public instance field " fname))
-                t/unknown))
+      (let [cname (instance-field-owner ctx target)
+            field (lookup-java-field ctx head cname fname false)]
+        (if-let [^Class field-type (:type field)]
+          (java-field-type (.getName field-type))
           t/unknown)))))
+
+(defn- dot-field-place [node]
+  (when (= :list (:op node))
+    (let [[head receiver member :as children] (:children node)
+          sym (:val head)
+          long-dot? (= '. sym)
+          raw-name (cond
+                     (and long-dot? (= 3 (count children)) (= :sym (:op member)))
+                     (name (:val member))
+
+                     (and (= 2 (count children)) (= :sym (:op head)) (simple-symbol? sym)
+                          (str/starts-with? (name sym) ".") (not (#{'. '..} sym)))
+                     (subs (name sym) 1))]
+      (when raw-name
+        (let [forced? (str/starts-with? raw-name "-")]
+          {:receiver receiver :long-dot? long-dot? :forced? forced?
+           :field-name (if forced? (subs raw-name 1) raw-name)})))))
+
+(defn- field-assignment-target [ctx target]
+  (if-let [cname (when (= :sym (:op target)) (java-static? ctx (:val target)))]
+    (lookup-java-field ctx target cname (name (:val target)) true)
+    (when-let [{:keys [receiver long-dot? forced? field-name]} (dot-field-place target)]
+      (let [static-class (when long-dot? (class-symbol-name ctx receiver))
+            cname (or static-class (instance-field-owner ctx receiver))
+            static? (some? static-class)]
+        (when static? (infer ctx receiver))
+        (if (and cname (not forced?)
+                 (some #(empty? (:params %)) (java/methods-named cname field-name static?)))
+          (report! ctx target "TSP2345" "Cannot assign to the result of a Java method")
+          (lookup-java-field ctx target cname field-name static?))))))
 
 (defn- method-call [ctx node mname]
   (let [[_ target & arg-nodes] (:children node)
@@ -2016,7 +2054,7 @@
 (defmethod special ::none [_ _ _] ::none)
 
 (doseq [h '[ns comment declare require import in-ns defmacro defprotocol defrecord deftype defmulti
-            definterface set! clojure.spec.alpha/def clojure.spec.alpha/fdef]]
+            definterface clojure.spec.alpha/def clojure.spec.alpha/fdef]]
   (defmethod special h [_ _ _] t/unknown))
 
 (defmethod special 'clojure.spec.alpha/conform [ctx node _]
@@ -3690,13 +3728,40 @@
                 (when (Modifier/isFinal (.getModifiers cls)) cls)))
       nil)))
 
-(defn- into-array-element-type [ctx form ty]
+(defn- boxed-java-value-type [ctx form ty]
   (apply t/union
          (for [member (t/members (:env ctx) ty)]
            (if-let [^Class cls (when-not (= :nil (:t member)) (known-object-class ctx form member))]
              (cond-> {:t :class :name (.getName cls)}
                (= :lit (:t member)) (assoc :as (t/show member)))
              member))))
+
+(defmethod special 'set! [ctx node _]
+  (let [[target value :as args] (args-of node)]
+    (if (not= 2 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "set! expects a target and a value")
+          t/unknown)
+      (let [{^Class field-type :type :keys [final?]} (field-assignment-target ctx target)
+            value-type (infer ctx value)]
+        (when field-type
+          (record! ctx target (java-field-type (.getName field-type)))
+          (cond
+            final? (report! ctx target "TSP2345" "Cannot assign to a final JVM field")
+
+            (.isPrimitive field-type)
+            (assignable! ctx value value-type
+                         (case (.getName field-type)
+                           "boolean" (t/prim :boolean)
+                           "char" (t/class-type "java.lang.Character")
+                           (t/prim :number)))
+
+            :else
+            (report-store-problem!
+             ctx value
+             (reference-store-problems ctx 'set! value (boxed-java-value-type ctx value (eff ctx value-type))
+                                       field-type))))
+        value-type))))
 
 (defn- inferred-array-type [ctx node ^Class component n]
   (try
@@ -3743,7 +3808,7 @@
                    (= 1 n) []
                    :else [[nil element]])]
         (doseq [[form ty] tail]
-          (let [actual (into-array-element-type ctx form (eff ctx ty))]
+          (let [actual (boxed-java-value-type ctx form (eff ctx ty))]
             (report-store-problem!
              ctx (or form arg)
              (mapcat #(reference-store-problems ctx 'into-array (or form arg) actual %)
@@ -3774,7 +3839,7 @@
 (defn- check-reference-into-array! [ctx arg members component]
   (doseq [[form ty] (explicit-into-array-elements ctx arg members)
           :let [node (or form arg)
-                actual (into-array-element-type ctx form (eff ctx ty))]
+                actual (boxed-java-value-type ctx form (eff ctx ty))]
           :when (not= :unknown (:t actual))]
     (report-store-problem! ctx node (reference-store-problems ctx 'into-array node actual component))))
 

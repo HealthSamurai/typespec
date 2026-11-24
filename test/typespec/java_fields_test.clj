@@ -1,6 +1,6 @@
 (ns typespec.java-fields-test
   (:require [clojure.java.io :as io]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is use-fixtures]]
             [typespec.check :as check]
             [typespec.main :as main]
             [typespec.parse :as parse])
@@ -105,21 +105,28 @@ Integer/TYPE
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))))
 
+(use-fixtures :once
+  (fn [tests]
+    (let [root (.toFile (Files/createTempDirectory "typespec-fields-" (make-array FileAttribute 0)))
+          compiler (ToolProvider/getSystemJavaCompiler)
+          source "test/fixtures/java/typespec/fixture/StaticFields.java"
+          thread (Thread/currentThread)
+          original (.getContextClassLoader thread)]
+      (try
+        (when-not (zero? (.run compiler nil nil nil (into-array String ["-d" (str root) source])))
+          (throw (ex-info "Could not compile Java field fixture" {:source source})))
+        (with-open [loader (URLClassLoader. (into-array URL [(.toURL (.toURI root))]) original)]
+          (.setContextClassLoader thread loader)
+          (try (tests)
+               (finally (.setContextClassLoader thread original))))
+        (finally
+          (doseq [file (reverse (file-seq root))]
+            (io/delete-file file true)))))))
+
 (deftest field-metadata-keeps-method-lookup-and-does-not-initialize-the-class
-  (let [root (.toFile (Files/createTempDirectory "typespec-static-fields-" (make-array FileAttribute 0)))
-        compiler (ToolProvider/getSystemJavaCompiler)
-        source "test/fixtures/java/typespec/fixture/StaticFields.java"
-        thread (Thread/currentThread)
-        original (.getContextClassLoader thread)]
-    (try
-      (when-not (zero? (.run compiler nil nil nil (into-array String ["-d" (str root) source])))
-        (throw (ex-info "Could not compile static field fixture" {:source source})))
-      (with-open [loader (URLClassLoader. (into-array URL [(.toURL (.toURI root))]) original)]
-        (.setContextClassLoader thread loader)
-        (try
-          (let [file (parse/parse-string
-                      "fixture.clj"
-                      "(ns example (:import [typespec.fixture StaticFields StaticFields$Members]))
+  (let [file (parse/parse-string
+              "fixture.clj"
+              "(ns example (:import [typespec.fixture StaticFields StaticFields$Members]))
 StaticFields/number
 (StaticFields/number)
 StaticFields/text
@@ -133,14 +140,64 @@ StaticFields/labels
 (.alt (StaticFields$Members.) 1)
 (.-labels (StaticFields$Members.))
 (aset (.-labels (StaticFields$Members.)) 0 42)")
-                result (check/check-files [file] {})]
-            (is (= ["int" "String" "String" "int" "[Ljava.lang.String;"
-                    "int" "String" "int" "String" "[Ljava.lang.String;"]
-                   (mapv #(main/type-at result "fixture.clj" % 1) [2 3 4 6 7 9 10 11 12 13])))
-            (is (= [[5 "TSP2554"] [8 "TSP2345"] [14 "TSP2345"]]
-                   (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
-                (pr-str (:diagnostics result))))
-          (finally (.setContextClassLoader thread original))))
-      (finally
-        (doseq [file (reverse (file-seq root))]
-          (io/delete-file file true))))))
+        result (check/check-files [file] {})]
+    (is (= ["int" "String" "String" "int" "[Ljava.lang.String;"
+            "int" "String" "int" "String" "[Ljava.lang.String;"]
+           (mapv #(main/type-at result "fixture.clj" % 1) [2 3 4 6 7 9 10 11 12 13])))
+    (is (= [[5 "TSP2554"] [8 "TSP2345"] [14 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
+(deftest set!-validates-public-jvm-fields-and-preserves-the-value
+  (let [file (parse/parse-string
+              "writes.clj"
+              "(ns writes (:import java.awt.Point [typespec.fixture StaticFields StaticFields$Members]))
+(let [p (Point.)] (set! (.-x p) 1.5))
+(let [p (Point.)] (set! (.x p) 42))
+(let [p (Point.)] (set! (. p -x) 43))
+(let [p (Point.)] (set! (.-x p) \"bad\"))
+(let [p (Point.)] (set! (.-x p) nil))
+(let [p (Point.)] (set! (.-x p) \\a))
+(set! StaticFields$Members/total 1.5)
+(set! (. StaticFields$Members -total) 2)
+(set! (. StaticFields$Members total) 3)
+(set! StaticFields/number 4)
+(let [f (StaticFields$Members.)] (set! (.-fixed f) nil))
+(let [f (StaticFields$Members.)] (set! (.-text f) nil))
+(let [f (StaticFields$Members.)] (set! (.-text f) 42))
+(let [f (StaticFields$Members.)] (set! (.-initial f) \\a))
+(let [f (StaticFields$Members.)] (set! (.-initial f) 65))
+(let [f (StaticFields$Members.)] (set! (.-enabled f) true))
+(let [f (StaticFields$Members.)] (set! (.-enabled f) :truthy))
+(let [f (StaticFields$Members.)] (set! (.-boxed f) 42))
+(let [f (StaticFields$Members.)] (set! (.-boxed f) (int 42)))
+(let [f (StaticFields$Members.)] (set! (.size f) 1))
+(let [f (StaticFields$Members.)] (set! (.-size f) 1))
+(set! (.-missing (Point.)) 1)
+(set! (.-x nil) 1)
+(binding [*warn-on-reflection* false] (set! *warn-on-reflection* true))
+(set! StaticFields$Members/total)")
+        result (check/check-files [file] {})]
+    (is (= (into (mapv #(vector % "TSP2345") [5 6 7 11 12 14 16 18 20 21])
+                 [[23 "TSP2339"] [24 "TSP2531"] [26 "TSP2554"]])
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["1.5" "42" "43" "1.5" "2" "3" "nil?" "true" "42" "1"]
+           (mapv #(main/type-at result "writes.clj" % 1) [2 3 4 8 9 10 13 17 19 22])))))
+
+(deftest field-assignment-checks-a-receiver-from-another-namespace
+  (let [files [(parse/parse-string
+                "provider.clj"
+                "(ns provider (:require [clojure.spec.alpha :as s]) (:import java.awt.Point))
+(s/fdef point :args (s/cat) :ret #(instance? Point %))
+(defn point [] (Point. 1 2))")
+               (parse/parse-string
+                "consumer.clj"
+                "(ns consumer (:require [provider :as p]))
+(set! (.-x (p/point)) 2.5)
+(set! (.-x (p/point)) \"bad\")")]
+        result (check/check-files files {})]
+    (is (= [["consumer.clj" 3 23 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "2.5" (main/type-at result "consumer.clj" 2 1)))))

@@ -1560,6 +1560,8 @@
     do (mapcat #(body-initializers ctx %) (args-of form))
     time (let [[expr & more] (args-of form)]
            (when (and expr (empty? more)) (body-initializers ctx expr)))
+    clojure.test/with-test (when-let [definition (first (args-of form))]
+                             (body-initializers ctx definition))
     nil))
 
 (defn infer-body
@@ -2166,6 +2168,16 @@
 (defmethod special 'future [ctx node _]
   (infer-body (dissoc ctx :recur-types) (args-of node))
   (t/class-type "java.util.concurrent.Future"))
+
+(defmethod special 'clojure.test/with-test [ctx node _]
+  (let [[definition & body] (args-of node)]
+    (if definition
+      (let [ty (infer ctx definition)]
+        (when-not (= t/never ty)
+          (infer-body (dissoc ctx :load-time? :recur-types) body))
+        ty)
+      (do (report! ctx node "TSP2554" "with-test expects a definition")
+          t/unknown))))
 
 (doseq [h '[def defonce]]
   (defmethod special h [ctx node _]

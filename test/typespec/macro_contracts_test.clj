@@ -47,6 +47,39 @@
             "(s/coll-of t/never :kind seq?)" "t/never" "keyword?"]
            (mapv #(main/type-at r "app.clj" % 1) (range 5 13))))))
 
+(deftest with-test-exposes-wrapped-definitions-across-namespaces
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns sample.api (:require [clojure.test :as test :refer [with-test]]
+                                       [clojure.spec.alpha :as s]))
+(s/fdef echo :args (s/cat :x string?) :ret string?)
+(test/with-test (defn echo [x] x)
+  (echo \"ok\")
+  (echo 42))
+(with-test (defn answer [] 42)
+  (def delayed :test-only))
+(clojure.test/with-test (defn upper [^String x] (.toUpperCase x)))
+(with-test)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns sample.client (:require [sample.api :as api :refer [answer]]))
+(api/echo \"ok\")
+(api/echo 42)
+(answer)
+(api/answer 1)
+(api/upper \"ok\")
+(api/upper 1)
+api/delayed")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["api.clj" 6 "TSP2345"]
+            ["api.clj" 10 "TSP2554"]
+            ["client.clj" 3 "TSP2345"]
+            ["client.clj" 5 "TSP2554"]
+            ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP721-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest conditional-steps-check-reachable-calls-in-source-order
   (let [r (checked "\n(cond-> 1 true (+ \"bad\"))
                        (cond->> \"bad\" true (+ 1))

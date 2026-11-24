@@ -95,6 +95,15 @@
   (when (= :vector (:op node))
     (take-nth 2 (rest (:children node)))))
 
+(defn- declaration-forms [file]
+  (map (fn [form]
+         (loop [form form]
+           (if-let [definition (when (= 'clojure.test/with-test (head file form))
+                                 (second (:children form)))]
+             (recur definition)
+             form)))
+       (:forms file)))
+
 (defn- expression-children [form operator]
   (let [[_ a & more] (:children form)]
     (case (:op form)
@@ -111,7 +120,7 @@
         time (when (and a (empty? more)) [a])
         case (concat [a] (map second (partition 2 more))
                      (when (odd? (count more)) [(last more)]))
-        (do if if-not when when-not and or cond condp try finally throw future lazy-seq)
+        (do if if-not when when-not and or cond condp try finally throw future lazy-seq clojure.test/with-test)
         (rest (:children form))
         catch (drop 3 (:children form))
         nil)
@@ -136,7 +145,12 @@
                                       init? (update-in [sym :initializers] (fnil conj [])
                                                        {:file (:file file) :pos (:pos form)})))
                                   by-name names)]
-              (reduce #(collect %1 file %2 (and at-load? (#{'do 'time} operator)))
+              (reduce (fn [acc child]
+                        (collect acc file child
+                                 (and at-load?
+                                      (or (#{'do 'time} operator)
+                                          (and (= 'clojure.test/with-test operator)
+                                               (identical? child target))))))
                       by-name (expression-children form operator))))]
     (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files)))
 
@@ -155,7 +169,7 @@
                                                   (cons (:val nm)
                                                         (when (= 'defprotocol (head file form))
                                                           (keys (protocol-methods file forms)))))))
-                                            (:forms file))))
+                                            (declaration-forms file))))
                           {} files)]
     {:var-declarations declarations
      :ns-defs (reduce (fn [acc sym]
@@ -378,7 +392,7 @@
              (assoc-in [:atom-initializers sym] {:file file :node init})))
 
          :else acc)))
-   acc (:forms file)))
+   acc (declaration-forms file)))
 
 (defn- protocol-vars [protocols fdefs diags]
   (into {}
@@ -407,7 +421,7 @@
   ([files] (build files {}))
   ([files contracts]
   (let [diags (atom [])
-        macros (into #{} (for [file files form (:forms file)
+        macros (into #{} (for [file files form (declaration-forms file)
                                :when (= 'defmacro (head file form))
                                :let [sym (var-name file (second (:children form)))]
                                :when sym]

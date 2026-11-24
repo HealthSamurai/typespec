@@ -107,6 +107,44 @@
             "(s/coll-of (s/coll-of t/never :kind seq? :max-count 0) :kind seq? :min-count 1)"]
            (mapv #(at r %) [5 7 8 9])))))
 
+(deftest partition-all-transducers-bound-the-number-and-size-of-groups
+  (let [r (checked "(into [] (partition-all 5) [10 20])
+(into [] (partition-all 0) [])
+(into [] (comp (take 2) (partition-all 4) (interpose :unused)) [10 20 30])
+(s/def ::group (s/coll-of int? :kind vector? :min-count 1))
+(s/fdef unsplit :args (s/cat :xs (s/coll-of int?)) :ret (s/coll-of ::group :kind vector? :max-count 1))
+(defn unsplit [xs] (into [] (partition-all 0) xs))
+(s/def ::short (s/coll-of int? :kind vector? :min-count 1 :max-count 2))
+(s/fdef groups :args (s/cat :capacity int?) :ret (s/coll-of ::short :kind vector? :max-count 2))
+(defn groups [capacity] (into [] (partition-all capacity) [10 20]))")]
+    (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 2) :kind vector? :max-count 1)"
+            "(s/coll-of t/never :kind vector?)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 2) :kind vector? :max-count 1)"]
+           (mapv #(at r %) [2 3 4])))))
+
+(deftest partition-all-transducers-use-counts-from-another-namespace
+  (let [api (parse/parse-string
+             "items.clj"
+             "(ns items (:require [clojure.spec.alpha :as s]))
+(s/fdef items :args (s/cat) :ret (s/coll-of int? :kind vector? :min-count 3 :max-count 3))
+(defn items [] [10 20 30])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [items :as i] [clojure.spec.alpha :as s]))
+(s/fdef heads :args (s/cat) :ret (s/coll-of int? :kind vector? :max-count 2))
+(defn heads [] (into [] (comp (partition-all 2) (map first)) (i/items)))
+(s/def ::group (s/coll-of int? :kind vector? :min-count 1 :max-count 3))
+(s/fdef unsplit :args (s/cat) :ret (s/coll-of ::group :kind vector? :max-count 1))
+(defn unsplit [] (into [] (comp (partition-all 0) (interpose :unused)) (i/items)))
+(nth (into [] (partition-all 2) (i/items)) 2)
+(nth (into [] (partition-all 0) (i/items)) 1)
+(into [] (comp (take 1) (partition-all 3) (map #(nth % 1))) (i/items))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP330-02"] ["client.clj" 8 "TSP330-02"] ["client.clj" 9 "TSP330-02"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest partition-by-checks-the-key-and-preserves-sequence-bounds
   (let [r (checked "(partition-by odd? [1 3 2])
 (first (first (partition-by identity [42])))
@@ -161,8 +199,8 @@
     (is (= ["(s/coll-of keyword? :kind vector? :min-count 2 :max-count 2)"
             "(s/coll-of string? :kind vector? :min-count 2 :max-count 2)"
             "(s/coll-of boolean? :kind vector? :min-count 1 :max-count 1)"
-            "(s/coll-of (s/nilable int?) :kind vector? :max-count 3)"
-            "(s/coll-of int? :kind vector? :max-count 3)"]
+            "(s/coll-of (s/nilable int?) :kind vector? :max-count 2)"
+            "(s/coll-of int? :kind vector? :max-count 2)"]
            (mapv #(at r %) (range 2 7))))))
 
 (deftest positional-callbacks-use-specs-from-another-namespace

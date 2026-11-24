@@ -347,11 +347,11 @@
     (is (= [[12 "TSP2345"] [13 "TSP2345"] [14 "TSP2345"] [15 "TSP330-02"] [16 "TSP210-01"]]
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
-    (is (= ["(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 2) :kind vector? :max-count 3)"
+    (is (= ["(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 2) :kind vector? :max-count 2)"
             "(s/coll-of int? :kind vector? :max-count 1)"
-            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector? :max-count 3)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 3) :kind vector? :max-count 1)"
             "(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 1) :kind vector? :max-count 3)"
-            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector? :max-count 3)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 3) :kind vector? :max-count 1)"
             "nil?"
             "nil?"]
            (mapv #(main/type-at result "callbacks.clj" % 1) (range 5 12))))))

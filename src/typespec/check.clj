@@ -5028,7 +5028,7 @@
         ;; Once dropping ends, later inputs pass without a predicate call.
         drop-while (if (= t/never no) t/never input)))))
 
-(defn- partition-transducer-element [ctx size input]
+(defn- partition-all-transducer-output [ctx size {:keys [element upper]}]
   (let [amount (infer ctx size)
         value (:val (t/resolve-t (:env ctx) (eff ctx amount)))
         capacity (when (number? value)
@@ -5040,13 +5040,21 @@
     (cond
       (and (number? value) (or (nil? capacity) (neg? capacity)))
       (do (report! ctx size "TSP2345" "partition-all size must convert to a nonnegative Java int")
-          t/never)
+          (transducer-output t/never 0))
 
-      (or (= t/never amount) (= t/never input)) t/never
+      (or (= t/never amount) (= t/never element)) (transducer-output t/never 0)
 
       :else
-      (length/with-bounds (coll-of :vector input) 1
-                          (when (and capacity (pos? capacity)) capacity)))))
+      (let [positive-capacity (when (and capacity (pos? capacity)) capacity)
+            group-upper (if (and positive-capacity upper)
+                          (min positive-capacity upper)
+                          (or positive-capacity upper))
+            groups-upper (cond
+                           (nil? capacity) upper
+                           (zero? capacity) 1
+                           :else (partition-count upper capacity))]
+        (transducer-output (length/with-bounds (coll-of :vector element) 1 group-upper)
+                           groups-upper)))))
 
 (defn- apply-transducer
   "Infer the emitted element type and its upper count bound. Nil denotes an opaque stage."
@@ -5075,9 +5083,9 @@
           input)
 
       (and (= 'partition-all head) f (empty? more))
-      (let [out (partition-transducer-element ctx f element)]
+      (let [output (partition-all-transducer-output ctx f input)]
         (record! ctx xf (t/prim :fn))
-        (transducer-output out upper))
+        output)
 
       (and (= 'interpose head) f (empty? more))
       (let [separator (eff ctx (infer ctx f))]

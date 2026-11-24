@@ -66,6 +66,46 @@
     (is (= ["TSP2345"] (codes result)) (pr-str (:diagnostics result)))
     (is (= "(s/coll-of string? :kind vector?)" (main/type-at result "callbacks.clj" 9 3)))))
 
+(deftest into-checks-map-indexed-transducers
+  (let [result (check-source "(into [] (map-indexed (fn [i v] (str (inc i) (str/upper-case v)))) [\"a\"])
+(into [] (comp (filter string?) (clojure.core/map-indexed #(str %1 (str/upper-case %2)))) [42 \"a\"])
+(into [:seed] (map-indexed (fn [_] :unused)) [])
+(into [] (map-indexed :item) [\"a\"])
+(into [] (map-indexed (fn [i v] (subs i 1))) [\"a\"])
+(into [] (map-indexed (fn [i] i)) [1])
+(into [] (map-indexed #{0 1}) [1])
+(into [] (map-indexed [0 1]) [1])
+(let [map-indexed (fn [_] identity)] (into [] (map-indexed identity) [1]))
+(second (into [:seed] (map-indexed (fn [_] :unused)) []))")
+        ds (:diagnostics result)]
+    (is (= [[9 "TSP2345"] [10 "TSP2554"] [11 "TSP2554"] [12 "TSP2554"] [13 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of string? :kind vector?)"
+            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of keyword? :kind vector?)"
+            "(s/coll-of string? :kind vector?)"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) (range 5 9))))
+    (is (= "nil?" (main/type-at result "callbacks.clj" 14 1)))))
+
+(deftest into-map-indexed-checks-a-spec-from-another-namespace
+  (let [api (parse/parse-string
+             "labels.clj"
+             "(ns sample.labels (:require [clojure.spec.alpha :as s]))
+(s/fdef label :args (s/cat :i int? :value string?) :ret string?)
+(defn label [i value] (str i \":\" (subs value 0)))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns sample.client (:require [sample.labels :as labels] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :xs (s/coll-of string?)) :ret (s/coll-of string? :kind vector?))
+(defn render [xs] (into [] (map-indexed labels/label) xs))
+(into [] (comp (filter string?) (map-indexed labels/label)) [42 \"a\"])
+(into [] (map-indexed labels/label) [42])")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

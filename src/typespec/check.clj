@@ -4489,6 +4489,15 @@
            (length/with-bounds (coll-of kind element) minimum maximum)
            (some t/assumption sources)))))))
 
+(defn- apply-indexed-callback [ctx callback element]
+  (case (:op callback)
+    ;; A keyword lookup on the integer index returns its default argument.
+    :kw (do (infer ctx callback) element)
+    (:set :vector) (do (infer ctx callback)
+                        (report! ctx callback "TSP2554" (str (parse/unparse callback) " is called with 2 argument(s)"))
+                        t/unknown)
+    (apply-fn-node ctx callback [(t/prim :int) element])))
+
 (defmethod special 'map-indexed [ctx node _]
   (let [[f coll :as args] (args-of node)]
     (case (count args)
@@ -4503,7 +4512,7 @@
             :else (let [{:keys [lower upper element]} (sequence-summary ctx source)
                         result (if (= 0 upper)
                                  (do (infer ctx f) t/never)
-                                 (apply-fn-node ctx f [(t/prim :int) element]))]
+                                 (apply-indexed-callback ctx f element))]
                     (t/with-assumption
                      (length/with-bounds (coll-of :seq result) lower upper)
                      (t/assumption source)))))
@@ -4940,9 +4949,12 @@
         (record! ctx xf (t/prim :fn))
         out)
 
-      (and (#{'map 'filter} head) f (empty? more))
+      (and (#{'map 'map-indexed 'filter} head) f (empty? more))
       (let [out (case head
                   map (apply-fn-node ctx f [input])
+                  map-indexed (if (= t/never input)
+                                (do (infer ctx f) t/never)
+                                (apply-indexed-callback ctx f input))
                   filter (let [[ret yes] (apply-predicate ctx f input true)]
                            (if (= t/never (truth-part (:env ctx) (eff ctx ret) true)) t/never yes)))]
         (record! ctx xf (t/prim :fn))

@@ -1,7 +1,8 @@
 (ns typespec.java
   "Java members, read by reflection from classes that are loaded but never initialized."
   (:require [typespec.types :as t])
-  (:import [java.lang.reflect Constructor MalformedParameterizedTypeException Method Modifier ParameterizedType TypeVariable]))
+  (:import [clojure.lang Reflector]
+           [java.lang.reflect Constructor Field MalformedParameterizedTypeException Method Modifier ParameterizedType TypeVariable]))
 
 (defn- nominal-class [bindings ty]
   (cond
@@ -109,9 +110,18 @@
     (catch LinkageError _ nil)
     (catch SecurityException _ nil)))
 
+(defn field-class
+  "The declared JVM type of a public field with the requested staticness."
+  [cname fname static?]
+  (when-let [^Class cls (t/load-class cname)]
+    (try
+      (when-let [^Field field (Reflector/getField cls fname static?)]
+        (.getName (.getType field)))
+      (catch LinkageError _ nil)
+      (catch SecurityException _ nil))))
+
 (defn has-field? [cname fname]
-  (when-let [^Class c (t/load-class cname)]
-    (boolean (some #(= fname (.getName ^java.lang.reflect.Field %)) (.getFields c)))))
+  (boolean (or (field-class cname fname true) (field-class cname fname false))))
 
 (defn has-class? [cname] (some? (t/load-class cname)))
 

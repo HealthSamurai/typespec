@@ -21,7 +21,7 @@ Clojure-программы используют JDK и Java-библиотеки
 - `types/load-class` вызывает `Class/forName(name, false, contextClassLoader)`; примитивы обрабатываются отдельно. Класс загружается без запроса его инициализации. Это **не** чтение `.class` без загрузки и не гарантия отсутствия действий пользовательского classloader.
 - `java/methods-named` читает публичные, в том числе унаследованные, методы через `getMethods`, фильтрует имя и static/instance. Контракт: `{:params [имена-классов] :ret имя-класса :declaring имя-класса :varargs boolean}`. Используются erased-типы `getParameterTypes/getReturnType`, не generic signatures и не аннотации.
 - Результат сортируется по числу параметров и предпочтению возврата не-`Object`; методы с одинаковыми параметрами схлопываются. Это эвристика, не доказанное разрешение bridge/covariant методов.
-- `has-field?` проверяет только наличие публичного поля; типа поля, модификатора static и значения не возвращает.
+- `java/field-class` читает объявленный JVM-тип публичного поля через `Reflector/getField`, учитывая static и instance. Чтение метаданных не запрашивает значение поля и не инициализирует класс.
 - `java/constructors` читает типы параметров и признак varargs публичных конструкторов через `getConstructors`. Обе формы вызова передают эти сигнатуры в проверку [F520](F520-java-overloads.md).
 - `check/java-call` потребляет эти записи; `types/class-type` переводит Java-типы во внутренние карты. Например, `String` → `{:t :prim :name :string}`, `LocalDate` → `{:t :class :name "java.time.LocalDate"}`, `Object` → `:any`, `void` → `:nil`.
 - Результаты Java обычно получают platform-пометку. Отдельный ручной список `nullable-returns` даёт nilable-результаты для известных методов. Это не чтение nullability из байткода.
@@ -170,7 +170,7 @@ Reader передаёт descriptor с массивом и признак `:varar
 
 Не закрыты: JPMS/export visibility, multi-release JAR и target JDK, дубликаты на classpath, неполные транзитивные зависимости, безопасная инвалидизация кеша, bridge/covariant методы, поведение повреждённого generic Signature. Сложные случаи требуют fixtures и сравнения с фактическим компилятором Clojure, а не заявления о soundness. Отключение инициализации не делает произвольный classloader безопасным.
 
-Сейчас не читаются generic signatures, nullability annotations и типы полей; `Object` превращается в `any`, многие примитивные различия стираются. Обещания reference о generics, arrays, SAM, varargs и интерфейсах нельзя считать выполненными лишь потому, что класс найден. Checked exceptions по reference не отслеживаются.
+Сейчас не читаются generic signatures, nullability annotations и значения полей; `Object` превращается в `any`, многие примитивные различия стираются. Обещания reference о generics, arrays, SAM, varargs и интерфейсах нельзя считать выполненными лишь потому, что класс найден. Checked exceptions по reference не отслеживаются.
 
 ## Конкретная матрица тестов
 
@@ -182,6 +182,7 @@ Reader передаёт descriptor с массивом и признак `:varar
 | `.lenght` на `^String` | TSP2339 + подсказка length | Есть в `test/features` |
 | `System/getenv` → `.length` | TSP2531; источник — ручной nullable-список, не аннотации | Есть в `test/features` |
 | Public inherited method / private method | Первый доступен с правильным declaring, второй не появляется | Новый reader fixture |
+| Public static field | Объявленный JVM-тип передаётся в проверку без инициализации класса | Есть в `java-fields-test`, включая static-массив и совпадающее имя метода |
 | Одно имя static/instance | Фильтрация не смешивает контракты | Новый reader fixture |
 | `String/format` | JVM-параметр `Object[]` участвует в проверке аргументов | Есть в `java-varargs-test`, включая массив из Spec другого namespace |
 | Класс отсутствует / отсутствует зависимость его метода | Разные причины reader-ошибки; AST position + unknown downstream | Planned fixture и диагностики |

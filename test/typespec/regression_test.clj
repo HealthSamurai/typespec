@@ -38,6 +38,7 @@
     typespec.macro-contracts-test
     typespec.review-fixes-test
     typespec.string-contracts-test
+    typespec.java-fields-test
     typespec.java-generic-return-test
     typespec.java-overloads-test
     typespec.java-varargs-test

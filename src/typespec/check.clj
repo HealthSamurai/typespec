@@ -1303,6 +1303,14 @@
     (when-not (or (contains? (:aliases (:file ctx)) n) (known-ns? ctx n))
       (t/resolve-class (:imports (:file ctx)) n))))
 
+(defn- compiler-static-field-class [ctx sym]
+  (when-let [cname (java-static? ctx sym)]
+    (java/field-class cname (name sym) true)))
+
+(defn- java-field-type [class-name]
+  (let [value-class (if (= "char" class-name) "java.lang.Character" class-name)]
+    (t/platform (t/class-type value-class) (java/short-name class-name))))
+
 (defn- class-symbol-name [ctx node]
   (let [{:keys [file env]} ctx
         sym (:val node)]
@@ -1461,7 +1469,9 @@
   (boolean
    (or (env/tag-node node)
        (#{:str :num :bool} (:op node))
-       (and (= :sym (:op node)) (contains? (:hinted ctx) (:val node)))
+       (and (= :sym (:op node))
+            (or (contains? (:hinted ctx) (:val node))
+                (compiler-static-field-class ctx (:val node))))
        (when (= :list (:op node))
          (let [h (first (:children node))]
            (when (= :sym (:op h))
@@ -1489,7 +1499,8 @@
 (defn- compiler-value-class [ctx node]
   (cond
     (env/tag-node node) (array-hint-class (env/hint-type (:file ctx) node))
-    (= :sym (:op node)) (get-in ctx [:compiler-local-classes (:val node)])
+    (= :sym (:op node)) (or (get-in ctx [:compiler-local-classes (:val node)])
+                           (compiler-static-field-class ctx (:val node)))
     :else (let [head (builtin-head ctx node)]
             (if (and (= 'aclone head) (= 2 (count (:children node))))
               (clone-compiler-class (compiler-value-class ctx (second (:children node))))
@@ -1904,8 +1915,8 @@
         shown (java/short-name cname)]
     (cond
       (not (java/has-class? cname)) t/unknown
-      (empty? ms) (if (and (empty? arg-nodes) (java/has-field? cname mname))
-                    t/unknown
+      (empty? ms) (if-let [class-name (when (empty? arg-nodes) (java/field-class cname mname static?))]
+                    (if static? (java-field-type class-name) t/unknown)
                     (do (report! ctx (first (:children node)) "TSP2339"
                                  (str shown " has no " (when static? "static ") "method " mname
                                       (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
@@ -3333,10 +3344,12 @@
                                           .getComponentType)]
         (when (.isPrimitive component) component))
 
-      :else
-      (when-let [sym (plain-local ctx value)]
-        (let [class-name (get-in ctx [:compiler-local-classes sym])]
-          (when (t/primitives class-name) (t/load-class class-name)))))))
+      (and (= :sym (:op value)) (empty? (:directives value)))
+      (let [class-name (if-let [sym (plain-local ctx value)]
+                         (get-in ctx [:compiler-local-classes sym])
+                         (when-not (env/tag-node value)
+                           (compiler-static-field-class ctx (:val value))))]
+        (when (t/primitives class-name) (t/load-class class-name))))))
 
 (defn- primitive-aset-problems [ctx value ty ^Class component inline? static-array?]
   (let [env (:env ctx)
@@ -5478,9 +5491,12 @@
     :nil t/nil-t
     :var (var-reference ctx (:children node))
     :regex (t/class-type "java.util.regex.Pattern")
-    :sym (let [s (:val node)]
+    :sym (let [s (:val node)
+               cname (java-static? ctx s)]
            (cond (contains? (:locals ctx) s) (get-in ctx [:locals s])
-                 (java-static? ctx s) t/unknown
+                 cname (if-let [class-name (java/field-class cname (name s) true)]
+                         (java-field-type class-name)
+                         t/unknown)
                  (and (nil? (namespace s)) (not (t/primitives (name s)))
                       (t/resolve-class (:imports (:file ctx)) s)) t/unknown
                  :else (or (:type (read-var ctx s node :value)) t/unknown)))

@@ -109,6 +109,52 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) ds))
         (pr-str ds))))
 
+(deftest receiver-hints-remain-available-after-map-narrowing
+  (let [source "(ns example.hints)
+(defn items [^Iterable value]
+  (when (map? value)
+    (.iterator value)))
+(defn alias-items [^Iterable value]
+  (let [alias value]
+    (when (map? alias) (. alias iterator))))
+(defn from-expression [value]
+  (let [alias ^Iterable value]
+    (when (map? alias) (.iterator alias))))
+(defn entries [^Iterable value]
+  (when (map? value) (.entrySet value)))
+(defn wrong-arity [^Iterable value]
+  (when (map? value) (.iterator value 42)))
+(defn missing [^Iterable value]
+  (when (map? value) (.missingMethod value)))
+(defn shadowed [^Iterable value]
+  (let [value \"text\"] (.iterator value)))
+(defn use-site [value]
+  (when (map? value) (.iterator ^Iterable value)))"
+        result (check/check-files [(parse/parse-string "hints.clj" source)] {})
+        ds (:diagnostics result)]
+    (is (= [[14 "TSP2554"] [16 "TSP2339"] [18 "TSP2339"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= "java.util.Iterator" (main/type-at result "hints.clj" 4 5)))
+    (is (= "map?" (main/type-at result "hints.clj" 4 16)))))
+
+(deftest a-narrowed-receiver-can-satisfy-an-exported-spec
+  (let [provider (parse/parse-string
+                   "maps.clj"
+                   "(ns sample.maps (:require [clojure.spec.alpha :as s]) (:import [java.util Iterator]))
+(s/fdef entries :args (s/cat :value Iterable) :ret (s/nilable Iterator))
+(defn entries [^Iterable value]
+  (when (map? value) (.iterator value)))")
+        client (parse/parse-string
+                 "client.clj"
+                 "(ns sample.client (:require [sample.maps :as m]))
+(m/entries {:item 1})
+(m/entries \"not iterable\")")
+        ds (:diagnostics (check/check-files [provider client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest java-constructors-check-arity-and-arguments
   (let [source "(ns constructors (:import [java.io File InputStream]))
 (StringBuilder. \"text\")

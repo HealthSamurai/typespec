@@ -925,23 +925,20 @@
                  (str "hint " (t/show h) " contradicts the " what ": " (t/show (dissoc actual :platform))))))
     h))
 
-(defn- array-hint-class [hint]
-  (when (and (= :class (:t hint)) (str/starts-with? (:name hint) "["))
-    (:name hint)))
-
 (defn bind-pattern
   ([ctx pattern ty] (bind-pattern ctx pattern ty nil))
   ([ctx pattern ty why] (bind-pattern ctx pattern ty why nil))
   ([ctx pattern ty why projection]
    (case (:op pattern)
      :sym (let [h (check-hint! ctx pattern ty "type")
+                compiler-class (when h (env/hint-class (:file ctx) (env/tag-node pattern)))
                 env (:env ctx)
                 ;; the compiler believes the hint; keep the inferred type only when it agrees and says more
                 use-hint? (and h (or (#{:unknown :any} (:t (t/resolve-t env ty)))
                                      (not (t/sub? env (t/remove-nil env (eff ctx ty)) h))))
                 [c origin path] (if (and projection (not use-hint?)) (track-path ctx projection) [ctx])]
             (cond-> (bind c (:val pattern) (if use-hint? h ty)
-                          :why (when-not use-hint? why) :hinted (boolean h) :compiler-class (array-hint-class h))
+                          :why (when-not use-hint? why) :hinted (boolean h) :compiler-class compiler-class)
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
      :vector (let [members (t/members (:env ctx) ty)
@@ -1514,14 +1511,15 @@
       (if (.isPrimitive component) class-name "[Ljava.lang.Object;"))))
 
 (defn- compiler-value-class [ctx node]
-  (cond
-    (env/tag-node node) (array-hint-class (env/hint-type (:file ctx) node))
-    (= :sym (:op node)) (or (get-in ctx [:compiler-local-classes (:val node)])
-                           (compiler-static-field-class ctx (:val node)))
-    :else (let [head (builtin-head ctx node)]
-            (if (and (= 'aclone head) (= 2 (count (:children node))))
-              (clone-compiler-class (compiler-value-class ctx (second (:children node))))
-              (get array-constructors head)))))
+  (if-let [tag (env/tag-node node)]
+    (env/hint-class (:file ctx) tag)
+    (if (= :sym (:op node))
+      (or (get-in ctx [:compiler-local-classes (:val node)])
+          (compiler-static-field-class ctx (:val node)))
+      (let [head (builtin-head ctx node)]
+        (if (and (= 'aclone head) (= 2 (count (:children node))))
+          (clone-compiler-class (compiler-value-class ctx (second (:children node))))
+          (get array-constructors head))))))
 
 (defn- bind-pairs [ctx bindings & [on-init]]
   (reduce (fn [ctx [p init]]
@@ -2098,10 +2096,18 @@
 (defn- method-call [ctx node target member-node mname arg-nodes field-fallback]
   (let [tty (java-receiver-type ctx target)
         env (:env ctx)
-        cname (class-of ctx tty)]
+        inferred (class-of ctx tty)
+        hinted (if-let [tag (env/tag-node target)]
+                 (env/hint-class (:file ctx) tag)
+                 (when (= :sym (:op target))
+                   (get-in ctx [:compiler-local-classes (:val target)])))
+        cname (if (and hinted (not= hinted inferred) (not (t/primitives hinted))
+                       (empty? (java/methods-named inferred mname false))
+                       (seq (java/methods-named hinted mname false)))
+                hinted inferred)]
     (cond
       (nil? target) t/unknown
-      (#{:unknown :any} (:t (t/resolve-t env tty)))
+      (and (nil? cname) (#{:unknown :any} (:t (t/resolve-t env tty))))
       (do (run! #(infer ctx %) arg-nodes)
           (when-not (compiler-knows? ctx target)
             (report! ctx node "TSP7020" (str "reflective call: the type of " (parse/unparse target) " is unknown")

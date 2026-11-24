@@ -4951,6 +4951,26 @@
         ;; Once dropping ends, later inputs pass without a predicate call.
         drop-while (if (= t/never no) t/never input)))))
 
+(defn- partition-transducer-element [ctx size input]
+  (let [amount (infer ctx size)
+        value (:val (t/resolve-t (:env ctx) (eff ctx amount)))
+        capacity (when (number? value)
+                   (try
+                     (Math/toIntExact (long value))
+                     (catch ArithmeticException _ nil)
+                     (catch IllegalArgumentException _ nil)))]
+    (assignable! ctx size amount (t/prim :number))
+    (cond
+      (and (number? value) (or (nil? capacity) (neg? capacity)))
+      (do (report! ctx size "TSP2345" "partition-all size must convert to a nonnegative Java int")
+          t/never)
+
+      (or (= t/never amount) (= t/never input)) t/never
+
+      :else
+      (length/with-bounds (coll-of :vector input) 1
+                          (when (and capacity (pos? capacity)) capacity)))))
+
 (defn- apply-transducer
   "Infer the emitted element type. A nil result means a stage could not be modeled."
   [ctx xf input]
@@ -4970,6 +4990,11 @@
                           (let [next-type (apply-transducer ctx stage (or current t/unknown))]
                             (when current next-type)))
                         input args)]
+        (record! ctx xf (t/prim :fn))
+        out)
+
+      (and (= 'partition-all head) f (empty? more))
+      (let [out (partition-transducer-element ctx f input)]
         (record! ctx xf (t/prim :fn))
         out)
 

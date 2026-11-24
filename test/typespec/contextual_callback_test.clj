@@ -290,6 +290,53 @@
            (mapv (juxt :file (comp :row :pos) :code :message) ds))
         (pr-str ds))))
 
+(deftest into-partition-all-emits-nonempty-vectors-and-checks-capacity
+  (let [result (check-source "(into [] (partition-all 2) [1 2 3])
+(into [] (comp (take 1) (partition-all 2) (map #(first %))) [1 2 3])
+(into [] (partition-all 0) [1 2 3])
+(into [] (partition-all 1.9) [1 2 3])
+(into [] (partition-all -0.5) [1 2 3])
+(second (into [:seed] (comp (partition-all 2) (map (fn [_ _] :unused))) []))
+(second (into [:seed] (comp (take 0) (partition-all 2)) [1]))
+(into [] (partition-all -1) [])
+(into [] (partition-all 2147483648) [])
+(into [] (partition-all \"bad\") [])
+(into [] (comp (partition-all 2) (map #(nth % 2))) [1 2 3])
+(let [partition-all (fn [_] identity)] (into [] (partition-all 2) [1]))"
+                             {:strict-nil true})
+        ds (:diagnostics result)]
+    (is (= [[12 "TSP2345"] [13 "TSP2345"] [14 "TSP2345"] [15 "TSP330-02"] [16 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 2) :kind vector?)"
+            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 1) :kind vector?)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
+            "nil?"
+            "nil?"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) (range 5 12))))))
+
+(deftest into-partition-all-preserves-types-from-another-namespace
+  (let [api (parse/parse-string
+             "numbers.clj"
+             "(ns numbers (:require [clojure.spec.alpha :as s]))
+(s/fdef numbers :args (s/cat) :ret (s/coll-of int? :kind vector?))
+(defn numbers [] [1 2 3])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [numbers :as n] [clojure.spec.alpha :as s]))
+(s/def ::chunk (s/coll-of int? :kind vector? :min-count 1 :max-count 2))
+(s/fdef groups :args (s/cat) :ret (s/coll-of ::chunk :kind vector?))
+(defn groups [] (into [] (clojure.core/partition-all 2) (n/numbers)))
+(s/fdef heads :args (s/cat :size number?) :ret (s/coll-of int? :kind vector?))
+(defn heads [size] (into [] (comp (partition-all size) (map #(first %))) (n/numbers)))
+(into [] (comp (partition-all 2) (map inc)) (n/numbers))")
+        ds (:diagnostics (check/check-files [api client] {:strict-nil true}))]
+    (is (= [["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

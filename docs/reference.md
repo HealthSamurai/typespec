@@ -285,6 +285,7 @@ Clojure on the JVM already has a type system — Java's. Typespec uses it fully 
 
 - **Classes, interfaces, inheritance**: subtyping follows Java (`ArrayList <: List <: Collection`), and Clojure collections are Java collections too (`IPersistentVector <: java.util.List`).
 - **Methods, constructors, static fields, varargs**: arity and argument types are checked; overload resolution follows the Clojure compiler's rules.
+- **Java constructors.** `(Class. ...)` and `(new Class ...)` check arity and arguments against public signatures and preserve the constructed type. [F520](../features/F520-java-overloads.md)
 - **Java varargs in Clojure 1.12.4.** The trailing JVM array is one argument. For example, `(String/format "%s" (into-array String ["text"]))` type-checks, and a vector in that position gives `TSP2345`. [F520](../features/F520-java-overloads.md)
 - **Java overload applicability.** When every overload of the given arity rejects an argument, Typespec reports `TSP2345`. If the rejected positions differ, the diagnostic points to the call and lists the closest signatures. [F520](../features/F520-java-overloads.md)
 - **Inherited generic returns.** When a concrete receiver binds a superclass or interface type variable, Typespec uses its known nominal class as the method result. Raw receivers and unresolved variables retain the erased return. [F530 scope](../features/F530-java-generics-nullability.md)

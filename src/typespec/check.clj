@@ -1885,11 +1885,22 @@
                      (str "No overload of " method-name " accepts these arguments. "
                           (str/join ". " (map java-rejection-summary closest))))))))))
 
+(defn- checked-java-overloads [ctx node label arg-nodes arg-types candidates]
+  ;; Clojure calls the JVM descriptor directly, with one array argument for varargs.
+  (let [fits (filterv #(= (count arg-nodes) (count (:params %))) candidates)]
+    (if (empty? fits)
+      (report! ctx node "TSP2554"
+               (str label " takes " (str/join " or " (distinct (map #(count (:params %)) candidates)))
+                    " argument(s), got " (count arg-nodes)))
+      (let [ok (filterv #(every? boolean (map (partial java-arg-ok? ctx) arg-types (:params %))) fits)]
+        (if (seq ok)
+          ok
+          (do (report-java-argument-mismatch! ctx node label arg-nodes arg-types fits)
+              fits))))))
+
 (defn- java-call [ctx node cname mname static? arg-nodes]
   (let [arg-types (mapv #(infer ctx %) arg-nodes)
         ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
-        ;; Clojure calls the JVM descriptor directly, with one array argument for varargs.
-        fits (filter #(= (count arg-nodes) (count (:params %))) ms)
         shown (java/short-name cname)]
     (cond
       (not (java/has-class? cname)) t/unknown
@@ -1899,17 +1910,30 @@
                                  (str shown " has no " (when static? "static ") "method " mname
                                       (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
                         t/unknown))
-      (empty? fits) (do (report! ctx node "TSP2554"
-                                 (str shown "." mname " takes " (str/join " or " (distinct (map #(count (:params %)) ms)))
-                                      " argument(s), got " (count arg-nodes)))
-                        t/unknown)
       :else
-      (let [ok (filter (fn [m] (every? boolean (map #(java-arg-ok? ctx %1 %2) arg-types (:params m)))) fits)]
-        (when (empty? ok)
-          (report-java-argument-mismatch! ctx node (str shown "." mname) arg-nodes arg-types fits))
-        (let [cands (if (seq ok) ok fits)
-              rets (distinct (map #(java-ret cname %) cands))]
-          (if (= 1 (count rets)) (first rets) t/unknown))))))
+      (let [candidates (checked-java-overloads ctx node (str shown "." mname) arg-nodes arg-types ms)
+            rets (distinct (map #(java-ret cname %) candidates))]
+        (if (= 1 (count rets)) (first rets) t/unknown)))))
+
+(defn- constructor-call [ctx node cname arg-nodes]
+  (let [arg-types (mapv #(infer ctx %) arg-nodes)]
+    (if cname
+      (do
+        (when-let [^Class cls (t/load-class cname)]
+          (when-some [constructors (java/constructors cls)]
+            (let [shown (java/short-name cname)]
+              (cond
+                (empty? constructors)
+                (report! ctx node "TSP2339" (str shown " has no public constructor"))
+
+                (Modifier/isAbstract (.getModifiers cls))
+                (report! ctx node "TSP2345" (str shown " is abstract and cannot be constructed"))
+
+                :else
+                (checked-java-overloads ctx node (str "the " shown " constructor") arg-nodes arg-types constructors)))))
+        ;; Direct instantiation of Object produces a concrete value.
+        (if (= cname "java.lang.Object") {:t :class :name cname} (t/class-type cname)))
+      t/unknown)))
 
 (defn- method-call [ctx node mname]
   (let [[_ target & arg-nodes] (:children node)
@@ -2001,7 +2025,9 @@
 (defn- quoted-type [node]
   (case (:op node)
     :sym (t/prim :symbol)
-    :list (t/class-type "clojure.lang.IPersistentList")
+    :list (t/class-type (if (seq (:children node))
+                         "clojure.lang.PersistentList"
+                         "clojure.lang.PersistentList$EmptyList"))
     t/unknown))
 
 (defmethod special 'quote [_ node _]
@@ -4852,11 +4878,9 @@
 
 (defmethod special 'new [ctx node _]
   (let [[cls & args] (args-of node)]
-    (run! #(infer ctx %) args)
-    (if-let [c (and (= :sym (:op cls)) (t/resolve-class (:imports (:file ctx)) (:val cls)))]
-      ;; A concrete Object constructor is not the declared Object/top escape.
-      (if (= c "java.lang.Object") {:t :class :name c} (t/class-type c))
-      t/unknown)))
+    (constructor-call ctx node
+                      (when (= :sym (:op cls)) (t/resolve-class (:imports (:file ctx)) (:val cls)))
+                      args)))
 
 ;; ---- defn ----
 
@@ -5430,9 +5454,7 @@
           (and (nil? (namespace sym)) (str/starts-with? n ".-")) (do (run! #(infer ctx %) args) t/unknown)
           (and (nil? (namespace sym)) (str/starts-with? n ".") (> (count n) 1) (not= ".." n)) (method-call ctx node (subs n 1))
           (and (nil? (namespace sym)) (str/ends-with? n ".") (> (count n) 1))
-          (do (run! #(infer ctx %) args)
-              (if-let [c (t/resolve-class (:imports file) (symbol (subs n 0 (dec (count n)))))]
-                (if (= c "java.lang.Object") {:t :class :name c} (t/class-type c)) t/unknown))
+          (constructor-call ctx node (t/resolve-class (:imports file) (symbol (subs n 0 (dec (count n))))) args)
           (java-static? ctx sym) (java-call ctx node (java-static? ctx sym) n true args)
           (contains? (:macros (:env ctx)) (:sym (resolve-var (assoc ctx :quiet true) sym h)))
           (do (report! ctx h "TSP7031" (str "macro " sym " is not described: its body is not checked") :severity :warning)

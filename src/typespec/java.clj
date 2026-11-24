@@ -1,7 +1,7 @@
 (ns typespec.java
   "Java members, read by reflection from classes that are loaded but never initialized."
   (:require [typespec.types :as t])
-  (:import [java.lang.reflect MalformedParameterizedTypeException Method Modifier ParameterizedType TypeVariable]))
+  (:import [java.lang.reflect Constructor MalformedParameterizedTypeException Method Modifier ParameterizedType TypeVariable]))
 
 (defn- nominal-class [bindings ty]
   (cond
@@ -95,6 +95,19 @@
 (defn method-names [cname]
   (when-let [^Class c (t/load-class cname)]
     (distinct (map #(.getName ^Method %) (.getMethods c)))))
+
+(defn constructors
+  "Public constructor signatures. Returns nil if the signatures cannot be read."
+  [^Class cls]
+  (try
+    (->> (.getConstructors cls)
+         (map (fn [^Constructor ctor]
+                {:params (mapv #(.getName ^Class %) (.getParameterTypes ctor))
+                 :varargs (.isVarArgs ctor)}))
+         (sort-by (juxt (comp count :params) :params))
+         vec)
+    (catch LinkageError _ nil)
+    (catch SecurityException _ nil)))
 
 (defn has-field? [cname fname]
   (when-let [^Class c (t/load-class cname)]

@@ -1848,6 +1848,43 @@
       (#{:nil :any} (:t base)) base
       :else (t/platform base shown))))
 
+(defn- java-rejected-args [ctx alternatives params]
+  (into []
+        (keep-indexed (fn [i [members pclass]]
+                        (when-not (some #(java-arg-ok? ctx % pclass) members) i)))
+        (map vector alternatives params)))
+
+(defn- java-unmatched-argument [ctx alternatives fits]
+  (first (keep-indexed
+          (fn [i members]
+            (when (some (fn [member]
+                          (not-any? #(java-arg-ok? ctx member (nth (:params %) i)) fits))
+                        members)
+              i))
+          alternatives)))
+
+(defn- java-rejection-summary [[params rejected]]
+  (let [param-name #(or (some-> ^Class (t/load-class %) .getTypeName java/short-name) %)]
+    (str "(" (str/join ", " (map param-name params)) ") rejects "
+         (if (next rejected) "arguments " "argument ")
+         (str/join ", " (map inc rejected)))))
+
+(defn- report-java-argument-mismatch! [ctx node method-name arg-nodes arg-types fits]
+  (let [alternatives (mapv #(t/members (:env ctx) %) arg-types)]
+    (if-let [i (java-unmatched-argument ctx alternatives fits)]
+      (report! ctx (nth arg-nodes i) "TSP2345"
+               (str (t/show (nth arg-types i)) " is not assignable to " (java/short-name (nth (:params (first fits)) i)) ", "
+                    (if (= 1 (count fits)) "the parameter" "a parameter") " of " method-name))
+      ;; A union can be accepted by different overloads at runtime.
+      (let [rejected (mapv #(java-rejected-args ctx alternatives (:params %)) fits)]
+        (when (every? seq rejected)
+          (let [closest (->> (map vector (map :params fits) rejected)
+                             (sort-by (fn [[params args]] [(count args) params]))
+                             (take 2))]
+            (report! ctx node "TSP2345"
+                     (str "No overload of " method-name " accepts these arguments. "
+                          (str/join ". " (map java-rejection-summary closest))))))))))
+
 (defn- java-call [ctx node cname mname static? arg-nodes]
   (let [arg-types (mapv #(infer ctx %) arg-nodes)
         ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
@@ -1869,13 +1906,7 @@
       :else
       (let [ok (filter (fn [m] (every? boolean (map #(java-arg-ok? ctx %1 %2) arg-types (:params m)))) fits)]
         (when (empty? ok)
-          ;; report only when every overload rejects the same argument
-          ;; report the first argument that no overload accepts; stay silent when there is no such argument
-          (when-let [i (first (filter (fn [i] (every? #(not (java-arg-ok? ctx (nth arg-types i) (nth (:params %) i))) fits))
-                                      (range (count arg-nodes))))]
-            (report! ctx (nth arg-nodes i) "TSP2345"
-                     (str (t/show (nth arg-types i)) " is not assignable to " (java/short-name (nth (:params (first fits)) i)) ", "
-                          (if (= 1 (count fits)) "the parameter" "a parameter") " of " shown "." mname))))
+          (report-java-argument-mismatch! ctx node (str shown "." mname) arg-nodes arg-types fits))
         (let [cands (if (seq ok) ok fits)
               rets (distinct (map #(java-ret cname %) cands))]
           (if (= 1 (count rets)) (first rets) t/unknown))))))

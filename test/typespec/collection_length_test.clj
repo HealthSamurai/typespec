@@ -107,6 +107,50 @@
             "(s/coll-of (s/coll-of t/never :kind seq? :max-count 0) :kind seq? :min-count 1)"]
            (mapv #(at r %) [5 7 8 9])))))
 
+(deftest partition-by-checks-the-key-and-preserves-sequence-bounds
+  (let [r (checked "(partition-by odd? [1 3 2])
+(first (first (partition-by identity [42])))
+(partition-by nil nil)
+(partition-by (fn [a b] a) [])
+(partition-by (fn [x] (subs x 0)) [1])
+(partition-by identity 42)
+(partition-by)
+(partition-by identity [1] :extra)
+(partition-by {1 nil 2 false} [1 1 2])")
+        ds (:diagnostics r)]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of (s/coll-of int? :kind seq? :min-count 1 :max-count 3) :kind seq? :min-count 1 :max-count 3)"
+            "int?"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of (s/coll-of int? :kind seq? :min-count 1 :max-count 3) :kind seq? :min-count 1 :max-count 3)"]
+           (mapv #(at r %) [2 3 4 5 10])))))
+
+(deftest partition-by-preserves-spec-bounds-from-another-namespace
+  (let [api (parse/parse-string
+             "items.clj"
+             "(ns items (:require [clojure.spec.alpha :as s]))
+(s/fdef items :args (s/cat) :ret (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(defn items [] [\"ant\" \"arc\" \"bee\"])
+(s/fdef bucket :args (s/cat :item string?) :ret string?)
+(defn bucket [item] (subs item 0 1))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [items :as i] [clojure.spec.alpha :as s]))
+(s/def ::group (s/coll-of string? :kind seq? :min-count 1 :max-count 3))
+(s/fdef groups :args (s/cat) :ret (s/coll-of ::group :kind seq? :min-count 1 :max-count 3))
+(defn groups [] (partition-by i/bucket (i/items)))
+(s/fdef heads :args (s/cat) :ret (s/coll-of string? :kind vector? :min-count 1 :max-count 3))
+(defn heads [] (mapv first (partition-by i/bucket (i/items))))
+(doall (partition-by i/bucket [42]))
+(doall (partition-by (fn [a b] a) (i/items)))")
+        ds (:diagnostics (check/check-files [api client] {:strict-nil true}))]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest positional-callbacks-use-tuple-positions-and-collection-lengths
   (let [r (checked "(mapv first [[:a 1] [:b 2]])
 (mapv clojure.core/second [[:a \"ant\"] [:b \"bee\"]])

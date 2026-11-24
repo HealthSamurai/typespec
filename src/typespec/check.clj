@@ -4423,6 +4423,29 @@
      :upper (when (every? :upper parts) (apply max (map :upper parts)))
      :element (t/with-assumption (apply t/union (map :element parts)) (t/assumption source))}))
 
+(defmethod special 'partition-by [ctx node _]
+  (let [[f coll :as args] (args-of node)]
+    (case (count args)
+      1 (do (infer ctx f) t/unknown)
+      2 (let [source (eff ctx (infer ctx coll))]
+          (cond
+            (= t/never source) (do (infer ctx f) t/never)
+            (report-invalid-sequence-args! ctx 'partition-by [coll] [source])
+            (do (infer ctx f) t/unknown)
+
+            :else
+            (let [{:keys [lower upper element]} (sequence-summary ctx source)
+                  group (if (= 0 upper)
+                          (do (infer ctx f) t/never)
+                          (do (apply-fn-node ctx f [element])
+                              (length/with-bounds (coll-of :seq element) 1 upper)))]
+              (t/with-assumption
+               (length/with-bounds (coll-of :seq group) (min 1 lower) upper)
+               (t/assumption source)))))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "partition-by expects 1 or 2 arguments")
+          t/unknown))))
+
 (defmethod special 'doall [ctx node _]
   (let [args (args-of node)
         types (mapv #(eff ctx (infer ctx %)) args)

@@ -39,6 +39,7 @@
     typespec.review-fixes-test
     typespec.string-contracts-test
     typespec.java-generic-return-test
+    typespec.java-varargs-test
     typespec.declaration-resources-test
     typespec.pg-connection-regression-test
     typespec.pg-json-contract-test

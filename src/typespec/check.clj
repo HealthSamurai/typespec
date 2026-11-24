@@ -1851,6 +1851,7 @@
 (defn- java-call [ctx node cname mname static? arg-nodes]
   (let [arg-types (mapv #(infer ctx %) arg-nodes)
         ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
+        ;; Clojure calls the JVM descriptor directly, with one array argument for varargs.
         fits (filter #(= (count arg-nodes) (count (:params %))) ms)
         shown (java/short-name cname)]
     (cond
@@ -1861,7 +1862,6 @@
                                  (str shown " has no " (when static? "static ") "method " mname
                                       (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
                         t/unknown))
-      (some :varargs ms) t/unknown
       (empty? fits) (do (report! ctx node "TSP2554"
                                  (str shown "." mname " takes " (str/join " or " (distinct (map #(count (:params %)) ms)))
                                       " argument(s), got " (count arg-nodes)))

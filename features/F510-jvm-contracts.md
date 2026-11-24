@@ -121,18 +121,18 @@ Reader поставляет сигнатуры обеих трёхаргумен
 
 Такую ошибку важно отличать от невозможности прочитать сам класс. В текущем reader эти ситуации ещё не оформлены единым типизированным результатом.
 
-### 4. Пограничный случай: метод прочитан, проверка неполна — сейчас
+### 4. Чтение параметра Java varargs
 
 ```clojure
 (ns sample.format)
 
+(String/format "%s" (into-array String ["hello"]))
+;; String[] совместим с JVM-параметром Object[].
 (String/format "%s" "hello")
-;; Сейчас: reader видит format и :varargs true,
-;; но java-call возвращает unknown для имени с varargs-перегрузкой.
-;; Отсутствие ошибки НЕ означает проверку аргументов format.
+;; TSP2345 на строковом аргументе.
 ```
 
-Это пример различия «контракт доступен» и «вызов проверен». Даже обычная перегрузка того же имени сейчас попадает под ранний выход, если среди найденных методов есть varargs. F510 должен передавать признак полноты, а не скрывать его.
+Reader передаёт descriptor с массивом и признак `:varargs`. Чекер проверяет этот параметр по правилам [F520](F520-java-overloads.md).
 
 ### 5. Недоступная библиотека — planned
 
@@ -182,7 +182,7 @@ Reader поставляет сигнатуры обеих трёхаргумен
 | `System/getenv` → `.length` | TSP2531; источник — ручной nullable-список, не аннотации | Есть в `test/features` |
 | Public inherited method / private method | Первый доступен с правильным declaring, второй не появляется | Новый reader fixture |
 | Одно имя static/instance | Фильтрация не смешивает контракты | Новый reader fixture |
-| `String/format` | Текущий unknown, даже при доступном descriptor; не считать checked | Новый regression тест текущего ограничения |
+| `String/format` | JVM-параметр `Object[]` участвует в проверке аргументов | Есть в `java-varargs-test`, включая массив из Spec другого namespace |
 | Класс отсутствует / отсутствует зависимость его метода | Разные причины reader-ошибки; AST position + unknown downstream | Planned fixture и диагностики |
 | Static initializer пишет marker/бросает исключение | Получение контракта не создаёт marker и не запускает initializer | Новый изолированный Java fixture |
 | Две версии класса в разных JAR; смена classpath | Контракт выбран по порядку, provenance виден, кеш не устарел | Planned integration тест |

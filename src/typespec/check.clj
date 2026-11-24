@@ -1912,15 +1912,17 @@
 (defn- java-call [ctx node cname mname static? arg-nodes]
   (let [arg-types (mapv #(infer ctx %) arg-nodes)
         ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
+        field-class (when (and (empty? arg-nodes)
+                               (if static? (empty? ms) (not-any? #(empty? (:params %)) ms)))
+                      (java/field-class cname mname static?))
         shown (java/short-name cname)]
     (cond
       (not (java/has-class? cname)) t/unknown
-      (empty? ms) (if-let [class-name (when (empty? arg-nodes) (java/field-class cname mname static?))]
-                    (if static? (java-field-type class-name) t/unknown)
-                    (do (report! ctx (first (:children node)) "TSP2339"
-                                 (str shown " has no " (when static? "static ") "method " mname
-                                      (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
-                        t/unknown))
+      field-class (java-field-type field-class)
+      (empty? ms) (do (report! ctx (first (:children node)) "TSP2339"
+                               (str shown " has no " (when static? "static ") "method " mname
+                                    (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
+                      t/unknown)
       :else
       (let [candidates (checked-java-overloads ctx node (str shown "." mname) arg-nodes arg-types ms)
             rets (distinct (map #(java-ret cname %) candidates))]
@@ -1946,15 +1948,43 @@
         (if (= cname "java.lang.Object") {:t :class :name cname} (t/class-type cname)))
       t/unknown)))
 
+(defn- java-receiver-type [ctx target]
+  (let [actual (infer ctx target)
+        hinted (check-hint! ctx target actual "type of the receiver")
+        env (:env ctx)]
+    ;; Compatible hints must not erase known nullability or its provenance.
+    (eff ctx (if (and hinted
+                      (or (#{:unknown :any} (:t actual))
+                          (not (t/sub? env (t/remove-nil env actual) hinted))))
+               hinted actual))))
+
+(defn- check-nil-receiver! [ctx target ty]
+  (when (t/nilable? (:env ctx) ty)
+    (report! ctx target "TSP2531"
+             (str (if (= :nil (:op target)) "Receiver" (parse/unparse target))
+                  (if (= :nil (:t ty)) " is nil" " may be nil")
+                  (when-let [w (or (:null-return (meta ty)) (when (= :sym (:op target)) (get-in ctx [:why (:val target)])))]
+                    (str ": " w))))))
+
+(defn- instance-field-call [ctx node fname]
+  (let [[head target & more] (:children node)]
+    (if (or (nil? target) (seq more))
+      (do (run! #(infer ctx %) (args-of node))
+          (report! ctx node "TSP2554" (str ".-" fname " expects one receiver"))
+          t/unknown)
+      (let [ty (java-receiver-type ctx target)
+            cname (if (class-symbol-name ctx target) "java.lang.Class" (class-of ctx ty))]
+        (check-nil-receiver! ctx target ty)
+        (if (and cname (java/has-class? cname))
+          (if-let [class-name (java/field-class cname fname false)]
+            (java-field-type class-name)
+            (do (report! ctx head "TSP2339" (str (java/short-name cname) " has no public instance field " fname))
+                t/unknown))
+          t/unknown)))))
+
 (defn- method-call [ctx node mname]
   (let [[_ target & arg-nodes] (:children node)
-        actual (infer ctx target)
-        hinted (check-hint! ctx target actual "type of the receiver")
-        ;; Compatible hints must not erase known nullability or its provenance.
-        tty (eff ctx (if (and hinted
-                             (or (#{:unknown :any} (:t actual))
-                                 (not (t/sub? (:env ctx) (t/remove-nil (:env ctx) actual) hinted))))
-                      hinted actual))
+        tty (java-receiver-type ctx target)
         env (:env ctx)
         cname (class-of ctx tty)]
     (cond
@@ -1968,11 +1998,7 @@
       (nil? cname) (do (run! #(infer ctx %) arg-nodes) t/unknown)
       :else
       (do
-        (when (t/nilable? env tty)
-          (report! ctx target "TSP2531"
-                   (str (parse/unparse target) " may be nil"
-                        (when-let [w (or (:null-return (meta tty)) (when (= :sym (:op target)) (get-in ctx [:why (:val target)])))]
-                          (str ": " w)))))
+        (check-nil-receiver! ctx target tty)
         (when (and (java/has-class? cname) (not (compiler-knows? ctx target)) (seq (java/methods-named cname mname false)))
           (let [hint (java/short-name cname)]
             (report! ctx node "TSP7023"
@@ -5464,7 +5490,7 @@
                     :else ::none)]
         (cond
           (not= ::none r) r
-          (and (nil? (namespace sym)) (str/starts-with? n ".-")) (do (run! #(infer ctx %) args) t/unknown)
+          (and (nil? (namespace sym)) (str/starts-with? n ".-")) (instance-field-call ctx node (subs n 2))
           (and (nil? (namespace sym)) (str/starts-with? n ".") (> (count n) 1) (not= ".." n)) (method-call ctx node (subs n 1))
           (and (nil? (namespace sym)) (str/ends-with? n ".") (> (count n) 1))
           (constructor-call ctx node (t/resolve-class (:imports file) (symbol (subs n 0 (dec (count n))))) args)

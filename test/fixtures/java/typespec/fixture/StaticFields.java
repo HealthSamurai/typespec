@@ -16,4 +16,18 @@ public final class StaticFields {
     private static String[] failIfInitialized() {
         throw new AssertionError("Typespec should only read field metadata");
     }
+
+    public static final class Members {
+        public int size = 1;
+        public int alt = 2;
+        public String[] labels = {"value"};
+
+        public String size() {
+            return "method";
+        }
+
+        public String alt(int n) {
+            return "method";
+        }
+    }
 }

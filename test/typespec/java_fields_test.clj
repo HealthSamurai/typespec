@@ -33,6 +33,54 @@ Integer/TYPE
             "[Ljava.lang.Integer;" "Class" "string?"]
            (mapv #(main/type-at result "fields.clj" % 1) [2 3 4 5 6 9 10 14 15])))))
 
+(deftest instance-fields-check-the-receiver-and-return-the-declared-type
+  (let [source "(ns fields (:import [java.awt Point] [java.io File]))
+(.-x (Point. 1 2))
+(.x (Point. 1 2))
+(inc (.-x (Point. 1 2)))
+(alength (.-x (Point. 1 2)))
+(.-missing (Point.))
+(.-separator (File. \"x\"))
+(.-separator File)
+(.-x Point)
+(.-x nil)
+(.-x (Point.) 0)
+(.-x)
+(.-x (java.awt.Rectangle. 1 2 3 4))
+(let [Point (Point.)] (.-x Point))
+(defn dynamic-field [target] (.-x target))"
+        result (check/check-files [(parse/parse-string "fields.clj" source)] {})]
+    (is (= [[5 10 "TSP2345"] [6 2 "TSP2339"] [7 2 "TSP2339"] [8 2 "TSP2339"]
+            [9 2 "TSP2339"] [10 6 "TSP2531"] [11 1 "TSP2554"] [12 1 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["int" "int" "int" "int"]
+           (mapv #(main/type-at result "fields.clj" % 1) [2 3 13 14])))))
+
+(deftest instance-field-receivers-respect-strict-nil-and-guards
+  (let [source "(ns fields (:import java.awt.Point))
+(defn unchecked [^Point p] (.-x p))
+(defn guarded [^Point p] (when (some? p) (.-x p)))"
+        result (check/check-files [(parse/parse-string "fields.clj" source)] {:strict-nil true})]
+    (is (= [[2 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
+(deftest instance-field-types-cross-namespace-contracts
+  (let [files [(parse/parse-string
+                "provider.clj"
+                "(ns provider (:require [clojure.spec.alpha :as s]) (:import java.awt.Point))
+(s/fdef point :args (s/cat) :ret #(instance? Point %))
+(defn point [] (Point. 1 2))")
+               (parse/parse-string
+                "consumer.clj"
+                "(ns consumer (:require [provider :as p]))
+(inc (.-x (p/point)))
+(alength (.-x (p/point)))")]
+        result (check/check-files files {})]
+    (is (= [["consumer.clj" 3 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
 (deftest reference-fields-are-platform-types
   (let [source "(ns fields (:import java.nio.charset.StandardCharsets))
 (.name StandardCharsets/UTF_8)"
@@ -71,18 +119,25 @@ Integer/TYPE
         (try
           (let [file (parse/parse-string
                       "fixture.clj"
-                      "(ns example (:import typespec.fixture.StaticFields))
+                      "(ns example (:import [typespec.fixture StaticFields StaticFields$Members]))
 StaticFields/number
 (StaticFields/number)
 StaticFields/text
 (StaticFields/text)
 (StaticFields/text 1)
 StaticFields/labels
-(aset StaticFields/labels 0 42)")
+(aset StaticFields/labels 0 42)
+(.-size (StaticFields$Members.))
+(.size (StaticFields$Members.))
+(.alt (StaticFields$Members.))
+(.alt (StaticFields$Members.) 1)
+(.-labels (StaticFields$Members.))
+(aset (.-labels (StaticFields$Members.)) 0 42)")
                 result (check/check-files [file] {})]
-            (is (= ["int" "String" "String" "int" "[Ljava.lang.String;"]
-                   (mapv #(main/type-at result "fixture.clj" % 1) [2 3 4 6 7])))
-            (is (= [[5 "TSP2554"] [8 "TSP2345"]]
+            (is (= ["int" "String" "String" "int" "[Ljava.lang.String;"
+                    "int" "String" "int" "String" "[Ljava.lang.String;"]
+                   (mapv #(main/type-at result "fixture.clj" % 1) [2 3 4 6 7 9 10 11 12 13])))
+            (is (= [[5 "TSP2554"] [8 "TSP2345"] [14 "TSP2345"]]
                    (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
                 (pr-str (:diagnostics result))))
           (finally (.setContextClassLoader thread original))))

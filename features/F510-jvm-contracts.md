@@ -183,6 +183,7 @@ Reader передаёт descriptor с массивом и признак `:varar
 | `System/getenv` → `.length` | TSP2531; источник — ручной nullable-список, не аннотации | Есть в `test/features` |
 | Public inherited method / private method | Первый доступен с правильным declaring, второй не появляется | Новый reader fixture |
 | Public static field | Объявленный JVM-тип передаётся в проверку без инициализации класса | Есть в `java-fields-test`, включая static-массив и совпадающее имя метода |
+| Public instance field | `.-field` использует объявленный JVM-тип поля. `.field` читает поле при отсутствии метода без аргументов | Есть в `java-fields-test`, включая nil, Spec и совпадающие имена |
 | Одно имя static/instance | Фильтрация не смешивает контракты | Новый reader fixture |
 | `String/format` | JVM-параметр `Object[]` участвует в проверке аргументов | Есть в `java-varargs-test`, включая массив из Spec другого namespace |
 | Класс отсутствует / отсутствует зависимость его метода | Разные причины reader-ошибки; AST position + unknown downstream | Planned fixture и диагностики |

@@ -5124,16 +5124,23 @@
           (unchecked-hof! ctx xf "into: transducer input and output types not checked" :unsupported-function)
           nil))))
 
-(defn- into-transformed [ctx target out]
+(defn- into-transformed [ctx target out & [{:keys [upper] :as output}]]
   (if (= t/never out)
     (dissoc target :fresh)
     (let [out (widen (dissoc out :fresh))]
       (apply t/union
              (for [m (t/members (:env ctx) target)]
                (case (:t m)
-                 :coll (update (dissoc m :fresh :items :min-count :max-count) :of t/union out)
+                 :coll (let [result (update (dissoc m :fresh :items :min-count :max-count) :of t/union out)]
+                         (if output
+                           (let [[target-min target-max] (length/bounds m)]
+                             (length/with-bounds result target-min
+                                                 (when (and target-max upper) (+' target-max upper))))
+                           result))
                  (:map :map-of) (t/prim :map)
-                 :nil (t/union t/nil-t (coll-of :seq out))
+                 :nil (t/union t/nil-t
+                               (cond-> (coll-of :seq out)
+                                 output (length/with-bounds 1 upper)))
                  :prim (if (#{:vector :set :seq :map :coll} (:name m)) m t/unknown)
                  :never t/never
                  :any t/any
@@ -5160,7 +5167,7 @@
               out (get output :element t/unknown)]
           (when-let [bad (unsupported-sequence-member ctx source)]
             (report! ctx from "TSP2345" (str "into cannot reduce " (t/show bad))))
-          (if (= t/never source) t/never (into-transformed ctx target out)))
+          (if (= t/never source) t/never (into-transformed ctx target out output)))
       (do (run! #(infer ctx %) args)
           (report! ctx node "TSP2554" "into expects zero to three arguments")
           t/unknown))))

@@ -29,10 +29,10 @@
         result (check-source (str/join "\n" forms))
         start (inc (count (str/split-lines spec-source)))]
     (is (empty? (codes result)) (pr-str (:diagnostics result)))
-    (is (= ["(s/coll-of string? :kind vector?)"
-            "(s/coll-of (t/or keyword? string?) :kind vector?)"
-            "(s/coll-of string? :kind set?)"
-            "(s/coll-of string? :kind vector?)"
+    (is (= ["(s/coll-of string? :kind vector? :max-count 2)"
+            "(s/coll-of (t/or keyword? string?) :kind vector? :min-count 1 :max-count 2)"
+            "(s/coll-of string? :kind set? :max-count 2)"
+            "(s/coll-of string? :kind vector? :max-count 2)"
             "(s/coll-of t/never :kind vector?)"
             "(s/coll-of t/never :kind vector?)"
             "(s/coll-of t/never :kind vector?)"]
@@ -120,10 +120,10 @@
     (is (= [[9 "TSP2345"] [10 "TSP2554"] [11 "TSP2554"] [12 "TSP2554"] [13 "TSP210-01"]]
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
-    (is (= ["(s/coll-of string? :kind vector?)"
-            "(s/coll-of string? :kind vector?)"
+    (is (= ["(s/coll-of string? :kind vector? :max-count 1)"
+            "(s/coll-of string? :kind vector? :max-count 2)"
             "(s/coll-of keyword? :kind vector?)"
-            "(s/coll-of string? :kind vector?)"]
+            "(s/coll-of string? :kind vector? :max-count 1)"]
            (mapv #(main/type-at result "callbacks.clj" % 1) (range 5 9))))
     (is (= "nil?" (main/type-at result "callbacks.clj" 14 1)))))
 
@@ -155,11 +155,11 @@
                              {:strict-nil true})
         ds (:diagnostics result)]
     (is (= [[8 "TSP2345"]] (mapv (juxt (comp :row :pos) :code) ds)) (pr-str ds))
-    (is (= ["(s/coll-of boolean? :kind vector?)"
+    (is (= ["(s/coll-of boolean? :kind vector? :max-count 1)"
             "(s/coll-of keyword? :kind vector?)"
-            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of string? :kind vector? :max-count 2)"
             "(s/coll-of keyword? :kind vector?)"
-            "(s/coll-of string? :kind vector?)"]
+            "(s/coll-of string? :kind vector? :max-count 2)"]
            (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 9 10])))))
 
 (deftest into-keep-transducers-use-specs-from-another-namespace
@@ -259,10 +259,10 @@
     (is (= [[9 "TSP2345"] [10 "TSP2345"] [13 "TSP210-01"]]
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
-    (is (= ["(s/coll-of string? :kind vector?)"
+    (is (= ["(s/coll-of string? :kind vector? :max-count 2)"
             "nil?"
             "nil?"
-            "(s/coll-of int? :kind vector?)"
+            "(s/coll-of int? :kind vector? :max-count 3)"
             "(s/coll-of keyword? :kind vector?)"
             "(s/coll-of t/never :kind vector?)"]
            (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 8 11 12])))))
@@ -301,13 +301,13 @@
     (is (= [[12 "TSP2345"] [13 "TSP2554"] [15 "TSP210-01"]]
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
-    (is (= ["(s/coll-of int? :kind vector?)"
-            "(s/coll-of string? :kind vector?)"
-            "(s/coll-of (t/or string? int?) :kind vector?)"
+    (is (= ["(s/coll-of int? :kind vector? :max-count 3)"
+            "(s/coll-of string? :kind vector? :max-count 3)"
+            "(s/coll-of (t/or string? int?) :kind vector? :max-count 3)"
             "nil?"
             "nil?"
             "nil?"
-            "(s/coll-of boolean? :kind vector?)"
+            "(s/coll-of boolean? :kind vector? :max-count 2)"
             "(s/coll-of keyword? :kind vector?)"]
            (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 8 9 10 11 14])))))
 
@@ -347,11 +347,11 @@
     (is (= [[12 "TSP2345"] [13 "TSP2345"] [14 "TSP2345"] [15 "TSP330-02"] [16 "TSP210-01"]]
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
-    (is (= ["(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 2) :kind vector?)"
-            "(s/coll-of int? :kind vector?)"
-            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
-            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 1) :kind vector?)"
-            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
+    (is (= ["(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 2) :kind vector? :max-count 3)"
+            "(s/coll-of int? :kind vector? :max-count 1)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector? :max-count 3)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1 :max-count 1) :kind vector? :max-count 3)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector? :max-count 3)"
             "nil?"
             "nil?"]
            (mapv #(main/type-at result "callbacks.clj" % 1) (range 5 12))))))
@@ -389,9 +389,9 @@
     (is (= [[8 "TSP2345"] [9 "TSP2554"] [11 "TSP210-01"]]
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
-    (is (= ["(s/coll-of string? :kind vector?)"
-            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
-            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector?)"
+    (is (= ["(s/coll-of string? :kind vector? :max-count 1)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector? :max-count 3)"
+            "(s/coll-of (s/coll-of int? :kind vector? :min-count 1) :kind vector? :max-count 2)"
             "nil?"]
            (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 10])))))
 
@@ -425,9 +425,9 @@
                         {:strict-nil true})
         ds (:diagnostics r)]
     (is (= [[9 "TSP210-01"]] (mapv (juxt (comp :row :pos) :code) ds)) (pr-str ds))
-    (is (= ["(s/coll-of (s/nilable boolean?) :kind vector?)"
-            "(s/coll-of (s/nilable boolean?) :kind vector?)"
-            "(s/coll-of int? :kind vector?)"
+    (is (= ["(s/coll-of (s/nilable boolean?) :kind vector? :max-count 5)"
+            "(s/coll-of (s/nilable boolean?) :kind vector? :max-count 5)"
+            "(s/coll-of int? :kind vector? :max-count 4)"
             "nil?"]
            (mapv #(main/type-at r "callbacks.clj" % 1) (range 5 9))))))
 
@@ -472,17 +472,17 @@
     (is (= [[13 "TSP2345"] [14 "TSP2345"] [15 "TSP2345"] [16 "TSP2345"]]
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
-    (is (= ["(s/coll-of (s/nilable int?) :kind vector?)"
-            "(s/coll-of (t/or int? boolean?) :kind vector?)"
-            "(s/coll-of int? :kind vector?)"
-            "(s/coll-of int? :kind vector?)"
-            "(s/coll-of int? :kind vector?)"
+    (is (= ["(s/coll-of (s/nilable int?) :kind vector? :max-count 3)"
+            "(s/coll-of (t/or int? boolean?) :kind vector? :max-count 3)"
+            "(s/coll-of int? :kind vector? :max-count 1)"
+            "(s/coll-of int? :kind vector? :max-count 1)"
+            "(s/coll-of int? :kind vector? :max-count 1)"
             "nil?"
             "nil?"
-            "(s/coll-of vector? :kind vector?)"
-            "(s/coll-of t/unknown :kind vector?)"
-            "(s/coll-of t/unknown :kind vector?)"
-            "(s/coll-of t/unknown :kind vector?)"]
+            "(s/coll-of vector? :kind vector? :max-count 1)"
+            "(s/coll-of t/unknown :kind vector? :max-count 1)"
+            "(s/coll-of t/unknown :kind vector? :max-count 1)"
+            "(s/coll-of t/unknown :kind vector? :max-count 1)"]
            (mapv #(main/type-at r "callbacks.clj" % 1) (concat (range 5 13) [18 19 20]))))))
 
 (deftest into-interpose-uses-spec-bounds-from-another-namespace
@@ -519,10 +519,10 @@
         result (check-source (str/join "\n" forms))
         start (inc (count (str/split-lines spec-source)))]
     (is (empty? (codes result)) (pr-str (:diagnostics result)))
-    (is (= ["(s/coll-of string? :kind vector?)"
-            "(s/coll-of int? :kind set?)"
-            "(s/coll-of int? :kind vector?)"
-            "(s/coll-of int? :kind vector?)"
+    (is (= ["(s/coll-of string? :kind vector? :max-count 2)"
+            "(s/coll-of int? :kind set? :max-count 2)"
+            "(s/coll-of int? :kind vector? :max-count 1)"
+            "(s/coll-of int? :kind vector? :max-count 2)"
             "(s/coll-of int? :kind vector?)"
             "(s/coll-of t/never :kind vector?)"]
            (mapv #(main/type-at result "callbacks.clj" % 1) (range start (+ start (count forms))))))))

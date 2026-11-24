@@ -161,8 +161,8 @@
     (is (= ["(s/coll-of keyword? :kind vector? :min-count 2 :max-count 2)"
             "(s/coll-of string? :kind vector? :min-count 2 :max-count 2)"
             "(s/coll-of boolean? :kind vector? :min-count 1 :max-count 1)"
-            "(s/coll-of (s/nilable int?) :kind vector?)"
-            "(s/coll-of int? :kind vector?)"]
+            "(s/coll-of (s/nilable int?) :kind vector? :max-count 3)"
+            "(s/coll-of int? :kind vector? :max-count 3)"]
            (mapv #(at r %) (range 2 7))))))
 
 (deftest positional-callbacks-use-specs-from-another-namespace
@@ -487,6 +487,52 @@
             "(s/coll-of java.lang.Character :kind vector? :min-count 2 :max-count 2)"
             "nil?" "t/never" "(s/coll-of int? :kind set?)"]
            (mapv #(at r %) (range 2 8))))))
+
+(deftest into-transducer-results-retain-collection-bounds
+  (let [r (checked "(into [0] (take 1) [10 20])
+(into #{0} (map (fn [_] 0)) [10 20])
+(into nil (map inc) [10 20])
+(into nil (take 0) [10 20])
+(into [0] cat [[1 2]])
+(first (into [0] (filter (fn [_] false)) [10 20]))
+(nth (into [] (take 1) [10 20]) 1)
+(nth (into [0] (interpose 0) [10 20]) 4)
+(s/def ::input (s/coll-of int? :kind seq? :min-count 1 :max-count 2))
+(s/def ::result (s/coll-of int? :kind seq? :min-count 1 :max-count 3))
+(s/fdef prepend :args (s/cat :items ::input) :ret ::result)
+(defn prepend [items] (into items (take 1) [10 20]))
+(into [0] identity [10 20])")
+        ds (:diagnostics r)]
+    (is (= [[8 "TSP330-02"] [9 "TSP330-02"] [14 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of int? :kind vector? :min-count 1 :max-count 2)"
+            "(s/coll-of int? :kind set? :min-count 1 :max-count 3)"
+            "(s/nilable (s/coll-of int? :kind seq? :min-count 1 :max-count 2))"
+            "nil?"
+            "(s/coll-of int? :kind vector? :min-count 1)"
+            "0"]
+           (mapv #(at r %) (range 2 8))))))
+
+(deftest into-transducer-bounds-use-specs-from-another-namespace
+  (let [api (parse/parse-string
+             "growth.clj"
+             "(ns growth (:require [clojure.spec.alpha :as s]))
+(s/fdef pair :args (s/cat) :ret (s/coll-of int? :kind vector? :min-count 2 :max-count 2))
+(defn pair [] [10 20])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [growth :as g] [clojure.spec.alpha :as s]))
+(s/fdef prefix :args (s/cat) :ret (s/coll-of int? :kind vector? :min-count 1 :max-count 2))
+(defn prefix [] (into [0] (take 1) (g/pair)))
+(s/fdef items :args (s/cat) :ret (s/coll-of int? :kind set? :min-count 1 :max-count 3))
+(defn items [] (into #{0} (map inc) (g/pair)))
+(nth (into [] (take 1) (g/pair)) 1)
+(nth (into [0] (interpose 0) (g/pair)) 4)")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 6 "TSP330-02"] ["client.clj" 7 "TSP330-02"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
 
 (deftest vec-keeps-bounds-and-known-positions
   (let [r (checked "(vec nil)

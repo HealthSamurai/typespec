@@ -964,11 +964,18 @@
 
 ;; ---- function calls ----
 
+(defn- call-shape [ftype]
+  (or (::recursive-callback-shape (meta ftype)) ftype))
+
 (defn- matching-arities [ftype n]
-  (let [arities (:arities ftype)]
-    (if (::t/dispatch (meta ftype))
-      (when-let [arity (t/dispatch-arity arities n)] [arity])
-      (filter #(t/arity-fits? % n) arities))))
+  (let [arities (:arities ftype)
+        fits (if (::t/dispatch (meta ftype))
+               (when-let [arity (t/dispatch-arity arities n)] [arity])
+               (filter #(t/arity-fits? % n) arities))]
+    (if-let [shape (::recursive-callback-shape (meta ftype))]
+      (when-let [implemented (seq (matching-arities shape n))]
+        (or (seq fits) implemented))
+      fits)))
 
 (defn- keyword-parameter [m k]
   (some (fn [[declared ty]] (when (= (name declared) (name k)) ty))
@@ -1179,7 +1186,7 @@
   (if (= :all (:t ftype))
     (call-generic ctx node fname ftype arg-nodes typed-args)
     (let [n (count arg-nodes)
-        ars (:arities ftype)
+          ars (:arities (call-shape ftype))
           fits (matching-arities ftype n)
         arg-types (or typed-args (infer-call-arguments ctx node arg-nodes fits))]
     (cond
@@ -1628,6 +1635,19 @@
              :ret (let [ret (infer-body c body)] (if (seq contracts) (eff ctx ret) ret))}
       kwargs (assoc :kwargs kwargs))))
 
+(defn- recursive-callback-type [ctx bodies positional? expected]
+  (let [{:keys [env file]} ctx
+        arities (mapv (fn [{:keys [fixed rest]}]
+                        (cond-> {:params (mapv #(env/pattern-type env file %) fixed)
+                                 :ret t/unknown}
+                          (= :map (:op rest)) (assoc :kwargs (env/pattern-type env file rest))
+                          (and rest (not= :map (:op rest))) (assoc :rest t/unknown)))
+                      bodies)
+        shape (with-meta {:t :fn :arities arities} {::t/dispatch positional?})]
+    ;; The callback's caller supplies types for its own calls. Recursion can
+    ;; also use other arities implemented by the function.
+    (if expected (vary-meta expected assoc ::recursive-callback-shape shape) shape)))
+
 (defn- infer-callback [ctx node expected]
   (let [bodies (fn-bodies node)
         shapes (mapv (fn [i {:keys [fixed rest]}]
@@ -1640,7 +1660,7 @@
         name-node (second (:children node))
         ctx (cond-> (dissoc ctx :recur-types :load-time?)
               (and (= :list (:op node)) (= :sym (:op name-node)))
-              (bind (:val name-node) (or expected {:t :fn :arities (mapv #(assoc % :ret t/unknown) shapes)})))
+              (bind (:val name-node) (recursive-callback-type ctx bodies positional? expected)))
         ft (with-meta {:t :fn :arities (mapv (fn [i branch]
                                              (infer-fn-branch ctx branch (map second (get contracts i))))
                                            (range) bodies)}
@@ -3104,7 +3124,8 @@
             expected (when (and exact? (callback-node? ctx f))
                        {:t :fn :arities (mapv #(hash-map :params (into prefix-types %) :ret t/unknown) spreads)})
             ftype (t/resolve-t (:env ctx) (infer ctx f expected))
-            [arity & overloads] (:arities ftype)
+            shape (call-shape ftype)
+            [arity & overloads] (:arities shape)
             tail-members (when-not exact? (t/members (:env ctx) (eff ctx tail-type)))
             variadic? (and (not exact?) (= :fn (:t ftype)) (:rest arity) (not (:kwargs arity))
                            (empty? overloads) (<= (t/arity-minimum arity) (count prefix))
@@ -3136,9 +3157,10 @@
                                     spreads tail-members))
                 element-node {:op :spread :pos (:pos tail) :synthetic true
                               :display (str "element of " (parse/unparse tail))}
-                ftype (if (seq prefix) ftype (assoc ftype :arities [(dissoc arity :map-edits)]))]
+                ;; The representative call does not fix the length of the spread.
+                shape (if (seq prefix) shape (assoc shape :arities [(dissoc arity :map-edits)]))]
             (t/with-assumption
-             (call-fn ctx node (str "apply " (parse/unparse f)) ftype
+             (call-fn ctx node (str "apply " (parse/unparse f)) shape
                       (conj prefix element-node) (conj prefix-types element))
              (t/assumption tail-type)))
 

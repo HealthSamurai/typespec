@@ -211,6 +211,43 @@
   (is (= ["TSP2345"] (codes (check-source "(mapv #(+ %1 %2) [1 2] [\"a\" \"b\"])"))))
   (is (empty? (codes (check-source "(mapv #(+ %1 %2) [1 2] [3 4])")))))
 
+(deftest recursive-callback-calls-use-the-implemented-arities
+  (let [res (check-source
+             "(map (fn node [x & [option]] (if option (+ x option) (node x 1))) [1 2])
+(map (fn node [x & [option]] (if option x (apply node [x 1]))) [1 2])
+(map (fn node ([x] (node x 1)) ([x y] (str x y))) [1])
+(use-name (fn node [name & [option]] (if (str/blank? name) (node \"Ada\") name)))
+(use-name (fn node [name & [option]] (if (str/blank? name) (use-name node) name)))
+(map (fn node [x & [option]] (node)) [1 2])
+(map (fn node [x] (node x 1)) [1 2])
+(map (fn node [x & [option]] (apply node [])) [1 2])
+(map (fn node [^String x & [option]] (if option x (node 42 :opt))) [\"a\"])")
+        ds (:diagnostics res)]
+    (is (= [[10 "TSP2554"] [11 "TSP2554"] [12 "TSP2554"] [13 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= "node expects 1+ argument(s), got 0" (get-in ds [0 :message])))))
+
+(deftest recursive-callback-uses-context-from-another-namespace
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns visitors.api (:require [clojure.spec.alpha :as s]))
+(s/def ::visitor (s/fspec :args (s/cat :name string?) :ret string?))
+(s/fdef visit :args (s/cat :f ::visitor) :ret string?)
+(defn visit [f] (f \"Ada\"))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns visitors.client (:require [visitors.api :as api] [clojure.string :as str]))
+(api/visit (fn step [^String name & [option]]
+  (if option name (str (step name :present)))))
+(api/visit (fn step [^String name & [option]]
+  (if option name (str (step 42 :present)))))
+(api/visit (fn step [name & [option]] (str/upper-case name)))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest map-indexed-infers-the-callback-and-lazy-result
   (let [result (check-source "(clojure.core/map-indexed #(str (inc %1) (str/upper-case %2)) [\"abc\"])
 (->> [\"abc\"] (map-indexed #(str %1 %2)) (into []))

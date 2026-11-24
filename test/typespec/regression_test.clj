@@ -36,6 +36,7 @@
     typespec.generic-extern-test
     typespec.generic-maps-test
     typespec.macro-contracts-test
+    typespec.reader-test
     typespec.review-fixes-test
     typespec.string-contracts-test
     typespec.java-fields-test

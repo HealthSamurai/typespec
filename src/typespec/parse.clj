@@ -17,7 +17,7 @@
        (= :sym (:op (first (:children d))))
        (contains? directive-heads (:val (first (:children d))))))
 
-(declare convert)
+(declare convert node->data)
 
 (defn- convert-seq
   "Converts sibling nodes. A `#_(t/...)` form is not dropped: it becomes a directive on the next form."
@@ -33,21 +33,30 @@
           (= :uneval tag) (let [c (first (remove #(skip-tags (n/tag %)) (n/children x)))
                                 d (when c (convert c opts))]
                             (recur more (cond-> pending (directive? d) (conj d)) out))
-          :else (let [c (convert x opts)]
-                  (if (nil? c)
-                    (recur more pending out)
-                    (recur more [] (conj out (cond-> c (seq pending) (assoc :directives pending)))))))))))
+          :else (let [c (convert x opts)
+                      [form & following] (if (= :splice (:op c)) (:children c) [c])]
+                  (if form
+                    (recur more []
+                           (into (conj out (cond-> form
+                                             (seq pending) (update :directives #(into pending %))))
+                                 following))
+                    (recur more pending out))))))))
 
-(defn- reader-cond [x opts]
+(defn- reader-macro [x opts]
   (let [[tok form] (remove #(skip-tags (n/tag %)) (n/children x))
-        t (try (n/sexpr tok) (catch Exception _ nil))]
-    (cond
-      (and (= '? t) (= :list (n/tag form)))
-      (let [kvs (partition 2 (convert-seq (n/children form) opts))
-            m (into {} (map (fn [[k v]] [(:val k) v])) kvs)]
-        (or (get m :clj) (get m :default)))
-      (= '?@ t) nil
-      :else {:op :opaque :pos (npos x)})))
+        marker (when tok (n/string tok))]
+    (if (and (#{"?" "?@"} marker) form (= :list (n/tag form)))
+      (let [branches (remove #(or (skip-tags (n/tag %)) (= :uneval (n/tag %)))
+                             (n/children form))]
+        (when-let [branch (some (fn [[feature value]]
+                                 (when (#{":clj" ":default"} (n/string feature)) value))
+                               (partition 2 branches))]
+          (let [selected (convert branch opts)]
+            (cond
+              (or (= "?" marker) (nil? selected)) selected
+              (#{:list :vector} (:op selected)) {:op :splice :children (:children selected)}
+              :else {:op :opaque :pos (npos x)}))))
+      {:op :opaque :pos (npos x)})))
 
 (defn- template-node [node opts depth]
   (let [tag (n/tag node)
@@ -91,7 +100,7 @@
               :children (into [{:op :sym :val 'clojure.core/deref :pos pos}] (convert-seq (n/children x) opts))}
       :regex {:op :regex :pos pos}
       :namespaced-map (some-> (last (convert-seq (n/children x) opts)) (assoc :pos pos))
-      :reader-macro (reader-cond x opts)
+      :reader-macro (reader-macro x opts)
       {:op :opaque :pos pos})))
 
 (defn- parse-ns-form [form]
@@ -124,7 +133,9 @@
         ns-node (first (filter #(and (= :list (n/tag %))
                                      (= 'ns (try (n/sexpr (first (n/children %))) (catch Exception _ nil))))
                                (n/children root)))
-        info (if ns-node (parse-ns-form (n/sexpr ns-node dummy)) {:ns 'user :aliases {} :refers {} :imports {}})
+        info (if ns-node
+               (parse-ns-form (node->data (convert ns-node dummy)))
+               {:ns 'user :aliases {} :refers {} :imports {}})
         ;; Like ns imports, literal top-level imports are collected file-wide;
         ;; source-order rebinding is not modeled. Do not evaluate forms
         ;; (in particular, never require the namespace being checked).

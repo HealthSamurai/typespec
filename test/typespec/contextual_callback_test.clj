@@ -172,6 +172,40 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest into-cat-flattens-one-level-and-checks-input
+  (let [result (check-source "(into [] cat [[1 2] nil [3]])
+(into [] (comp (map (fn [v] [v])) clojure.core/cat (map str/upper-case)) [\"a\"])
+(into [] cat [\"abc\"])
+(second (into [:seed] cat []))
+(into [] cat [42])
+(let [cat identity] (into [] cat [[1]]))")
+        ds (:diagnostics result)]
+    (is (= [[9 "TSP2345"] [10 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= "cat cannot reduce input int?" (:message (first ds))))
+    (is (= ["(s/coll-of int? :kind vector?)"
+            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of java.lang.Character :kind vector?)"
+            "nil?"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 8])))))
+
+(deftest into-cat-preserves-types-from-a-callback-in-another-namespace
+  (let [api (parse/parse-string
+             "parts.clj"
+             "(ns parts (:require [clojure.spec.alpha :as s]))
+(s/fdef words :args (s/cat :text string?) :ret (s/coll-of string? :kind vector?))
+(defn words [text] [text])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [parts :as p] [clojure.core :as c] [clojure.string :as str]))
+(into [] (comp (map p/words) c/cat (map str/upper-case)) [\"a\"])
+(into [] (comp (map p/words) c/cat (map inc)) [\"a\"])")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

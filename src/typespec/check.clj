@@ -4933,12 +4933,25 @@
               (elem-type ctx member))))
    (t/assumption ty)))
 
+(defn- flatten-transducer-element [ctx node message input]
+  (let [input (eff ctx input)]
+    (if-let [bad (unsupported-sequence-member ctx input)]
+      (do (report! ctx node "TSP2345" (str message (t/show bad)))
+          t/unknown)
+      (transducer-element ctx input))))
+
 (defn- apply-transducer
   "Infer the emitted element type. A nil result means a stage could not be modeled."
   [ctx xf input]
   (let [[f & more :as args] (args-of xf)
         head (when (empty? (:directives (first (:children xf)))) (builtin-head ctx xf))]
     (cond
+      (and (= 'clojure.core/cat (guard-symbol ctx xf))
+           (= 'cat (t/core-name (:file ctx) (:val xf)))
+           (empty? (:directives xf)) (not (env/tag-node xf)))
+      (do (record! ctx xf (t/prim :fn))
+          (flatten-transducer-element ctx xf "cat cannot reduce input " input))
+
       (= 'comp head)
       (let [out (reduce (fn [current stage]
                           ;; An opaque stage can also change completion. Keep the
@@ -4964,12 +4977,7 @@
         (cond
           (= t/never input) t/never
           (#{'keep 'keep-indexed} head) (t/remove-nil (:env ctx) (eff ctx out))
-          (= 'mapcat head)
-          (let [result (eff ctx out)]
-            (if-let [bad (unsupported-sequence-member ctx result)]
-              (do (report! ctx f "TSP2345" (str "mapcat cannot reduce callback result " (t/show bad)))
-                  t/unknown)
-              (transducer-element ctx result)))
+          (= 'mapcat head) (flatten-transducer-element ctx f "mapcat cannot reduce callback result " out)
           :else out))
 
       :else

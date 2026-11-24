@@ -1721,6 +1721,14 @@
       (when (and core-var (= core-var (guard-symbol ctx node)))
         (if (= 'clojure.core/first core-var) 0 1)))))
 
+(defn- noncallable-scalar? [ty]
+  (case (:t ty)
+    :nil true
+    :lit (not (ifn? (:val ty)))
+    :prim (contains? #{:string :int :double :boolean} (:name ty))
+    :union (every? noncallable-scalar? (:types ty))
+    false))
+
 (defn apply-fn-node [ctx fnode arg-types & [require-match?]]
   (case (:op fnode)
     :kw (read-key ctx (first arg-types) (:val fnode) fnode)
@@ -1728,10 +1736,17 @@
     (let [ty (if (callback-node? ctx fnode)
                (infer ctx fnode {:t :fn :arities [{:params arg-types :ret t/unknown}]})
                (infer ctx fnode))
-          ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)]
-      (if-some [index (positional-callback-index ctx fnode arg-types)]
+          ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)
+          index (positional-callback-index ctx fnode arg-types)]
+      (cond
+        (some? index)
         (positional-type ctx (first arg-types) index)
-        (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)))))
+
+        (and (noncallable-scalar? ty) (not-any? #{t/never} arg-types))
+        (do (report! ctx fnode "TSP2345" (str "callback expects a callable value, got " (t/show ty)))
+            t/unknown)
+
+        :else (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)))))
 
 (defn- function-shape [ctx ty]
   (let [ty (t/resolve-t (:env ctx) (eff ctx ty))]

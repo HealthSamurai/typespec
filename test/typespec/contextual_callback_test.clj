@@ -54,6 +54,45 @@
   (let [r (check-source "(into [] (map (fn [n] (str #_(t/any \"fixture\") n))) [1])")]
     (is (= {:cast 0 :ignore 0 :any 1} (:trust r)))))
 
+(deftest higher-order-calls-reject-noncallable-scalars-when-invoked
+  (let [r (check-source "(into [] (partition-by 42) [1])
+(into [] (map \"bad\") [1])
+(into [] (filter nil) [1])
+(mapv false [1])
+(into [:seed] (partition-by nil) [])
+(into [:seed] (comp (take 0) (partition-by \"unused\")) [1])
+(mapv false [])
+(into [] (partition-by {1 nil 2 false}) [1 1 2])
+(into [] (partition-by :kind) [{:kind :a} {:kind :b}])
+(into [] (partition-by #{1}) [1 2])
+(into [] (partition-by 'kind) [{:kind :a} {:kind :b}])")
+        ds (:diagnostics r)]
+    (is (= [[5 "TSP2345" "callback expects a callable value, got 42"]
+            [6 "TSP2345" "callback expects a callable value, got \"bad\""]
+            [7 "TSP2345" "callback expects a callable value, got nil?"]
+            [8 "TSP2345" "callback expects a callable value, got false"]]
+           (mapv (juxt (comp :row :pos) :code :message) ds))
+        (pr-str ds))))
+
+(deftest higher-order-calls-check-scalar-results-from-another-namespace
+  (let [api (parse/parse-string
+             "buckets.clj"
+             "(ns buckets (:require [clojure.spec.alpha :as s]))
+(s/fdef bucket :args (s/cat) :ret int?)
+(defn bucket [] 42)
+(s/fdef label :args (s/cat) :ret (s/or :text string? :flag boolean?))
+(defn label [] false)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [buckets :as b]))
+(into [] (partition-by (b/bucket)) [1])
+(mapv (b/label) [:a])
+(into [:seed] (partition-by (b/bucket)) [])")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 2 "TSP2345"] ["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-contextualizes-a-transducer-from-the-source-spec
   (let [result (check-source "(s/def ::entry (s/keys :req-un [::name]))
 (s/def ::name string?)

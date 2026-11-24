@@ -125,7 +125,7 @@
         root (:root opts ".")
         copts (select-keys opts [:strict :strict-nil])]
     (case cmd
-      "check" (let [res (run-check root more copts)
+      "check" (let [res (run-check root more (assoc copts ::check/diagnostics-only true))
                     ds (:diagnostics res)
                     errors (count (filter #(= :error (:severity %)) ds))]
                 (if (:json opts)

@@ -28,6 +28,8 @@
   (is (empty? (diagnostics "(clojure.core/import java.util.UUID) (defn f [x] (subs (.toString ^UUID x) 0))")))
   (is (= {'Reader "java.io.Reader"}
          (:imports (p/parse-string "imports.clj" "(ns imports) (import java.io.Reader) (comment (import java.io.Writer)) '(import java.io.File) (import (computed foo))"))))
+  (is (= {'Writer "java.io.Writer"}
+         (:imports (p/parse-string "imports.clj" "(ns imports) (#_discarded import java.io.Writer)"))))
   (doseq [opts [{} {:strict-nil true}]]
     (is (some #(and (= "TSP2531" (:code %)) (re-find #"may return null" (:message %)))
               (:diagnostics (c/check-files

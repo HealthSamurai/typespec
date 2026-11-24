@@ -5877,10 +5877,10 @@
         digest (.digest (java.security.MessageDigest/getInstance "SHA-256")
                         (.getBytes (pr-str identity) java.nio.charset.StandardCharsets/UTF_8))]
     ;; 128 bits of SHA-256: stable across runs, with practical collision resistance.
-    (apply str (map #(format "%02x" (bit-and 0xff %)) (take 16 digest)))))
+    (.formatHex (java.util.HexFormat/of) digest 0 16)))
 
 (defn check-files
-  "Checks parsed files. Returns {:diagnostics [...] :types [...] :trust {...} :env env}."
+  "Checks parsed files. With ::diagnostics-only, omit expression types and the signature index."
   [files opts]
   (let [[env0 env-diags] (env/build files (:extern-contracts opts))
         compiled (macros/compile-contracts
@@ -5895,7 +5895,7 @@
         env (assoc guard-env :guards (:guards guard-result))
         guard-trust (count (filter #(= :trusted (:mode %)) (vals (:guards env))))]
     (binding [*diags* (atom (vec (map #(merge {:severity :error} %) (concat env-diags (:diagnostics guard-result)))))
-              *types* (atom [])
+              *types* (when-not (::diagnostics-only opts) (atom []))
               *var-uses* (when (:track-uses opts) (atom #{}))
               *spec-uses* (when (:track-uses opts) (atom #{}))
               *ignores* (atom [])
@@ -5923,8 +5923,10 @@
                     (remove #(= :off (:severity %)))
                     (map #(assoc % :id (diag-id %)))
                     (sort-by (juxt :file #(:row (:pos %)) #(:col (:pos %)) :code)))]
-        {:diagnostics (vec ds) :types @*types* :trust @*trust* :env env
+        {:diagnostics (vec ds) :types (if *types* @*types* []) :trust @*trust* :env env
          :uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :var :kind) (when *var-uses* @*var-uses*)))
          :spec-uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :spec) (when *spec-uses* @*spec-uses*)))
-         :sigs (into {} (for [[sym v] (:vars env)]
-                          [sym (var-type {:env env :opts opts} sym)]))}))))
+         :sigs (if (::diagnostics-only opts)
+                 {}
+                 (into {} (for [sym (keys (:vars env))]
+                            [sym (var-type {:env env :opts opts} sym)])))}))))

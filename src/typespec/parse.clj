@@ -141,6 +141,13 @@
         ;; (in particular, never require the namespace being checked).
         import-specs (for [node (n/children root)
                            :when (= :list (n/tag node))
+                           :let [head (some (fn [child]
+                                              (let [tag (n/tag child)]
+                                                (when-not (or (skip-tags tag) (= :uneval tag)) child)))
+                                            (n/children node))]
+                           ;; Skip reading the bodies of lists with an ordinary non-import head.
+                           :when (and head (or (not= :token (n/tag head))
+                                              (#{"import" "clojure.core/import"} (n/string head))))
                            :let [form (try (n/sexpr node dummy) (catch Exception _ nil))]
                            :when (#{'import 'clojure.core/import} (first form))
                            spec (rest form)]

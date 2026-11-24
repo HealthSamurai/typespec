@@ -4949,16 +4949,22 @@
         (record! ctx xf (t/prim :fn))
         out)
 
-      (and (#{'map 'map-indexed 'filter} head) f (empty? more))
+      (and (#{'map 'map-indexed 'filter 'keep 'keep-indexed} head) f (empty? more))
       (let [out (case head
                   map (apply-fn-node ctx f [input])
-                  map-indexed (if (= t/never input)
-                                (do (infer ctx f) t/never)
-                                (apply-indexed-callback ctx f input))
+                  (map-indexed keep keep-indexed)
+                  (if (= t/never input)
+                    (do (infer ctx f) t/never)
+                    (if (= 'keep head)
+                      (apply-fn-node ctx f [input])
+                      (apply-indexed-callback ctx f input)))
                   filter (let [[ret yes] (apply-predicate ctx f input true)]
                            (if (= t/never (truth-part (:env ctx) (eff ctx ret) true)) t/never yes)))]
         (record! ctx xf (t/prim :fn))
-        (if (= :never (:t input)) t/never out))
+        (cond
+          (= t/never input) t/never
+          (#{'keep 'keep-indexed} head) (t/remove-nil (:env ctx) (eff ctx out))
+          :else out))
 
       :else
       (do (infer ctx xf)

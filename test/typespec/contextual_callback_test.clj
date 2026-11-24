@@ -106,6 +106,39 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest into-keep-transducers-drop-only-nil
+  (let [result (check-source "(into [] (keep (fn [_] false)) [1])
+(into [:seed] (keep (fn [_] nil)) [1])
+(into [] (keep-indexed (fn [i v] (when (string? v) (str i v)))) [42 \"a\"])
+(into [] (keep-indexed (fn [i _] (subs i 0))) [1])
+(into [:seed] (keep-indexed (fn [_] :unused)) [])
+(into [] (comp (keep (fn [v] (when (string? v) v))) (map str/upper-case)) [42 \"a\"])"
+                             {:strict-nil true})
+        ds (:diagnostics result)]
+    (is (= [[8 "TSP2345"]] (mapv (juxt (comp :row :pos) :code) ds)) (pr-str ds))
+    (is (= ["(s/coll-of boolean? :kind vector?)"
+            "(s/coll-of keyword? :kind vector?)"
+            "(s/coll-of string? :kind vector?)"
+            "(s/coll-of keyword? :kind vector?)"
+            "(s/coll-of string? :kind vector?)"]
+           (mapv #(main/type-at result "callbacks.clj" % 1) [5 6 7 9 10])))))
+
+(deftest into-keep-transducers-use-specs-from-another-namespace
+  (let [api (parse/parse-string
+              "labels.clj"
+              "(ns labels (:require [clojure.spec.alpha :as s]))
+(s/fdef indexed :args (s/cat :i int? :value string?) :ret (s/nilable string?))
+(defn indexed [i value] (when i (subs value 0)))")
+        client (parse/parse-string
+                 "client.clj"
+                 "(ns client (:require [labels :as l] [clojure.string :as str]))
+(into [] (comp (keep-indexed l/indexed) (map str/upper-case)) [\"a\"])
+(into [] (keep-indexed l/indexed) [42])")
+        ds (:diagnostics (check/check-files [api client] {:strict-nil true}))]
+    (is (= [["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest into-composes-transducers-in-element-order
   (let [forms ["(into [] (comp (map str) (map str/upper-case)) [1 2])"
                "(into #{} (comp (filter string?) (map count)) [1 \"name\"])"

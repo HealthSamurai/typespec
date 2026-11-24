@@ -201,3 +201,64 @@ StaticFields/labels
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))
     (is (= "2.5" (main/type-at result "consumer.clj" 2 1)))))
+
+(deftest full-dot-resolves-fields-and-methods-by-syntax
+  (let [file (parse/parse-string
+              "dot.clj"
+              "(ns dot-test (:import java.awt.Point [typespec.fixture StaticFields StaticFields$Members]))
+(. Integer parseInt \"42\")
+(. Integer (parseInt \"42\"))
+(. Math PI)
+(. Math -PI)
+(. Math (PI))
+(. Math (-PI))
+(. Math -PI 2)
+(. Integer parseInt :bad)
+(. Integer (parseInt :bad))
+(. (Point. 3 4) x)
+(. (Point. 3 4) (x))
+(. (Point. 3 4) -x)
+(. (Point. 3 4) (translate \"bad\" 2))
+(. (StaticFields$Members.) size)
+(. (StaticFields$Members.) -size)
+(. (StaticFields$Members.) (size))
+(. (StaticFields$Members.) alt)
+(. (StaticFields$Members.) (alt))
+(. StaticFields$Members total)
+(. StaticFields$Members (total))
+(. StaticFields number)
+(. StaticFields -number)
+(let [Integer (Point.)] (. Integer parseInt \"5\"))
+(let [Math (Point.)] (set! (. Math -x) 1))
+(. Integer (parseInt \"42\") (inc \"ignored\"))
+(. (Point.) \"x\")
+(. (Point.))
+(. (Point.) ())")
+        result (check/check-files [file] {})]
+    (is (= [[6 "TSP2339"] [7 "TSP2339"] [8 "TSP2339"] [9 "TSP2345"] [10 "TSP2345"]
+            [12 "TSP2339"] [14 "TSP2345"] [19 "TSP2554"] [21 "TSP2554"] [25 "TSP2339"]
+            [27 "TSP2345"] [28 "TSP2554"] [29 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["int" "int" "double" "double" "int" "int" "String" "int"
+            "String" "int" "int" "String" "int" "int" "int"]
+           (mapv #(main/type-at result "dot.clj" % 1) [2 3 4 5 11 13 15 16 17 18 20 22 23 24 26])))))
+
+(deftest full-dot-consumes-spec-and-hints-across-namespaces
+  (let [files [(parse/parse-string
+                "provider.clj"
+                "(ns provider (:require [clojure.spec.alpha :as s]) (:import java.awt.Point))
+(s/fdef point :args (s/cat) :ret #(instance? Point %))
+(defn point ^Point [] (Point. 1 2))")
+               (parse/parse-string
+                "consumer.clj"
+                "(ns consumer (:require [provider :as p]))
+(. (p/point) (translate 1 2))
+(. (p/point) -x)
+(. (p/point) (translate \"bad\" 2))
+(alength (. (p/point) -x))")]
+        result (check/check-files files {})]
+    (is (= [["consumer.clj" 4 25 "TSP2345"] ["consumer.clj" 5 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "int" (main/type-at result "consumer.clj" 3 1)))))

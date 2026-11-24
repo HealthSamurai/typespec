@@ -1320,6 +1320,16 @@
                (not (contains? (get-in env [:ns-defs (:ns file)]) sym)))
       (t/resolve-class (:imports file) sym))))
 
+(defn- dot-static-class [ctx node]
+  (let [{:keys [file env]} ctx
+        sym (:val node)]
+    (when (and (= :sym (:op node)) (simple-symbol? sym) (not (t/primitives (name sym))))
+      ;; The full dot form resolves a class from the namespace before looking at locals.
+      (or (get (:imports file) sym)
+          (when-not (or (contains? (:refers file) sym)
+                        (contains? (get-in env [:ns-defs (:ns file)]) sym))
+            (t/resolve-class (:imports file) sym))))))
+
 (defn- literal-for-name-class [ctx node]
   (when (and (= :list (:op node)) (empty? (:directives node)) (not (env/tag-node node)))
     (let [[head class-name & more] (:children node)
@@ -1909,17 +1919,20 @@
           (do (report-java-argument-mismatch! ctx node label arg-nodes arg-types fits)
               fits))))))
 
-(defn- java-call [ctx node cname mname static? arg-nodes]
+(defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback]
   (let [arg-types (mapv #(infer ctx %) arg-nodes)
         ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
         field-class (when (and (empty? arg-nodes)
-                               (if static? (empty? ms) (not-any? #(empty? (:params %)) ms)))
+                               (case field-fallback
+                                 :no-methods (empty? ms)
+                                 :no-zero-arg-method (not-any? #(empty? (:params %)) ms)
+                                 false))
                       (java/field-class cname mname static?))
         shown (java/short-name cname)]
     (cond
       (not (java/has-class? cname)) t/unknown
       field-class (java-field-type field-class)
-      (empty? ms) (do (report! ctx (first (:children node)) "TSP2339"
+      (empty? ms) (do (report! ctx member-node "TSP2339"
                                (str shown " has no " (when static? "static ") "method " mname
                                     (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
                       t/unknown)
@@ -1978,17 +1991,18 @@
                  (str (java/short-name cname) " has no public "
                       (if static? "static" "instance") " field " fname)))))
 
+(defn- java-field-read [ctx member-node cname fname static?]
+  (if-let [^Class field-type (:type (lookup-java-field ctx member-node cname fname static?))]
+    (java-field-type (.getName field-type))
+    t/unknown))
+
 (defn- instance-field-call [ctx node fname]
   (let [[head target & more] (:children node)]
     (if (or (nil? target) (seq more))
       (do (run! #(infer ctx %) (args-of node))
           (report! ctx node "TSP2554" (str ".-" fname " expects one receiver"))
           t/unknown)
-      (let [cname (instance-field-owner ctx target)
-            field (lookup-java-field ctx head cname fname false)]
-        (if-let [^Class field-type (:type field)]
-          (java-field-type (.getName field-type))
-          t/unknown)))))
+      (java-field-read ctx head (instance-field-owner ctx target) fname false))))
 
 (defn- dot-field-place [node]
   (when (= :list (:op node))
@@ -2011,7 +2025,7 @@
   (if-let [cname (when (= :sym (:op target)) (java-static? ctx (:val target)))]
     (lookup-java-field ctx target cname (name (:val target)) true)
     (when-let [{:keys [receiver long-dot? forced? field-name]} (dot-field-place target)]
-      (let [static-class (when long-dot? (class-symbol-name ctx receiver))
+      (let [static-class (when long-dot? (dot-static-class ctx receiver))
             cname (or static-class (instance-field-owner ctx receiver))
             static? (some? static-class)]
         (when static? (infer ctx receiver))
@@ -2020,9 +2034,8 @@
           (report! ctx target "TSP2345" "Cannot assign to the result of a Java method")
           (lookup-java-field ctx target cname field-name static?))))))
 
-(defn- method-call [ctx node mname]
-  (let [[_ target & arg-nodes] (:children node)
-        tty (java-receiver-type ctx target)
+(defn- method-call [ctx node target member-node mname arg-nodes field-fallback]
+  (let [tty (java-receiver-type ctx target)
         env (:env ctx)
         cname (class-of ctx tty)]
     (cond
@@ -2046,12 +2059,44 @@
                               :edits [{:range {:start [(:row (:pos target)) (:col (:pos target))]
                                                :end [(:row (:pos target)) (:col (:pos target))]}
                                        :text (str "^" hint " ")}]}])))
-        (java-call ctx node cname mname false arg-nodes)))))
+        (java-call ctx node member-node cname mname false arg-nodes field-fallback)))))
 
 ;; ---- special forms ----
 
 (defmulti special (fn [_ctx _node head] head) :default ::none)
 (defmethod special ::none [_ _ _] ::none)
+
+(defmethod special '. [ctx node _]
+  (let [[receiver raw-member & trailing :as args] (args-of node)
+        grouped? (= :list (:op raw-member))
+        [member & arg-nodes] (if grouped? (:children raw-member) (cons raw-member trailing))]
+    (cond
+      (< (count args) 2)
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" ". expects a receiver and a member")
+          t/unknown)
+
+      (not= :sym (:op member))
+      (do (infer ctx receiver)
+          (run! #(infer ctx %) arg-nodes)
+          (report! ctx (or member raw-member) "TSP2345" "Expected a Java member name")
+          t/unknown)
+
+      :else
+      (let [member-name (name (:val member))
+            static-class (dot-static-class ctx receiver)
+            field-fallback (when-not grouped? :no-zero-arg-method)]
+        (when static-class (record! ctx receiver (t/class-type "java.lang.Class")))
+        (cond
+          (and (not grouped?) (empty? arg-nodes) (str/starts-with? member-name "-"))
+          (java-field-read ctx member (or static-class (instance-field-owner ctx receiver))
+                           (munge (subs member-name 1)) (some? static-class))
+
+          static-class
+          (java-call ctx node member static-class (munge member-name) true arg-nodes field-fallback)
+
+          :else
+          (method-call ctx node receiver member (munge member-name) arg-nodes field-fallback))))))
 
 (doseq [h '[ns comment declare require import in-ns defmacro defprotocol defrecord deftype defmulti
             definterface clojure.spec.alpha/def clojure.spec.alpha/fdef]]
@@ -5556,10 +5601,12 @@
         (cond
           (not= ::none r) r
           (and (nil? (namespace sym)) (str/starts-with? n ".-")) (instance-field-call ctx node (subs n 2))
-          (and (nil? (namespace sym)) (str/starts-with? n ".") (> (count n) 1) (not= ".." n)) (method-call ctx node (subs n 1))
+          (and (nil? (namespace sym)) (str/starts-with? n ".") (> (count n) 1) (not= ".." n))
+          (let [[target & arg-nodes] args]
+            (method-call ctx node target h (subs n 1) arg-nodes :no-zero-arg-method))
           (and (nil? (namespace sym)) (str/ends-with? n ".") (> (count n) 1))
           (constructor-call ctx node (t/resolve-class (:imports file) (symbol (subs n 0 (dec (count n))))) args)
-          (java-static? ctx sym) (java-call ctx node (java-static? ctx sym) n true args)
+          (java-static? ctx sym) (java-call ctx node h (java-static? ctx sym) n true args :no-methods)
           (contains? (:macros (:env ctx)) (:sym (resolve-var (assoc ctx :quiet true) sym h)))
           (do (report! ctx h "TSP7031" (str "macro " sym " is not described: its body is not checked") :severity :warning)
               t/unknown)

@@ -62,6 +62,11 @@
  clojure.core/slurp      [any? & any? :-> string?]
  clojure.core/spit       [any? any? & any? :-> nil?]
  clojure.core/ex-info    ([string? map? :-> java.lang.Exception] [string? map? any? :-> java.lang.Exception])
- clojure.core/range      ([:-> (s/coll-of int?)] [number? :-> (s/coll-of int?)] [number? number? :-> (s/coll-of int?)])
+ clojure.core/range      ([:-> (s/coll-of int?)]
+                          [number? :-> (s/coll-of int?)]
+                          [int? number? :-> (s/coll-of int?)]
+                          [number? number? :-> (s/coll-of number?)]
+                          [int? number? int? :-> (s/coll-of int?)]
+                          [number? number? number? :-> (s/coll-of number?)])
  clojure.core/keys       [any? :-> (s/nilable (s/coll-of any?))]
  clojure.core/vals       [any? :-> (s/nilable (s/coll-of any?))]}

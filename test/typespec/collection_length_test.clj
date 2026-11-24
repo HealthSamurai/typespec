@@ -18,6 +18,31 @@
 (defn- codes [r] (mapv :code (:diagnostics r)))
 (defn- at [r row] (main/type-at r "length.clj" row 1))
 
+(deftest range-checks-start-stop-and-step
+  (let [r (checked "(range)
+(range 4.5)
+(range 1 4.5)
+(range 0.5 4)
+(range 4 0 -2)
+(range 1 4.5 2)
+(clojure.core/range 0 2 0.5)
+(range 4 9 0)
+(range 0 2 \"bad\")
+(range 0 2 1 :extra)")
+        ds (:diagnostics r)]
+    (is (= [[10 12 "TSP2345"] [11 1 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of int?)"
+            "(s/coll-of int?)"
+            "(s/coll-of int?)"
+            "(s/coll-of number?)"
+            "(s/coll-of int?)"
+            "(s/coll-of int?)"
+            "(s/coll-of number?)"
+            "(s/coll-of int?)"]
+           (mapv #(at r %) (range 2 10))))))
+
 (deftest partition-all-preserves-nested-types-and-bounds
   (let [r (checked "(s/def ::chunk (s/coll-of int? :kind seq? :min-count 1 :max-count 2))
 (s/fdef chunks :args (s/cat :xs (s/coll-of int?)) :ret (s/coll-of ::chunk :kind seq?))

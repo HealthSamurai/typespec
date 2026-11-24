@@ -95,7 +95,6 @@
     clojure.core/inc         ([int? :-> int?] [number? :-> number?])
     clojure.core/random-uuid [:-> uuid?]
     clojure.core/namespace   [(t/or keyword? symbol?) :-> (s/nilable string?)]
-    clojure.core/range       ([:-> (s/coll-of int?)] [number? :-> (s/coll-of int?)] [number? number? :-> (s/coll-of int?)])
     clojure.string/blank?    [(s/nilable java.lang.CharSequence) :-> boolean?]
     clojure.string/split     ([java.lang.CharSequence java.util.regex.Pattern :-> (s/coll-of string? :kind vector?)]
                               [java.lang.CharSequence java.util.regex.Pattern int? :-> (s/coll-of string? :kind vector?)])
@@ -107,7 +106,8 @@
                                :-> string?]))
   (let [arities #(mapv (fn [a] [(count (:params a)) (boolean (:rest a))]) (:arities (core/table %)))]
     (is (= [[1 true]] (arities 'clojure.core//)))
-    (is (= [[0 false] [1 false] [2 false]] (arities 'clojure.core/range)))
+    (is (= [[0 false] [1 false] [2 false] [2 false] [3 false] [3 false]]
+           (arities 'clojure.core/range)))
     (is (= [[3 false] [3 false] [3 false] [3 false]] (arities 'clojure.string/replace)))
     (is (= :fn (get-in core/table ['clojure.string/replace :arities 3 :params 2 :t])))))
 

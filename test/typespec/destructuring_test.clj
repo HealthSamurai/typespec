@@ -13,6 +13,32 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest destructured-parameters-accept-extra-literal-keys-across-namespaces
+  (let [api (parse/parse-string
+             "storage.clj"
+             "(ns storage (:require [clojure.spec.alpha :as s]))
+(s/def ::_account string?)
+(s/def ::bucket string?)
+(defn upload [{:keys [_account upload-threads storage/bucket] :as options}]
+  options)
+(s/fdef declared :args (s/cat :options (s/keys :req-un [::_account])) :ret map?)
+(defn declared [options] options)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [storage :as store]))
+(store/upload {:account \"north\" :storage/bucket \"uploads\"})
+(store/upload {:_account \"north\" :upload-threads 4})
+(store/upload {:storage/bucket 42})
+(store/declared {:_account \"north\"})
+(store/declared {:_account \"north\" :account \"typo\"})
+(store/declared {})")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2322"]
+            ["client.clj" 6 "TSP2353"]
+            ["client.clj" 7 "TSP2741"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest map-of-supplies-types-for-string-and-symbol-bindings
   (let [api "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::counts (s/map-of string? int?))

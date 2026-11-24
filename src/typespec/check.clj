@@ -216,13 +216,15 @@
            (if (= :inconclusive (:status result))
              (conj (incomplete-problem ctx v exp result) [:value k])
              ["TSP2322" (str "value of " k ": " (t/show (eff ctx v)) " is not assignable to " (show-ref ctx exp)) nil [:value k]]))
-         (for [k (keys (:req actual))
-               :when (and (not (some #{k} known))
-                          (not (and (qualified-keyword? k) (get-in env [:specs k])))
-                          ;; a qualified key with no spec is already reported as TSP2304
-                          (not (and (qualified-keyword? k) (contains? (:key-nss env) (namespace k))))
-                          (or (qualified-keyword? k) (similar k known)))]
-           ["TSP2353" (str "unknown key " k " in a literal of " (t/show expected) (hint-suffix k known)) nil [:key k]]))))))
+         ;; An open inferred shape only describes the keys we have seen.
+         (when (or (not (:inferred m)) (:complete-keys? m))
+           (for [k (keys (:req actual))
+                 :when (and (not (some #{k} known))
+                            (not (and (qualified-keyword? k) (get-in env [:specs k])))
+                            ;; a qualified key with no spec is already reported as TSP2304
+                            (not (and (qualified-keyword? k) (contains? (:key-nss env) (namespace k))))
+                            (or (qualified-keyword? k) (similar k known)))]
+             ["TSP2353" (str "unknown key " k " in a literal of " (t/show expected) (hint-suffix k known)) nil [:key k]])))))))
 
 (defn- missing-req
   "[key optional-there?] when `actual` is a map type that lacks a required key of `expected`."

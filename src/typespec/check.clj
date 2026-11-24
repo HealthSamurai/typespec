@@ -1712,6 +1712,15 @@
       (do (report! ctx at "TSP2554" (str label " is called with " (count arg-types) " argument(s)")) t/unknown)
       t/unknown))))
 
+(defn- positional-callback-index [ctx node arg-types]
+  (when (and (= 1 (count arg-types)) (= :sym (:op node))
+             (empty? (:directives node)) (not (env/tag-node node))
+             (not (:guards-disabled? ctx)))
+    (let [core-var (get '{first clojure.core/first second clojure.core/second}
+                        (t/core-name (:file ctx) (:val node)))]
+      (when (and core-var (= core-var (guard-symbol ctx node)))
+        (if (= 'clojure.core/first core-var) 0 1)))))
+
 (defn apply-fn-node [ctx fnode arg-types & [require-match?]]
   (case (:op fnode)
     :kw (read-key ctx (first arg-types) (:val fnode) fnode)
@@ -1720,7 +1729,9 @@
                (infer ctx fnode {:t :fn :arities [{:params arg-types :ret t/unknown}]})
                (infer ctx fnode))
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)]
-      (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?))))
+      (if-some [index (positional-callback-index ctx fnode arg-types)]
+        (positional-type ctx (first arg-types) index)
+        (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)))))
 
 (defn- function-shape [ctx ty]
   (let [ty (t/resolve-t (:env ctx) (eff ctx ty))]

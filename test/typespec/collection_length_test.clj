@@ -107,6 +107,42 @@
             "(s/coll-of (s/coll-of t/never :kind seq? :max-count 0) :kind seq? :min-count 1)"]
            (mapv #(at r %) [5 7 8 9])))))
 
+(deftest positional-callbacks-use-tuple-positions-and-collection-lengths
+  (let [r (checked "(mapv first [[:a 1] [:b 2]])
+(mapv clojure.core/second [[:a \"ant\"] [:b \"bee\"]])
+(let [first (fn [_] true)] (mapv first [[1]]))
+(into [] (comp (partition-all 2) (map second)) [1 2 3])
+(into [] (comp (partition-all 2) (map first)) [1 2 3])")]
+    (is (empty? (codes r)) (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of keyword? :kind vector? :min-count 2 :max-count 2)"
+            "(s/coll-of string? :kind vector? :min-count 2 :max-count 2)"
+            "(s/coll-of boolean? :kind vector? :min-count 1 :max-count 1)"
+            "(s/coll-of (s/nilable int?) :kind vector?)"
+            "(s/coll-of int? :kind vector?)"]
+           (mapv #(at r %) (range 2 7))))))
+
+(deftest positional-callbacks-use-specs-from-another-namespace
+  (let [api (parse/parse-string
+             "data.clj"
+             "(ns data (:require [clojure.spec.alpha :as s]))
+(s/fdef numbers :args (s/cat) :ret (s/coll-of int? :kind vector?))
+(defn numbers [] [1 2 3])
+(s/fdef pairs :args (s/cat) :ret (s/coll-of (s/tuple keyword? string?) :kind vector?))
+(defn pairs [] [[:a \"ant\"] [:b \"bee\"]])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [data :as d] [clojure.spec.alpha :as s] [clojure.core :as c]))
+(s/fdef heads :args (s/cat) :ret (s/coll-of int? :kind vector?))
+(defn heads [] (into [] (comp (partition-all 2) (map first)) (d/numbers)))
+(s/fdef labels :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn labels [] (mapv c/second (d/pairs)))
+(into [] (comp (partition-all 2) (map second) (map inc)) (d/numbers))
+(into [] (comp (map first) (map inc)) (d/pairs))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 6 "TSP2531"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest interpose-keeps-separators-elements-and-lengths
   (let [r (checked "(interpose 42 [\"a\" \"b\"])
 (interpose 42 [\"a\"])

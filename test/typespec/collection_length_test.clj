@@ -43,6 +43,48 @@
             "(s/coll-of int?)"]
            (mapv #(at r %) (range 2 10))))))
 
+(deftest reduce-uses-proven-collection-lengths
+  (let [r (checked "(map (fn [group] (reduce (fn [a b] (+ a b)) group))
+       (vals (group-by odd? [1 2 3])))
+(s/fdef single :args (s/cat :xs (s/coll-of int? :min-count 1 :max-count 1)) :ret int?)
+(defn single [xs] (reduce (fn [a b c] :unused) xs))
+(s/fdef at-least-two :args (s/cat :xs (s/coll-of int? :min-count 2)) :ret string?)
+(defn at-least-two [xs] (reduce (fn [a b] \"always\") xs))
+(s/fdef empty-with-init :args (s/cat :xs (s/coll-of int? :max-count 0)) :ret int?)
+(defn empty-with-init [xs] (reduce (fn [a] :unused) 42 xs))
+(reduce (fn [a b c] :unused) '(1))
+(s/fdef maybe-empty :args (s/cat :xs (s/coll-of int?)) :ret any?)
+(defn maybe-empty [xs] (reduce (fn [a b] (+ a b)) xs))
+(reduce (fn [a b] 0) [])
+(s/fdef invalid-step :args (s/cat :xs (s/coll-of int? :min-count 2)) :ret any?)
+(defn invalid-step [xs] (reduce (fn [a] a) xs))
+(s/fdef maybe-nil :args (s/cat :xs (s/nilable (s/coll-of int? :min-count 1))) :ret any?)
+(defn maybe-nil [xs] (reduce (fn [a b] 0) xs))")
+        ds (:diagnostics r)]
+    (is (= [[12 "TSP2554"] [13 "TSP2554"] [15 "TSP2554"] [17 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["0" "0" "2" "0"]
+           (mapv #(second (re-find #"is called with (\d+) argument" (:message %))) ds)))))
+
+(deftest reduce-imports-nonempty-specs-across-namespaces
+  (let [api (parse/parse-string
+             "groups.clj"
+             "(ns sample.groups (:require [clojure.spec.alpha :as s]))
+(s/fdef nonempty :args (s/cat) :ret (s/coll-of int? :min-count 1))
+(defn nonempty [] [1 2])
+(s/fdef maybe-empty :args (s/cat) :ret (s/coll-of int?))
+(defn maybe-empty [] [])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns sample.client (:require [sample.groups :as g]))
+(reduce (fn [a b] (+ a b)) (g/nonempty))
+(reduce (fn [a b] (+ a b)) (g/maybe-empty))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest partition-all-preserves-nested-types-and-bounds
   (let [r (checked "(s/def ::chunk (s/coll-of int? :kind seq? :min-count 1 :max-count 2))
 (s/fdef chunks :args (s/cat :xs (s/coll-of int?)) :ret (s/coll-of ::chunk :kind seq?))

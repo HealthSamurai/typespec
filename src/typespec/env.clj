@@ -32,12 +32,15 @@
   {'booleans "[Z" 'bytes "[B" 'chars "[C" 'shorts "[S" 'ints "[I"
    'longs "[J" 'floats "[F" 'doubles "[D" 'objects "[Ljava.lang.Object;"})
 
+(defn hint-class [file tag]
+  (or (array-hint-classes (:val tag))
+      (when (and (array-descriptor-node? tag) (t/load-class (:val tag))) (:val tag))
+      (when (= :sym (:op tag)) (t/resolve-class (:imports file) (:val tag)))))
+
 (defn hint-type [file node]
-  (when-let [tn (tag-node node)]
-    (when-let [c (or (array-hint-classes (:val tn))
-                    (when (and (array-descriptor-node? tn) (t/load-class (:val tn))) (:val tn))
-                     (t/resolve-class (:imports file) (:val tn)))]
-      (t/platform (t/class-type c) (str (:val tn))))))
+  (when-let [tag (tag-node node)]
+    (when-let [c (hint-class file tag)]
+      (t/platform (t/class-type c) (str (:val tag))))))
 
 (defn- function-arities [forms]
   (let [arity (fn [[params & body]] {:params params :body (vec body)})]

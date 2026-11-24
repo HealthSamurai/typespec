@@ -80,7 +80,9 @@
   [cname mname static?]
   (when-let [^Class c (t/load-class cname)]
     (let [params (fn [^Method m] (mapv #(.getName ^Class %) (.getParameterTypes m)))
-          methods (->> (.getMethods c)
+          public-methods (cond-> (seq (.getMethods c))
+                           (and (.isInterface c) (not static?)) (concat (.getMethods Object)))
+          methods (->> public-methods
                        (filter (fn [^Method m] (and (= mname (.getName m))
                                                     (= (boolean static?) (Modifier/isStatic (.getModifiers m))))))
                        (sort-by (fn [^Method m] [(.getParameterCount m) (if (= Object (.getReturnType m)) 1 0)])))

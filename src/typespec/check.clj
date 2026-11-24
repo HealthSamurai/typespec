@@ -1941,7 +1941,28 @@
           (do (report-java-argument-mismatch! ctx node label arg-nodes arg-types fits)
               fits))))))
 
-(defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback]
+(defn- java-parameter-tags [member]
+  (let [tags (some #(case (:op %)
+                      :vector %
+                      :map (env/attr-get % :param-tags)
+                      nil)
+                   (:meta member))]
+    (when-not (= :nil (:op tags)) tags)))
+
+(defn- tagged-java-overload [ctx tags label methods]
+  (if-not (= :vector (:op tags))
+    (report! ctx tags "TSP2345" "Java parameter tags must be a vector")
+    (let [tag-classes (mapv #(if (= '_ (:val %)) '_ (env/hint-class (:file ctx) %)) (:children tags))
+          matches (filter (fn [{:keys [params]}]
+                            (and (= (count params) (count tag-classes))
+                                 (every? true? (map #(or (= '_ %1) (= %1 %2)) tag-classes params))))
+                          methods)]
+      (if (= 1 (count matches))
+        matches
+        (report! ctx tags "TSP2345" (str "Parameter tags " (parse/unparse tags)
+                                        " must identify one overload of " label))))))
+
+(defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [tags]]
   (let [arg-types (mapv #(infer ctx %) arg-nodes)
         ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
         field-class (when (and (empty? arg-nodes)
@@ -1959,7 +1980,9 @@
                                     (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
                       t/unknown)
       :else
-      (let [candidates (checked-java-overloads ctx node (str shown "." mname) arg-nodes arg-types ms)
+      (let [label (str shown "." mname)
+            methods (if tags (tagged-java-overload ctx tags label ms) ms)
+            candidates (when (seq methods) (checked-java-overloads ctx node label arg-nodes arg-types methods))
             rets (distinct (map #(java-ret cname %) candidates))]
         (if (= 1 (count rets)) (first rets) t/unknown)))))
 
@@ -2000,6 +2023,22 @@
                   (if (= :nil (:t ty)) " is nil" " may be nil")
                   (when-let [w (or (:null-return (meta ty)) (when (= :sym (:op target)) (get-in ctx [:why (:val target)])))]
                     (str ": " w))))))
+
+(defn- qualified-instance-call [ctx node member cname args]
+  (let [[target & arg-nodes] args
+        mname (munge (subs (name (:val member)) 1))]
+    (if-not target
+      (do (report! ctx node "TSP2554" (str (:val member) " expects a receiver"))
+          t/unknown)
+      (let [actual (java-receiver-type ctx target)
+            non-nil (t/remove-nil (:env ctx) actual)
+            boxed (t/literal-number-class non-nil)]
+        (check-nil-receiver! ctx target actual)
+        (cond
+          boxed (assignable! ctx target {:t :class :name (.getName ^Class boxed)} {:t :class :name cname})
+          (class-symbol-name ctx target) (assignable! ctx target (t/class-type "java.lang.Class") (t/class-type cname))
+          :else (assignable! ctx target non-nil (t/class-type cname)))
+        (java-call ctx node member cname mname false arg-nodes nil (java-parameter-tags member))))))
 
 (defn- instance-field-owner [ctx target]
   (let [ty (java-receiver-type ctx target)]
@@ -5635,7 +5674,8 @@
                     spec-contract (check-spec-macro ctx node contract-sym spec-contract args)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
                     (and (not own?) (not extern?) (core/stdlib-macro? core-sym)) t/unknown
-                    :else ::none)]
+                    :else ::none)
+            cname (when (= ::none r) (java-static? ctx sym))]
         (cond
           (not= ::none r) r
           (and (nil? (namespace sym)) (str/starts-with? n ".-")) (instance-field-call ctx node (subs n 2))
@@ -5644,7 +5684,9 @@
             (method-call ctx node target h (subs n 1) arg-nodes :no-zero-arg-method))
           (and (nil? (namespace sym)) (str/ends-with? n ".") (> (count n) 1))
           (constructor-call ctx node (t/resolve-class (:imports file) (symbol (subs n 0 (dec (count n))))) args)
-          (java-static? ctx sym) (java-call ctx node h (java-static? ctx sym) n true args :no-methods)
+          cname (if (and (> (count n) 1) (str/starts-with? n "."))
+                  (qualified-instance-call ctx node h cname args)
+                  (java-call ctx node h cname n true args :no-methods))
           (contains? (:macros (:env ctx)) (:sym (resolve-var (assoc ctx :quiet true) sym h)))
           (do (report! ctx h "TSP7031" (str "macro " sym " is not described: its body is not checked") :severity :warning)
               t/unknown)

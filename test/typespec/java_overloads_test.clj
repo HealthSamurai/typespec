@@ -42,6 +42,73 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))))
 
+(deftest qualified-instance-calls-use-the-class-in-the-method-name
+  (let [source "(ns example.qualified (:import [java.io InputStream ByteArrayInputStream]))
+(defn stream [] (ByteArrayInputStream. (byte-array [7])))
+(InputStream/.read (stream))
+(java.io.InputStream/.read (stream) (byte-array 2) 0 1)
+(CharSequence/.length \"text\")
+(Class/.getName String)
+(InputStream/.read (stream) \"bad-buffer\")
+(InputStream/.read (stream) 1 2)
+(InputStream/.read \"bad-receiver\")
+(InputStream/.read nil)
+(InputStream/.read)
+(Object/.length \"text\")
+(InputStream/.raed (stream))
+(Integer/.intValue 1)
+(Integer/.intValue (Integer/valueOf \"1\"))
+(CharSequence/.getClass \"text\")"
+        result (check/check-files [(parse/parse-string "qualified.clj" source)] {})
+        ds (:diagnostics result)]
+    (is (= [[7 "TSP2345"] [8 "TSP2554"] [9 "TSP2345"] [10 "TSP2531"]
+            [11 "TSP2554"] [12 "TSP2339"] [13 "TSP2339"] [14 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["int" "int" "int" "String" "int" "Class"]
+           (mapv #(main/type-at result "qualified.clj" % 1) [3 4 5 6 15 16])))))
+
+(deftest qualified-instance-parameter-tags-select-a-single-jvm-overload
+  (let [source "(ns example.param-tags (:import [java.io InputStream ByteArrayInputStream]))
+(defn stream [] (ByteArrayInputStream. (byte-array [7])))
+(^[] InputStream/.read (stream))
+(^[bytes] InputStream/.read (stream) (byte-array 2))
+(^[_ int int] InputStream/.read (stream) (byte-array 2) 0 1)
+(^{:param-tags [byte/1]} InputStream/.read (stream) (byte-array 2))
+(^[\"[B\"] InputStream/.read (stream) (byte-array 2))
+(^{:param-tags nil} InputStream/.read (stream))
+(^[String] String/.indexOf \"abc\" \"b\")
+(^[String] String/.indexOf \"abc\" 98)
+(^[bytes] InputStream/.read (stream))
+(^[_] String/.indexOf \"abc\" \"b\")
+(^[String] InputStream/.read (stream) \"bad\")
+(^{:param-tags :wrong} InputStream/.read (stream))"
+        result (check/check-files [(parse/parse-string "params.clj" source)] {})
+        ds (:diagnostics result)]
+    (is (= [[10 "TSP2345"] [11 "TSP2554"] [12 "TSP2345"] [13 "TSP2345"] [14 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= (repeat 7 "int") (map #(main/type-at result "params.clj" % 1) (range 3 10))))))
+
+(deftest qualified-instance-methods-use-receiver-specs-across-namespaces
+  (let [provider (parse/parse-string
+                   "streams.clj"
+                   "(ns sample.streams (:require [clojure.spec.alpha :as s])
+                     (:import [java.io InputStream ByteArrayInputStream]))
+(s/fdef open :args (s/cat) :ret InputStream)
+(defn open [] (ByteArrayInputStream. (byte-array [7])))
+(s/fdef text :args (s/cat) :ret string?)
+(defn text [] \"no stream\")")
+        client (parse/parse-string
+                 "client.clj"
+                 "(ns sample.client (:require [sample.streams :as src]) (:import [java.io InputStream]))
+(InputStream/.read (src/open))
+(InputStream/.read (src/text))")
+        ds (:diagnostics (check/check-files [provider client] {}))]
+    (is (= [["client.clj" 3 20 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest java-constructors-check-arity-and-arguments
   (let [source "(ns constructors (:import [java.io File InputStream]))
 (StringBuilder. \"text\")

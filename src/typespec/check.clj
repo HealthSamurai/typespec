@@ -38,6 +38,13 @@
               (:val value)))
     nil))
 
+(defn- literal-node? [node]
+  (and (#{:str :kw :num :bool :nil} (:op node)) (empty? (:directives node))
+       (not (env/tag-node node))))
+
+(defn- literal-map-key-node? [node]
+  (and (#{:kw :str} (:op node)) (literal-node? node)))
+
 (defn- at-type-path [node path]
   (reduce (fn [current step]
             (if-let [child (case (:op current)
@@ -376,9 +383,9 @@
               h (builtin-head ctx node)
               [base path] (cond
                             (and (= :kw (:op head)) a (nil? b)) [a [(:val head)]]
-                            (and (= 'get h) (= :kw (:op b)) (empty? more)) [a [(:val b)]]
+                            (and (= 'get h) (literal-map-key-node? b) (empty? more)) [a [(:val b)]]
                             (and (= 'get-in h) (= :vector (:op b)) (seq (:children b))
-                                 (every? #(= :kw (:op %)) (:children b)) (empty? more))
+                                 (every? literal-map-key-node? (:children b)) (empty? more))
                             [a (mapv :val (:children b))]
                             (and (#{'first 'second 'key 'val} h) a (nil? b))
                             [a [(if (#{'first 'key} h) 0 1)]]
@@ -409,9 +416,15 @@
                 (case status
                   :req (if (t/nilable? (:env ctx) current) (t/union type t/nil-t) type)
                   :opt (t/union type t/nil-t)
-                  :nil t/nil-t
+                  (:nil :absent) t/nil-t
                   (reduced nil)))))
           ty path))
+
+(defn- required-map-projection? [ctx ty path]
+  (when (and (seq path) (not (integer? (peek path))))
+    (when-let [parent (projected-type ctx ty (pop path))]
+      (and (= :req (:status (lookup-key ctx parent (peek path))))
+           (not (t/nilable? (:env ctx) parent))))))
 
 (defn- refine-origin [ctx {:keys [local origin]} ty]
   (when-not (= :never (:t ty))
@@ -419,7 +432,10 @@
       (reduce-kv (fn [c sym {:keys [path type] :as p}]
                    (if (and (= origin (:origin p)) (= type (get-in ctx [:locals sym])))
                      (if-let [narrowed (projected-type c ty path)]
-                       (-> c (assoc-in [:locals sym] narrowed) (remember-projection sym origin path))
+                       (cond-> (-> c (assoc-in [:locals sym] narrowed) (remember-projection sym origin path))
+                         (and (get-in c [:why sym]) (t/nilable? (:env c) narrowed)
+                              (required-map-projection? c ty path))
+                         (update :why dissoc sym))
                        c)
                      c))
                  (assoc-in ctx [:origins origin] ty) (:projections ctx))
@@ -487,13 +503,6 @@
                                         (when-let [narrowed (select leaf)]
                                           (rebuild narrowed)))
                                       alternatives))))
-
-(defn- literal-node? [node]
-  (and (#{:str :kw :num :bool :nil} (:op node)) (empty? (:directives node))
-       (not (env/tag-node node))))
-
-(defn- literal-map-key-node? [node]
-  (and (#{:kw :str} (:op node)) (literal-node? node)))
 
 (defn- literal-type [v]
   (if (nil? v) t/nil-t (t/lit v)))
@@ -584,19 +593,19 @@
     [nil leaf]
     (equality-parts ctx conform/invalid-key leaf)))
 
-(defn- presence-parts [key leaf]
+(defn- presence-parts [env key leaf]
   (case (:t leaf)
     :nil [nil leaf]
     :never [nil nil]
-    :map (cond
-           (contains? (:req leaf) key) [leaf nil]
-           (contains? (:opt leaf) key)
-           (let [field (get-in leaf [:opt key])
-                 absent (assoc-in leaf [:opt key] t/never)]
-             [(when-not (= :never (:t field))
-                (-> leaf (assoc-in [:req key] field) (update :opt dissoc key)))
-              absent])
-           :else [leaf leaf])
+    :map (if (contains? (:req leaf) key)
+           [leaf nil]
+           (let [index (:map-index leaf)
+                 field (or (get-in leaf [:opt key]) (when index (t/map-of-entry env index key)))]
+             (cond
+               field [(when-not (= :never (:t field)) (assoc-map-key leaf key field))
+                      (assoc-in leaf [:opt key] t/never)]
+               (or index (:complete-keys? leaf)) [nil leaf]
+               :else [leaf leaf])))
     [leaf leaf]))
 
 (def ^:private scalar-primitives #{:int :double :number :string :keyword :boolean :symbol})
@@ -738,8 +747,8 @@
       (and (#{'< '<= '> '>=} h) (= 2 (count args)))
       (or (count-order-contexts ctx h a b) [ctx ctx])
 
-      (and (= 'contains? h) (= 2 (count args)) (= :kw (:op b)) (literal-node? b))
-      (or (refine-path ctx a #(presence-parts (:val b) %)) [ctx ctx])
+      (and (= 'contains? h) (= 2 (count args)) (literal-map-key-node? b))
+      (or (refine-path ctx a #(presence-parts env (:val b) %)) [ctx ctx])
 
       (and (= 'instance? h) (= 2 (count args)) (= :sym (:op a)))
       (or (when-let [c (t/resolve-class (:imports (:file ctx)) (:val a))]

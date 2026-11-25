@@ -559,6 +559,45 @@
     (is (= [[15 "TSP2345"] [16 "TSP2345"] [20 "TSP210-01"]] (locations issues))
         (pr-str issues))))
 
+(deftest contains-refines-map-of-tails-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef counts :args (s/cat) :ret (s/map-of string? int?))
+(defn counts [] {\"n\" 4})
+(s/fdef keyword-counts :args (s/cat) :ret (s/map-of keyword? int?))
+(defn keyword-counts [] {:n 4})
+(s/fdef nullable :args (s/cat) :ret (s/map-of string? (s/nilable int?)))
+(defn nullable [] {\"n\" nil})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef amount :args (s/cat) :ret int?)
+(defn amount []
+  (let [{:strs [n] :as all} (list :tag :count (seq (options/counts)))]
+    (if (contains? all \"n\") (+ n (get all \"n\")) 0)))
+(let [{:keys [n] :as all} (list :tag :count (options/keyword-counts))]
+  (if (contains? all :n) (inc n) (get all :n 0)))
+(let [{:strs [n] :as all} (list :tag :count (options/nullable))]
+  (if (contains? all \"n\") (inc n) 0))
+(let [{:strs [n] :as all} (list :tag :count (options/nullable))]
+  (if (and (contains? all \"n\") (some? (get-in all [\"n\"]))) (+ n (get all \"n\")) 0))
+(let [{:as all} (list :tag :count (seq (options/counts)))]
+  (if (contains? all :unexpected) (inc \"unreachable\") 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2531"]] (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "n may be nil" (:message (first issues))))))
+
+(deftest contains-refines-absence-of-an-indexed-tail-key
+  (let [issues (diagnostics "(s/fdef counts :args (s/cat) :ret (s/map-of string? int?))
+(defn counts [] {})
+(let [{:strs [n] :as all} (list :tag :count (seq (counts)))]
+  (if (contains? all \"n\") (inc n) (if (nil? n) 0 (inc \"unreachable\"))))
+(let [{:strs [n] :as all} (list :tag :count (counts))]
+  (when-not (contains? all \"n\") (inc n)))")]
+    (is (= [[7 "TSP2531"]] (locations issues)) (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

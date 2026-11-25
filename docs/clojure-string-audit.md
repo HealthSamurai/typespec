@@ -39,7 +39,7 @@ Pinned первоисточники:
 | starts-with? | CS S → boolean; receiver через toString | S S → boolean | CS S → boolean | builder receiver работает; builder needle throws; оба nil положения throws; 42 receiver работает | Второй аргумент именно String; произвольный receiver исключён |
 | ends-with? | CS S → boolean; receiver через toString | S S → boolean | CS S → boolean | Те же типовые случаи | То же |
 | includes? | CS CS → boolean; receiver через toString | S S → boolean | CS CS → boolean | builder и слева, и справа работают; оба nil положения throws | Не копировать String-only needle из starts/ends |
-| replace | CS + одна из связанных пар C/C, CS/CS, P/CS, P/callback → S | S any any → S | Четыре overloads, см. ниже | char/char, builder/builder, regex/builder работают; char/string, CS/char, nil match throws; callback probes ниже | Связь match/replacement обязательна; независимые union аргументов неверны |
+| replace | Ненулевой первый аргумент + одна из связанных пар C/C, CS/CS, P/CS, P/callback → S | S any any → S | Четыре overloads, см. ниже | Первый аргумент преобразуется через `.toString`. Допустимы keyword и число. `nil` в первом аргументе вызывает NPE. | Связь match/replacement обязательна; независимые union аргументов неверны |
 | capitalize | CS → S; receiver через toString | S → S | CS → S | builder работает; nil throws; 42/false тоже работают | Сознательно не обещаем arbitrary Object; locale |
 | reverse | CS → S, StringBuilder.reverse | S → S | CS → S | builder работает; nil/42/false throws | Не обещать reverse графем: JVM UTF-16/surrogate semantics |
 | split-lines | CS → V, split по `#"\\r?\\n"` | S → V | CS → V | builder " Ab\\n"→[" Ab"]; nil/42/false throws | Не все Unicode line separators; trailing empty исчезают |

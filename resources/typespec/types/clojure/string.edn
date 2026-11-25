@@ -21,9 +21,9 @@
  clojure.string/includes?   [java.lang.CharSequence java.lang.CharSequence :-> boolean?]
  ;; Correlated pairs, not independent unions. A Pattern callback must handle
  ;; both ungrouped matches and vectors with nullable unmatched groups.
- clojure.string/replace     ([java.lang.CharSequence java.lang.Character java.lang.Character :-> string?]
-                            [java.lang.CharSequence java.lang.CharSequence java.lang.CharSequence :-> string?]
-                            [java.lang.CharSequence java.util.regex.Pattern java.lang.CharSequence :-> string?]
-                            [java.lang.CharSequence java.util.regex.Pattern
+ clojure.string/replace     ([some? java.lang.Character java.lang.Character :-> string?]
+                            [some? java.lang.CharSequence java.lang.CharSequence :-> string?]
+                            [some? java.util.regex.Pattern java.lang.CharSequence :-> string?]
+                            [some? java.util.regex.Pattern
                              [(t/or string? (s/coll-of (s/nilable string?) :kind vector?)) :-> string?]
                              :-> string?])}

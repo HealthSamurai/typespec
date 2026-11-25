@@ -95,6 +95,27 @@
   (is (thrown? ClassCastException (name 42)))
   (is (thrown? ClassCastException (namespace "plain"))))
 
+(deftest replace-and-spec-check-non-nil-values-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef replace-x :args (s/cat :x some?) :ret string?)
+(defn replace-x [x] (str/replace x #\"x\" \"_\"))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.string :as str] [clojure.spec.alpha :as s]))
+(api/replace-x :x)
+(api/replace-x false)
+(api/replace-x {:x 1})
+(str/replace 42 \"4\" \"0\")
+(api/replace-x nil)
+(s/fdef maybe-replace :args (s/cat :x (s/nilable string?)) :ret string?)
+(defn maybe-replace [x] (str/replace x #\"x\" \"_\"))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 6 "TSP2345"] ["client.clj" 8 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= ":_" (str/replace :x #"x" "_")))
+  (is (= "02" (str/replace 42 "4" "0")))
+  (is (= "f0lse" (str/replace false "a" "0")))
+  (is (thrown? NullPointerException (str/replace nil #"x" "_"))))
+
 (deftest honest-incomplete-boundaries
   ;; Regex groups reach the callback as a string or a vector.
   (is (some #(= "TSP210-01" (:code %))

@@ -9,6 +9,7 @@
 (def unknown {:t :unknown})
 (def never {:t :never})
 (def nil-t {:t :nil})
+(def some-t {:t :some})
 (defn prim [n] {:t :prim :name n})
 (defn lit [v] {:t :lit :val v})
 (defn ref-t [k] {:t :ref :name k})
@@ -370,6 +371,7 @@
       (or (#{:var :ivar :all} st) (#{:var :ivar :all} tt))
       (inconclusive! :unresolved-variable)
       (= :nil st) (boolean (:platform t))
+      (= :some tt) true
       (= :nil tt) false
       (= :lit st) (if (= :lit tt) (= (:val s) (:val t)) (sub1? env (lit-prim (:val s)) t))
       (= :lit tt) false
@@ -530,7 +532,7 @@
   (or (:as t)
       (some-> t meta ::operator-form pr-str)
     (case (:t t)
-      :any "any?" :unknown "t/unknown" :never "t/never" :nil "nil?"
+      :any "any?" :unknown "t/unknown" :never "t/never" :nil "nil?" :some "some?"
       (:var :ivar :rigid) (str (:name t))
       :all (str "(t/all ["
                 (str/join " " (map (fn [{:keys [name bound]}]
@@ -840,7 +842,7 @@
                                                   'simple-keyword? 'qualified-keyword? 'sequential? 'fn?} nm)
                                                (with-meta {::unchecked-contract true}))
                              (= 'any? nm) any
-                             (= 'some? nm) (with-meta any {::unchecked-contract true})
+                             (= 'some? nm) some-t
                              (= 'nil? nm) nil-t
                              (= 'list? nm) (class-type "clojure.lang.IPersistentList")
                              (#{'true? 'false?} nm) (with-meta (prim :boolean) {::unchecked-contract true})

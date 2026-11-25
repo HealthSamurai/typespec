@@ -29,7 +29,7 @@
                 "(defn f [x] (s/replace x \"a\" \\b))"
                 "(defn f [x] (s/replace x \\a \"b\"))"
                 "(defn f [x] (s/replace x nil \"b\"))"
-                "(s/replace 42 #\"a\" \"b\")"]]
+                "(s/replace nil #\"a\" \"b\")"]]
     (is (some #(= "TSP2345" (:code %)) (diagnostics form)) form)))
 
 (deftest unknown-match-or-replacement-never-silently-pass
@@ -46,9 +46,7 @@
   (is (= "<b>a</b>: b" (str/replace "a: b" #"(?m)^(.*):" "<b>$1</b>:")))
   (is (= "<svg class=\"x\">" (str/replace "<svg>" #"^\<svg" (str "<svg class=" (pr-str "x")))))
   (is (thrown? Exception (str/replace "a" #"a" 42)))
-  ;; Clojure 1.12.4 calls .toString on the first argument, so the Namespace
-  ;; found in var metadata is safe at runtime too. The checker conservatively
-  ;; keeps its declared CharSequence boundary and unknown warning.
+  ;; The Namespace found in var metadata is converted through .toString.
   (is (= "clojure_core" (str/replace (the-ns 'clojure.core) "." "_"))))
 
 (deftest incomplete-candidates-ignore-order-and-rejected-return-types

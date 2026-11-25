@@ -1642,6 +1642,21 @@
                    state callbacks)]
         (generic-result ctx node label state)))))
 
+(defn- closest-arity-index [arg-nodes problems]
+  (let [positions (zipmap arg-nodes (range))
+        call-position (count arg-nodes)]
+    (->> problems
+         (map-indexed vector)
+         (sort-by (fn [[i issues]]
+                    (let [rejected (->> issues
+                                        (keep (fn [[node [code]]]
+                                                (when (not= "TSP210-01" code)
+                                                  (get positions node call-position))))
+                                        distinct
+                                        sort)]
+                      [(count rejected) (mapv - rejected) (- i)])))
+         ffirst)))
+
 (defn- call-fn [ctx node fname ftype arg-nodes & [typed-args]]
   (if (= :all (:t ftype))
     (call-generic ctx node fname ftype arg-nodes typed-args)
@@ -1679,7 +1694,8 @@
                                   (some #(= "TSP210-01" (first (second %))) (mapcat identity all)))
                   possible (distinct (concat incomplete nil-compatible))
                   returns (distinct (map :ret (if (seq possible) (map #(nth fits %) possible) fits)))
-                  i (or (if vague? (last passing) (first passing)) (first incomplete) nil-only (dec (count all)))]
+                  i (or (if vague? (last passing) (first passing)) (first incomplete) nil-only
+                        (if (next fits) (closest-arity-index arg-nodes all) 0))]
               (doseq [[pn [code msg extra]] (nth all i)]
                 (apply report! ctx pn code msg (mapcat identity extra)))
               ;; A merely incomplete candidate must not hide a possible nil

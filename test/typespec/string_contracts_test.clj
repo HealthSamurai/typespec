@@ -121,6 +121,13 @@
   (is (some #(= "TSP210-01" (:code %))
             (diagnostics "(replace \"abc\" #\"(a)\" (fn [x] (s/upper-case x)))"))))
 
+(deftest replace-reports-arguments-from-the-closest-overload
+  (is (= [["TSP2345" "\"_\" is not assignable to java.lang.Character"]]
+         (mapv (juxt :code :message) (diagnostics "(replace 42 \\x \"_\")"))))
+  (is (= [["TSP2345" "nil is not assignable to some?"]
+          ["TSP2345" "\"_\" is not assignable to java.lang.Character"]]
+         (mapv (juxt :code :message) (diagnostics "(replace nil \\x \"_\")")))))
+
 (deftest character-roundtrip
   (doseq [source ["\\a" "\\newline" "\\space" "\\u03bb"]]
     (let [node (first (:forms (parse/parse-string "char.clj" source)))]

@@ -453,29 +453,33 @@
           (when-let [items (:items member)]
             (mapv #(selector-path-step (single-member ctx %)) items)))))))
 
-(defn- position-step? [step]
-  (or (integer? step) (some? (:vector-index step))))
+(defn- optional-position-index [step]
+  (or (:vector-index step) (:seq-index step)))
 
-(defn- vector-step-presence [member step]
-  (when (= :vector (:kind member))
-    (when-let [index (:vector-index step)]
+(defn- position-step? [step]
+  (or (integer? step) (some? (optional-position-index step))))
+
+(defn- optional-step-presence [member step]
+  (when-let [index (optional-position-index step)]
+    (when (or (= :vector (:kind member))
+              (and (:seq-index step) (= :seq (:kind member))))
       (length/position member index))))
 
 (defn- projected-position [member step]
-  (if-let [index (:vector-index step)]
-    (when (#{:present :possible} (vector-step-presence member step))
+  (if-let [index (optional-position-index step)]
+    (when (#{:present :possible} (optional-step-presence member step))
       (if-let [items (:items member)] (get items index) (:of member)))
     (get (:items member) step)))
 
-(defn- missing-vector-position? [member step]
-  (and (:vector-index step)
-       (or (= :nil (:t member)) (= :absent (vector-step-presence member step)))))
+(defn- missing-optional-position? [member step]
+  (and (optional-position-index step)
+       (or (= :nil (:t member)) (= :absent (optional-step-presence member step)))))
 
-(defn- vector-with-position [member index]
+(defn- collection-with-position [member index]
   (let [[lo hi] (length/bounds member)]
     (length/with-bounds member (max lo (inc index)) hi)))
 
-(defn- vector-without-position [member index]
+(defn- collection-without-position [member index]
   (let [[lo hi] (length/bounds member)]
     (length/with-bounds member lo (if hi (min hi index) index))))
 
@@ -500,8 +504,10 @@
                             (and (some? map-path)
                                  (or (empty? map-path)
                                      (and (nil-lookup-default? ctx default) (every? some? map-path)))) [a map-path]
-                            (and (#{'first 'second 'key 'val} h) a (nil? b))
-                            [a [(if (#{'first 'key} h) 0 1)]]
+                            (and (#{'first 'second} h) a (nil? b))
+                            [a [{:seq-index (if (= 'first h) 0 1)}]]
+                            (and (#{'key 'val} h) a (nil? b))
+                            [a [(if (= 'key h) 0 1)]]
                             nth-step [a [nth-step]])]
           (when-let [p (and base (stable-path ctx base))]
             (when (or (not (integer? (first path)))
@@ -522,10 +528,10 @@
             (if (position-step? key)
               (let [positions (for [member (t/members (:env ctx) current)]
                                 (if-let [field (projected-position member key)]
-                                  (if (= :possible (vector-step-presence member key))
+                                  (if (= :possible (optional-step-presence member key))
                                     (t/union field t/nil-t)
                                     field)
-                                  (when (missing-vector-position? member key) t/nil-t)))]
+                                  (when (missing-optional-position? member key) t/nil-t)))]
                 (if (every? some? positions) (apply t/union positions) (reduced nil)))
               (let [{:keys [type status]} (lookup-key ctx current key)]
                 (case status
@@ -577,18 +583,18 @@
 (defn- position-alternatives [member step descend]
   (if-let [field (projected-position member step)]
     (when-let [children (descend field)]
-      (let [index (or (:vector-index step) step)
+      (let [index (or (optional-position-index step) step)
             present (for [[leaf rebuild] children]
                       [leaf (if-let [items (:items member)]
                               (fn [part]
                                 (let [items (assoc items index (rebuild part))]
                                   (assoc member :items items :of (apply t/union items))))
-                              ;; The test only describes this element of a homogeneous vector.
-                              (constantly (vector-with-position member index)))])]
-        (if (= :possible (vector-step-presence member step))
-          (cons [t/nil-t (constantly (vector-without-position member index))] present)
+                              ;; The test only describes this element of a homogeneous collection.
+                              (constantly (collection-with-position member index)))])]
+        (if (= :possible (optional-step-presence member step))
+          (cons [t/nil-t (constantly (collection-without-position member index))] present)
           present)))
-    (when (missing-vector-position? member step)
+    (when (missing-optional-position? member step)
       [[t/nil-t (constantly member)]])))
 
 (defn- path-alternatives
@@ -680,6 +686,7 @@
 
 (defn- refine-path [ctx node split]
   (let [subject (stable-path ctx node)
+        projected-local (when (some optional-position-index (:path subject)) (plain-local ctx node))
         alternatives (when subject (path-alternatives ctx (:type subject) (:path subject) true))
         local (when-not alternatives (plain-local ctx node))
         subject (if local {:local local} subject)
@@ -695,7 +702,10 @@
                      (when-let [branch (refine-alternatives ctx subject parts #(nth % i))]
                        (if field-parts
                          (refine-alternatives branch field field-parts #(nth % i))
-                         branch)))]
+                         (cond-> branch
+                           projected-local
+                           (assoc-in [:locals projected-local]
+                                     (apply t/union (keep #(nth (first %) i) parts)))))))]
         [(branch 0) (branch 1)]))))
 
 (defn- equality-parts [ctx value leaf]
@@ -853,7 +863,7 @@
     (case (length/position member index)
       :absent [nil member]
       :present [member nil]
-      :possible [(vector-with-position member index) (vector-without-position member index)])
+      :possible [(collection-with-position member index) (collection-without-position member index)])
     :else [member member]))
 
 (defn- contains-contexts [ctx source key-node]
@@ -1405,7 +1415,8 @@
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
      :vector (let [members (t/members (:env ctx) ty)
-                   [ctx origin path] (if (every? :items members)
+                   sequence-positions? (every? #(or (#{:vector :seq} (:kind %)) (= :nil (:t %))) members)
+                   [ctx origin path] (if (or sequence-positions? (every? :items members))
                                        (track-path ctx (or projection {:path [] :type ty}))
                                        [ctx])
                    project (fn [path] (when origin {:origin origin :path path}))]
@@ -1416,10 +1427,11 @@
                        (and (= :kw (:op p)) (= :as (:val p)))
                        (bind-pattern ctx (first more) ty why (project path))
                        :else
-                       (recur (bind-pattern ctx p (positional-type ctx ty i) nil
-                                            (when (every? #(contains? (:items %) i) members)
-                                              (project (conj path i))))
-                              (inc i) more))))
+                       (let [step (cond (every? #(contains? (:items %) i) members) i
+                                        sequence-positions? {:seq-index i})]
+                         (recur (bind-pattern ctx p (positional-type ctx ty i) nil
+                                              (when step (project (conj path step))))
+                                (inc i) more)))))
      ctx)))
 
 ;; ---- function calls ----

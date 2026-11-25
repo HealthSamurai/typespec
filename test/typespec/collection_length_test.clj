@@ -34,6 +34,11 @@
 (defn short-enough [v] (count v))
 (s/fdef nullable-short-enough :args (s/cat :v ::short-nullable) :ret int?)
 (defn nullable-short-enough [v] (count v))
+(s/def ::seqs (s/nilable (s/coll-of int? :kind seq? :max-count 5)))
+(s/fdef enough-two :args (s/cat :v (s/coll-of int? :kind vector? :min-count 2 :max-count 5)) :ret int?)
+(defn enough-two [v] (count v))
+(s/fdef short-seq :args (s/cat :v (s/coll-of int? :kind seq? :max-count 1)) :ret int?)
+(defn short-seq [v] (count v))
 (s/fdef integer :args (s/cat :n int?) :ret int?)
 (defn integer [n] n)"))
 
@@ -106,6 +111,31 @@
   (if (some? (nth v 2 0)) (api/integer (get v 2)) 0))
 (defn overflow [v] (nth v 4294967296 nil))")]
     (is (= [["client.clj" 10 "TSP2531"] ["client.clj" 11 "TSP330-02"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest sequence-positions-share-length-facts-across-namespaces
+  (let [issues (vector-guard-diagnostics
+                 "(s/fdef vec-second :args (s/cat :v ::api/nums) :ret int?)
+(defn vec-second [v]
+  (if (some? (second v)) (+ (api/enough-two v) (api/integer (first v))) 0))
+(s/fdef seq-second :args (s/cat :v ::api/seqs) :ret int?)
+(defn seq-second [v] (if (some? (second v)) (api/integer (first v)) 0))
+(s/fdef seq-absent :args (s/cat :v ::api/seqs) :ret int?)
+(defn seq-absent [v] (if (and (some? v) (nil? (second v))) (api/short-seq v) 0))
+(s/fdef nil-element :args (s/cat :v ::api/nullable) :ret int?)
+(defn nil-element [v] (if (some? (second v)) (api/integer (first v)) 0))
+(s/fdef alias :args (s/cat :v ::api/nullable) :ret int?)
+(defn alias [v] (let [n (second v)] (if (some? n) (api/integer n) 0)))
+(s/fdef destructured :args (s/cat :v ::api/nums) :ret int?)
+(defn destructured [v]
+  (let [[a b] v] (if (some? b) (+ (api/enough-two v) (api/integer a)) 0)))
+(s/fdef destructured-alias :args (s/cat :v ::api/nullable) :ret int?)
+(defn destructured-alias [[a b :as all]]
+  (if (some? b) (+ (count all) (api/integer b)) 0))
+(s/fdef destructured-bad :args (s/cat :v ::api/nullable) :ret int?)
+(defn destructured-bad [v] (let [[a b] v] (if (some? b) (api/integer a) 0)))")]
+    (is (= [["client.clj" 10 "TSP2531"] ["client.clj" 20 "TSP2531"]]
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 

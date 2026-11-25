@@ -235,6 +235,39 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest get-in-guards-refine-fixed-vector-positions-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::count (s/nilable int?))
+(s/def ::row (s/keys :req-un [::count]))
+(s/def ::rows (s/tuple ::row ::row))
+(s/def ::data (s/keys :req-un [::rows]))
+(s/def ::path (s/tuple #{:rows} #{0} #{:count}))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))
+(s/fdef literal-path :args (s/cat :m ::api/data) :ret int?)
+(defn literal-path [m]
+  (if-some [n (get-in m [:rows 0 :count])]
+    (+ n (api/accept (get-in m [:rows 0 :count]))) 0))
+(s/fdef typed-path :args (s/cat :m ::api/data :path ::api/path) :ret int?)
+(defn typed-path [m path]
+  (let [[{:keys [count]}] (:rows m)]
+    (if (some? (get-in m path)) (api/accept count) 0)))
+(s/fdef local-index :args (s/cat :m ::api/data :i #{0}) :ret int?)
+(defn local-index [m i]
+  (if (some? (get-in m [:rows i :count])) (api/accept (get-in m [:rows 0 :count])) 0))
+(s/fdef ambiguous :args (s/cat :m ::api/data :i #{0 1}) :ret int?)
+(defn ambiguous [m i]
+  (if (some? (get-in m [:rows i :count])) (api/accept (get-in m [:rows 0 :count])) 0))
+(defn list-lookup []
+  (let [row '(1)] (when (nil? (get-in row [0])) (api/accept \"wrong\"))))
+(defn default-out-of-range []
+  (let [row [1]] (if (some? (get-in row [1] 99)) (inc (get-in row [1])) 0)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 15 "TSP2531"] ["client.clj" 17 "TSP2345"] ["client.clj" 19 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

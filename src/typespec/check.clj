@@ -393,17 +393,40 @@
   (let [[member & more] (t/members (:env ctx) (eff ctx ty))]
     (when-not (seq more) member)))
 
+(defn- stable-local-member [ctx node]
+  (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
+    (single-member ctx (get-in ctx [:locals local]))))
+
 (defn- stable-lookup-key [ctx node]
   (or (stable-map-key node)
-      (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
-        (selector-literal-key (single-member ctx (get-in ctx [:locals local]))))))
+      (selector-literal-key (stable-local-member ctx node))))
+
+(defn- vector-lookup-step [value]
+  (when (and (integer? value) (<= 0 value Integer/MAX_VALUE))
+    {:vector-index (int value)}))
+
+(defn- selector-path-step [member]
+  (when (= :lit (:t member))
+    (or (selector-literal-key member) (vector-lookup-step (:val member)))))
 
 (defn- stable-lookup-path [ctx node]
-  (if (= :vector (:op node))
-    (mapv #(stable-lookup-key ctx %) (:children node))
-    (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
-      (when-let [items (:items (single-member ctx (get-in ctx [:locals local])))]
-        (mapv #(selector-literal-key (single-member ctx %)) items)))))
+  (when (and (empty? (:directives node)) (not (env/tag-node node)))
+    (if (= :vector (:op node))
+      (mapv #(or (stable-map-key %)
+                 (if (literal-node? %)
+                   (vector-lookup-step (:val %))
+                   (selector-path-step (stable-local-member ctx %))))
+            (:children node))
+      (when-let [items (:items (stable-local-member ctx node))]
+        (mapv #(selector-path-step (single-member ctx %)) items)))))
+
+(defn- position-step? [step]
+  (or (integer? step) (some? (:vector-index step))))
+
+(defn- projected-position [member step]
+  (if-let [index (:vector-index step)]
+    (when (= :vector (:kind member)) (get (:items member) index))
+    (get (:items member) step)))
 
 (defn- stable-path [ctx node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
@@ -444,8 +467,8 @@
 
 (defn- projected-type [ctx ty path]
   (reduce (fn [current key]
-            (if (integer? key)
-              (let [positions (map #(get (:items %) key) (t/members (:env ctx) current))]
+            (if (position-step? key)
+              (let [positions (map #(projected-position % key) (t/members (:env ctx) current))]
                 (if (every? some? positions) (apply t/union positions) (reduced nil)))
               (let [{:keys [type status]} (lookup-key ctx current key)]
                 (case status
@@ -456,7 +479,7 @@
           ty path))
 
 (defn- required-map-projection? [ctx ty path]
-  (when (and (seq path) (not (integer? (peek path))))
+  (when (and (seq path) (not (position-step? (peek path))))
     (when-let [parent (projected-type ctx ty (pop path))]
       (and (= :req (:status (lookup-key ctx parent (peek path))))
            (not (t/nilable? (:env ctx) parent))))))
@@ -517,12 +540,13 @@
                                                   present)))))
                            paths (for [m members]
                                    (cond
-                                     (integer? key)
-                                     (when-let [field (get (:items m) key)]
+                                     (position-step? key)
+                                     (when-let [field (projected-position m key)]
                                        (when-let [children (walk field more)]
-                                         (for [[leaf rebuild] children]
+                                         (for [[leaf rebuild] children
+                                               :let [index (or (:vector-index key) key)]]
                                            [leaf (fn [new-leaf]
-                                                   (let [items (assoc (:items m) key (rebuild new-leaf))]
+                                                   (let [items (assoc (:items m) index (rebuild new-leaf))]
                                                      (assoc m :items items :of (apply t/union items))))])))
 
                                      (get-in m [:req key]) (required m (get-in m [:req key]))

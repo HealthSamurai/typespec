@@ -714,6 +714,11 @@
                              keys)]
           [(join-contexts ctx (map first branches)) (join-contexts ctx (map second branches))])))))
 
+(defn- presence-contexts [ctx source key-node]
+  (if-let [key (stable-map-key key-node)]
+    (refine-path ctx source #(presence-parts (:env ctx) key %))
+    (computed-presence-contexts ctx source key-node)))
+
 (defn- logical-contexts [ctx args and?]
   (let [proceed (if and? first second)
         stop (if and? second first)
@@ -736,16 +741,24 @@
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
                             [(:val n) (get-in ctx [:binding-ids (:val n)])]))})))
 
+(defn- find-contexts [ctx node]
+  (when (and (= :list (:op node)) (= 'find (builtin-head ctx node)))
+    (let [[_ source key & extra] (:children node)]
+      (when (and key (empty? extra))
+        (presence-contexts ctx source key)))))
+
 (defn- truth-contexts [ctx node]
-  (refine-path ctx node (fn [leaf]
-                         (for [truthy? [true false]
-                               :let [ty (truth-part (:env ctx) leaf truthy?)]]
-                           (when-not (= :never (:t ty)) ty)))))
+  (or (find-contexts ctx node)
+      (refine-path ctx node (fn [leaf]
+                             (for [truthy? [true false]
+                                   :let [ty (truth-part (:env ctx) leaf truthy?)]]
+                               (when-not (= :never (:t ty)) ty))))))
 
 (defn- some-contexts [ctx node]
-  (refine-path ctx node (fn [leaf]
-                          [(when-not (#{:nil :never} (:t leaf)) leaf)
-                           (when (#{:nil :unknown :any} (:t leaf)) t/nil-t)])))
+  (or (find-contexts ctx node)
+      (refine-path ctx node (fn [leaf]
+                             [(when-not (#{:nil :never} (:t leaf)) leaf)
+                              (when (#{:nil :unknown :any} (:t leaf)) t/nil-t)]))))
 
 (defn- emptiness-contexts [ctx node some?]
   (let [[source & extra] (rest (:children node))]
@@ -807,10 +820,7 @@
       (or (count-order-contexts ctx h a b) [ctx ctx])
 
       (and (= 'contains? h) (= 2 (count args)))
-      (or (if-let [key (stable-map-key b)]
-            (refine-path ctx a #(presence-parts env key %))
-            (computed-presence-contexts ctx a b))
-          [ctx ctx])
+      (or (presence-contexts ctx a b) [ctx ctx])
 
       (and (= 'instance? h) (= 2 (count args)) (= :sym (:op a)))
       (or (when-let [c (t/resolve-class (:imports (:file ctx)) (:val a))]

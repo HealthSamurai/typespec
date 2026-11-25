@@ -680,6 +680,40 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (= [[3 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues))))
 
+(deftest find-guards-refine-key-presence-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/def ::words (s/map-of string? string?))
+(s/def ::nullable (s/map-of string? (s/nilable int?)))
+(s/def ::key #{\"n\" :missing})
+(s/fdef accept :args (s/cat :key #{\"n\"} :value int?) :ret int?)
+(defn accept [key value] value)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef count-at :args (s/cat :m ::api/counts) :ret int?)
+(defn count-at [m] (if-some [entry (find m \"n\")] (+ (val entry) (get m \"n\")) 0))
+(s/fdef computed :args (s/cat :m ::api/counts :key ::api/key) :ret int?)
+(defn computed [m key]
+  (if-let [[found value] (find m key)] (api/accept key (+ value (get m key))) 0))
+(s/fdef absent :args (s/cat :m ::api/words) :ret int?)
+(defn absent [m] (if (nil? (find m \"n\")) (inc (get m \"n\" 0)) 0))
+(s/fdef stored-nil :args (s/cat :m ::api/nullable) :ret int?)
+(defn stored-nil [m] (if-some [entry (find m \"n\")] (inc (get m \"n\")) 0))
+(s/fdef truthy :args (s/cat :m ::api/counts) :ret (s/nilable int?))
+(defn truthy [m] (when (find m \"n\") (inc (get m \"n\"))))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 10 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest a-shadowed-find-function-does-not-prove-map-key-presence
+  (let [file (parse/parse-string "counts.clj" "(ns counts (:require [clojure.spec.alpha :as s]))
+(s/fdef read-n :args (s/cat :m (s/map-of string? int?)) :ret int?)
+(defn read-n [m]
+  (let [find (fn [_m _key] true)]
+    (if-some [entry (find m \"n\")] (inc (get m \"n\")) 0)))")
+        issues (:diagnostics (check/check-files [file] {}))]
+    (is (= [[5 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

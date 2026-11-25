@@ -99,25 +99,32 @@
   (when-let [^Class c (t/load-class cname)]
     (distinct (map #(.getName ^Method %) (.getMethods c)))))
 
+(def ^:private native-function-methods
+  {"java.lang.Runnable" {:name "run" :params [] :ret "void"}
+   "java.util.concurrent.Callable" {:name "call" :params [] :ret "java.lang.Object"}
+   "java.util.Comparator" {:name "compare" :params ["java.lang.Object" "java.lang.Object"]
+                           :ret "int" :clojure-comparator? true}})
+
 (def functional-method
-  "The erased method that Clojure can adapt an IFn to at a Java call site."
+  "The erased Java callback contract implemented or adapted by a Clojure function."
   (memoize
    (fn [cname]
-     (when-let [^Class c (t/load-class cname)]
-       (try
-         (when (and (.isInterface c)
-                    (not (.isAssignableFrom c clojure.lang.IFn))
-                    (Reflector/paramArgTypeMatch c clojure.lang.IFn))
-           (some (fn [^Method m]
-                   (when (and (Modifier/isAbstract (.getModifiers m))
-                              (<= (.getParameterCount m) 10)
-                              (not (#{"equals" "hashCode" "toString"} (.getName m))))
-                     {:name (.getName m)
-                      :params (mapv #(.getName ^Class %) (.getParameterTypes m))
-                      :ret (.getName (.getReturnType m))}))
-                 (.getMethods c)))
-         (catch LinkageError _ nil)
-         (catch SecurityException _ nil))))))
+     (or (get native-function-methods cname)
+         (when-let [^Class c (t/load-class cname)]
+           (try
+             (when (and (.isInterface c)
+                        (not (.isAssignableFrom c clojure.lang.IFn))
+                        (Reflector/paramArgTypeMatch c clojure.lang.IFn))
+               (some (fn [^Method m]
+                       (when (and (Modifier/isAbstract (.getModifiers m))
+                                  (<= (.getParameterCount m) 10)
+                                  (not (#{"equals" "hashCode" "toString"} (.getName m))))
+                         {:name (.getName m)
+                          :params (mapv #(.getName ^Class %) (.getParameterTypes m))
+                          :ret (.getName (.getReturnType m))}))
+                     (.getMethods c)))
+             (catch LinkageError _ nil)
+             (catch SecurityException _ nil)))))))
 
 (defn constructors
   "Public constructor signatures. Returns nil if the signatures cannot be read."

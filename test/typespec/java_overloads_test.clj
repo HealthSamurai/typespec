@@ -58,6 +58,32 @@
     (is (= "java.util.concurrent.atomic.AtomicInteger.updateAndGet passes int? to callback parameter 1 for applyAsInt, which expects String"
            (:message (first ds))))))
 
+(deftest native-java-interfaces-check-clojure-function-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn ordered [a b] false)
+(defn task [] :finished)
+(defn wrong-task [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(java.util.TreeSet. api/ordered)
+(java.util.TreeSet. (fn [x y] 0))
+(java.util.TreeSet. (fn [x] 0))
+(java.util.TreeSet. (fn [x y] nil))
+(java.util.TreeSet. (java.util.Comparator/naturalOrder))
+(Thread. api/task)
+(Thread. api/wrong-task)
+(java.util.concurrent.FutureTask. api/task)
+(java.util.concurrent.FutureTask. api/wrong-task)")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2554"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 8 "TSP2554"] ["client.clj" 10 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds)))
+  (let [ordered (java.util.TreeSet. (fn [x y] (< x y)))]
+    (.add ordered 2)
+    (.add ordered 1)
+    (is (= [1 2] (vec ordered))))
+  (is (thrown? clojure.lang.ArityException (.run (Thread. (fn [x] x))))))
+
 (deftest java-overloads-check-the-whole-argument-list
   (let [source "(ns example.overloads)
 (java.util.Arrays/equals (byte-array [1]) (byte-array [1]))

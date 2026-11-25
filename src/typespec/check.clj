@@ -2390,8 +2390,9 @@
           :lit (t/prim->class (:name (t/lit-prim (:val m))))
           nil)))))
 
-(defn- functional-return-type [ctx ret]
+(defn- functional-return-type [ctx {:keys [ret clojure-comparator?]}]
   (cond
+    clojure-comparator? (t/union (t/prim :number) (t/prim :boolean))
     (= "void" ret) nil
     ;; Reflector uses Clojure truthiness, while a direct adapter unboxes Boolean.
     (= "boolean" ret) (when (:java-direct? ctx) (t/prim :boolean))
@@ -2415,35 +2416,31 @@
                                " for " name ", which expects " (t/show target))])))
           (map vector (iterate inc 1) params expected))))
 
-(defn- functional-argument-problem [ctx fn-type {:keys [params ret name]}]
+(defn- functional-argument-problem [ctx fn-type {:keys [params name] :as method}]
   (let [n (count params)]
     (if-let [arity (t/dispatch-arity (:arities fn-type) n)]
       (or (functional-parameter-problem ctx params arity name)
-          (when-let [expected (functional-return-type ctx ret)]
+          (when-let [expected (functional-return-type ctx method)]
             (let [actual (eff ctx (:ret arity))]
               (when (= :mismatch (:status (t/sub-result (:env ctx) actual expected)))
                 ["TSP2345" (str "expects a callback returning " (t/show expected) " for " name ", got " (t/show actual))]))))
       ["TSP2554" (str "expects a callback accepting " n " argument(s) for " name)])))
 
-(defn- functional-argument-ok? [ctx ty pclass]
-  (let [env (:env ctx)
-        members (t/members env ty)]
-    (when (some #(= :fn (:t %)) members)
-      (when-let [method (java/functional-method pclass)]
-        (every? (fn [member]
-                  (if (= :fn (:t member))
-                    (nil? (functional-argument-problem ctx member method))
-                    (t/sub? env member (t/class-type pclass))))
-                members)))))
-
 (defn- java-arg-ok? [ctx a pclass]
   (let [p (t/class-type pclass) env (:env ctx)
+        actual (t/resolve-t env a)
+        known-fn? (or (= :fn (:t actual)) (some #(= :fn (:t %)) (:types actual)))
         num? (fn [x] (t/sub? env x (t/prim :number)))]
-    (or (#{:unknown :any} (:t (t/resolve-t env a)))
-        (t/sub? env (if (t/primitives pclass) a (t/remove-nil env a)) p)
-        (and (num? (t/remove-nil env a)) (num? p))
-        (and (= "char" pclass) (= :class (:t a)))
-        (functional-argument-ok? ctx (t/remove-nil env a) pclass))))
+    (if-let [method (when known-fn? (java/functional-method pclass))]
+      (every? (fn [member]
+                (if (= :fn (:t member))
+                  (nil? (functional-argument-problem ctx member method))
+                  (t/sub? env member p)))
+              (t/members env (t/remove-nil env actual)))
+      (or (#{:unknown :any} (:t actual))
+          (t/sub? env (if (t/primitives pclass) a (t/remove-nil env a)) p)
+          (and (num? (t/remove-nil env a)) (num? p))
+          (and (= "char" pclass) (= :class (:t a)))))))
 
 (defn- java-ret [cname m]
   (let [base (t/class-type (:ret m))
@@ -2480,9 +2477,10 @@
     (if-let [i (java-unmatched-argument ctx alternatives fits)]
       (let [pclass (nth (:params (first fits)) i)
             members (remove #(= :nil (:t %)) (nth alternatives i))
-            [code message] (when (and (= 1 (count fits)) (seq members) (every? #(= :fn (:t %)) members))
-                             (when-let [method (java/functional-method pclass)]
-                               (some #(functional-argument-problem ctx % method) members)))]
+            methods (when (and (seq members) (every? #(= :fn (:t %)) members))
+                      (distinct (keep #(java/functional-method (nth (:params %) i)) fits)))
+            [code message] (when (= 1 (count methods))
+                             (some #(functional-argument-problem ctx % (first methods)) members))]
         (if code
           (report! ctx (nth arg-nodes i) code (str method-name " " message))
           (report! ctx (nth arg-nodes i) "TSP2345"

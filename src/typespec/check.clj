@@ -6699,6 +6699,17 @@
     ;; 128 bits of SHA-256: stable across runs, with practical collision resistance.
     (.formatHex (java.util.HexFormat/of) digest 0 16)))
 
+(defn- filter-warnings [diagnostics rules]
+  (if (and (map? rules) (seq rules))
+    (reduce (fn [[visible suppressed] {:keys [code severity reasons] :as diagnostic}]
+              (let [rule (when (= :warning severity) (get rules (symbol code)))]
+                (if (or (= :all rule)
+                        (and (set? rule) (seq reasons) (every? rule reasons)))
+                  [visible (inc suppressed)]
+                  [(conj visible diagnostic) suppressed])))
+            [[] 0] diagnostics)
+    [diagnostics 0]))
+
 (defn check-files
   "Checks parsed files. With ::diagnostics-only, omit expression types and the signature index."
   [files opts]
@@ -6738,15 +6749,18 @@
             unused (for [i ignores :when (not (used i))]
                      {:code "TSP2578" :severity :warning :file (:file i) :pos (:at i) :message "unused t/ignore: nothing to ignore here"})
             levels (:levels opts)
-            ds (->> (concat (remove hit all) invalid unused)
-                    (map #(if-let [l (get levels (symbol (:code %)))] (assoc % :severity l) %))
-                    (remove #(= :off (:severity %)))
+            report (->> (concat (remove hit all) invalid unused)
+                        (map #(if-let [l (get levels (symbol (:code %)))] (assoc % :severity l) %))
+                        (remove #(= :off (:severity %))))
+            [visible suppressed] (filter-warnings report (:suppress-warnings opts))
+            ds (->> visible
                     (map #(assoc % :id (diag-id %)))
                     (sort-by (juxt :file #(:row (:pos %)) #(:col (:pos %)) :code)))]
-        {:diagnostics (vec ds) :types (if *types* @*types* []) :trust @*trust* :env env
-         :uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :var :kind) (when *var-uses* @*var-uses*)))
-         :spec-uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :spec) (when *spec-uses* @*spec-uses*)))
-         :sigs (if (::diagnostics-only opts)
-                 {}
-                 (into {} (for [sym (keys (:vars env))]
-                            [sym (var-type {:env env :opts opts} sym)])))}))))
+        (cond-> {:diagnostics (vec ds) :types (if *types* @*types* []) :trust @*trust* :env env
+                 :uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :var :kind) (when *var-uses* @*var-uses*)))
+                 :spec-uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :spec) (when *spec-uses* @*spec-uses*)))
+                 :sigs (if (::diagnostics-only opts)
+                         {}
+                         (into {} (for [sym (keys (:vars env))]
+                                    [sym (var-type {:env env :opts opts} sym)])))}
+          (pos? suppressed) (assoc :suppressed-warnings suppressed))))))

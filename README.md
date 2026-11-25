@@ -100,6 +100,16 @@ clojure -M:test                           # compares the output with the expecte
 
 The [demo](demo/README.md) lists every mistake, what it does at run time today, and what Typespec says. Eight of the 23 fail silently at run time: the code returns a wrong value and nothing is thrown.
 
+To hide unknown-type warnings during adoption, put this rule in your project's `typespec.edn`.
+
+```clojure
+{:suppress-warnings {TSP210-01 #{:unknown}}}
+```
+
+`check` keeps errors and warnings with other reasons visible and reports
+how many warnings it hid. Use `typespec check --show-suppressed-warnings`
+to bypass this filter for one run. [Warning configuration](docs/reference.md#7-configuration)
+
 **Where the prototype takes types from**, in this order:
 
 | Source | Example | Written for Typespec? |

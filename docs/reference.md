@@ -359,8 +359,17 @@ type of `patient`. These directives add no trust entries.
                 :hooks   "typespec/hooks"                        ; SCI functions that rewrite a form
                 :expand  false}                                  ; true: expand unknown macros in a sandboxed worker
  :levels       {TSP7020 :off, TSP7031 :warning}                  ; per-code severity
+ :suppress-warnings {TSP210-01 #{:unknown}}
  :baseline     ".typespec/baseline.edn"} ; existing errors do not block; new ones do
 ```
+
+Use `:suppress-warnings` to hide warnings by diagnostic code and reason.
+Every reason on a warning must appear in the rule's set. Use `:all` to
+hide every warning for a code, including warnings without a reason.
+The filter uses the severity after `:levels`, so `--strict` errors stay
+visible. The text summary and JSON field `suppressed-warnings` report how
+many warnings the filter hid. Run `typespec check --show-suppressed-warnings`
+to bypass this filter for one check.
 
 ---
 

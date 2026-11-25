@@ -98,7 +98,7 @@
         report (try
                  (when-not base-root
                    (throw (ex-info "contracts-diff requires a baseline project root" {})))
-                 (run-contract-diff base-root root paths (select-keys opts [:strict :strict-nil]))
+                 (run-contract-diff base-root root paths (select-keys opts [:strict :strict-nil :suppress-warnings]))
                  (catch Exception e {:version 1 :error (or (.getMessage e) (.getSimpleName (class e)))}))]
     (if json?
       (println (json/write-str (cond-> report
@@ -117,32 +117,37 @@
           "--json" (recur (rest args) (assoc opts :json true) rest-args)
           "--strict" (recur (rest args) (assoc opts :strict true) rest-args)
           "--strict-nil" (recur (rest args) (assoc opts :strict-nil true) rest-args)
+          "--show-suppressed-warnings" (recur (rest args) (assoc opts :suppress-warnings {}) rest-args)
           "--root" (recur (drop 2 args) (assoc opts :root (second args)) rest-args)
           (recur (rest args) opts (conj rest-args a)))))))
 
 (defn -main [& args]
   (let [[opts [cmd & more]] (parse-args args)
         root (:root opts ".")
-        copts (select-keys opts [:strict :strict-nil])]
+        copts (select-keys opts [:strict :strict-nil :suppress-warnings])]
     (case cmd
       "check" (let [res (run-check root more (assoc copts ::check/diagnostics-only true))
                     ds (:diagnostics res)
                     errors (count (filter #(= :error (:severity %)) ds))]
                 (if (:json opts)
-                  (println (json/write-str {:version 1 :diagnostics (mapv diag->json ds) :trust (:trust res)}))
+                  (println (json/write-str (merge {:version 1 :diagnostics (mapv diag->json ds) :trust (:trust res)}
+                                                  (select-keys res [:suppressed-warnings]))))
                   (do (run! #(println (format-diag %)) ds)
                       (println)
                       (let [{:keys [cast any ignore guard]} (:trust res)]
                         (println (str (format "%d error(s), %d warning(s) in %d file(s). Trust: %d cast, %d any, %d ignore."
                                               errors (- (count ds) errors) (:files res) cast any ignore)
-                                      (when guard (format " %d trusted guard(s)." guard)))))))
+                                              (when guard (format " %d trusted guard(s)." guard))
+                                              (when-let [suppressed (:suppressed-warnings res)]
+                                                (format " %d warning(s) suppressed." suppressed)))))))
                 (shutdown-agents)
                 (System/exit (if (pos? errors) 1 0)))
       "sig" (let [res (run-check root nil copts)]
               (run! println (sig-lines res (symbol (first more)))))
       "contracts" (let [res (run-check root more (assoc copts :track-uses true))
                         ds (:diagnostics res)
-                        out {:version 1 :contracts (:contracts res) :diagnostics ds}]
+                        out (merge {:version 1 :contracts (:contracts res) :diagnostics ds}
+                                   (select-keys res [:suppressed-warnings]))]
                     (if (:json opts)
                       (println (json/write-str (assoc out :diagnostics (mapv diag->json ds))))
                       (prn out))
@@ -155,7 +160,7 @@
       "type-at" (let [[file row col] (str/split (first more) #":")
                       res (run-check root nil copts)]
                   (println (or (type-at res file (parse-long row) (parse-long col)) "no expression here")))
-      (do (println "usage: typespec check [paths] [--json] [--strict] [--strict-nil] [--root dir]")
+      (do (println "usage: typespec check [paths] [--json] [--strict] [--strict-nil] [--root dir] [--show-suppressed-warnings]")
           (println "       typespec contracts [paths] [--json] [--root dir]")
           (println "       typespec contracts-diff <baseline-root> [paths] [--json] [--root current-root]")
           (println "       typespec sig <ns> [--root dir]")

@@ -31,6 +31,7 @@
                         [:warning "TSP210-01" 101 48]
                         [:warning "TSP210-01" 115 45]
                         [:warning "TSP210-01" 117 45]
+                        [:warning "TSP210-01" 132 45]
                         [:error "TSP2345" 206 41]
                         [:warning "TSP7023" 308 35]])]
     (prn summary)
@@ -43,12 +44,12 @@
              {:source-lines 451 :parsed-top-level-forms 54 :namespace 'pg :files 1
               :last-form-position {:row 437 :col 1 :end-row 451 :end-col 28}}
              (select-keys summary [:source-lines :parsed-top-level-forms :namespace :files :last-form-position]))
-    (expect! "diagnostic counts" {:error 2 :warning 8} (:counts summary))
+    (expect! "diagnostic counts" {:error 2 :warning 9} (:counts summary))
     ;; Frequencies ignore reporting order but reject duplicate or missing diagnostics.
     (expect! "exact diagnostic codes, files and positions" (frequencies expected) (frequencies locations))
     (expect! "pg not loaded" false (:pg-loaded? summary))
     (expect! "trust counters" {:cast 0 :any 0 :ignore 0} (:trust summary))
-    (println "PASS: pinned whole-file pg acceptance (2 expected errors, 8 warnings).")
+    (println "PASS: pinned whole-file pg acceptance (2 expected errors, 9 warnings).")
     (let [tree (fixture/run-tree-check)
           coverage (:summary tree)]
       (prn coverage)
@@ -60,7 +61,7 @@
       (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
       (expect! "whole-tree diagnostic counts"
                {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 1 [:error "TSP330-02"] 1
-                [:warning "TSP210-01"] 79 [:warning "TSP7020"] 10
+                [:warning "TSP210-01"] 80 [:warning "TSP7020"] 10
                 [:warning "TSP7023"] 1 [:warning "TSP7031"] 3}
                (:codes coverage))
       (expect! "whole-tree error locations"
@@ -71,6 +72,9 @@
       (expect! "checked conditional step in mk-table-constraint" true
                (contains? (set (map location (:diagnostics tree)))
                           [:warning "TSP210-01" "upstream/src/dsql/pg.clj" 1196 77]))
+      (expect! "checked starts-with? inside letfn" true
+               (contains? (set (map location (:diagnostics tree)))
+                          [:warning "TSP210-01" "upstream/src/pg.clj" 132 45]))
       (expect! "reduce-kv diagnoses unknown inputs inside the dsql reducers"
                [[1172 40] [1172 73] [1176 44] [1187 32] [1187 48]]
                (->> (:diagnostics tree)
@@ -99,7 +103,7 @@
       (expect! "conj counts the closing fragment in pg/coalesce"
                "(s/coll-of t/unknown :kind vector? :min-count 1)"
                (main/type-at tree "upstream/src/dsql/pg.clj" 1038 7))
-      (println "PASS: all 9 pinned pg production sources (351 forms, 4 expected errors, 93 warnings).")
+      (println "PASS: all 9 pinned pg production sources (351 forms, 4 expected errors, 94 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")
                      (str/replace-first source "[socket (java.net.ServerSocket. 0)]"

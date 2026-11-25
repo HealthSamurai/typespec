@@ -861,6 +861,47 @@
     (is (= ["string?" "(s/coll-of string? :kind vector? :min-count 1 :max-count 1)"]
            (mapv #(apply main/type-at r "callbacks.clj" %) [[10 3] [14 3]])))))
 
+(deftest letfn-checks-forward-references-and-outer-context
+  (let [api (parse/parse-string
+             "visitors.clj"
+             "(ns visitors (:require [clojure.spec.alpha :as s]))
+(s/def ::visitor (s/fspec :args (s/cat :name string?) :ret string?))
+(s/fdef visit :args (s/cat :f ::visitor) :ret string?)
+(defn visit [f] (f \"abc\"))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [visitors :as v]))
+(let [prefix \"start\"]
+  (letfn [(render [s] (trim-at s 1))
+          (trim-at [s offset] (str (subs prefix 1) (subs s offset)))]
+    (subs (v/visit render) 1)))
+(letfn [(render [s] (trim-at s \"wrong\"))
+        (trim-at [s offset] (subs s offset))]
+  (v/visit render))
+(letfn [(unused [] (inc \"wrong\"))]
+  :ok)")
+        r (check/check-files [api client] {:strict true})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 7 "TSP2345" "string? is not assignable to int?"]
+            ["client.clj" 9 "TSP2345" "\"wrong\" is not assignable to number?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))
+    (is (= "string?" (main/type-at r "client.clj" 5 5)))))
+
+(deftest letfn-supports-mutual-recursion-and-local-shadowing
+  (let [r (check-source "(letfn [(even-step [n] (if (zero? n) true (odd-step (dec n))))
+        (odd-step [n] (if (zero? n) false (even-step (dec n))))]
+  (even-step 2))
+(letfn [(inc [s] (subs s 1))]
+  (inc \"abc\"))
+(letfn [(run [x] (read-it x))
+        (read-it [^String s] (subs s 1))]
+  (run 4))")]
+    (is (= [[10 "TSP2345"] [11 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "string?" (main/type-at r "callbacks.clj" 9 3)))))
+
 (deftest map-indexed-infers-the-callback-and-lazy-result
   (let [result (check-source "(clojure.core/map-indexed #(str (inc %1) (str/upper-case %2)) [\"abc\"])
 (->> [\"abc\"] (map-indexed #(str %1 %2)) (into []))

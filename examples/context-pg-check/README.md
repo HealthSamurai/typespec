@@ -48,8 +48,8 @@ Single-file regression on JDK 27, using the contracts mode:
 - 451 source lines, 54 top-level forms, namespace `pg`, one complete input file,
   last form spanning `437:1` through `451:28`.
 - Exactly `TSP2322` at `57:15` and `TSP2345` at `206:41` (errors).
-- Exactly seven `TSP210-01` warnings at `30:44`, `49:3`, `53:50`, `57:44`,
-  `101:48`, `115:45`, `117:45`; one `TSP7023` warning at `308:35`.
+- Eight `TSP210-01` warnings at `30:44`, `49:3`, `53:50`, `57:44`,
+  `101:48`, `115:45`, `117:45`, and `132:45`, plus one `TSP7023` warning at `308:35`.
   Codes, severities, filenames and positions are compared as a multiset.
 - `pg` absent before and after checking; trust counters `cast/any/ignore = 0/0/0`.
 
@@ -60,8 +60,10 @@ are also covered by the single-file regression. The third, `TSP2531` at
 can reach `str/split` as `nil`. `TSP330-02` at `dsql/pg.clj:116:8` catches
 an empty accumulator passed to `pop` in `join-vec`. Calling the pinned
 `join-vec` with empty input reproduced the exception. The check pins warning counts by diagnostic
-code (**93 total**) and verifies warnings inside the conditional step in
-`mk-table-constraint` and the reducers in `mk-columns` and `mk-options`.
+code (**94 total**) and verifies warnings inside the conditional step in
+`mk-table-constraint`, the reducers in `mk-columns` and `mk-options`,
+and the `str/starts-with?` call inside the `letfn` in `pg/q`. The checker
+has no element type for the result of `(flatten q)` at that call.
 The reducers now report five unknown arguments to `name` at their source
 locations. The inferred accumulators resolve two downstream collection
 warnings at `str/join` and `ql/fast-join`. The upstream namespaces

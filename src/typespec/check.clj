@@ -2023,6 +2023,16 @@
           (clone-compiler-class (compiler-value-class ctx (second (:children node))))
           (get array-constructors head))))))
 
+(defn- local-callback [ctx node]
+  {:ctx ctx :node node :bodies (fn-bodies node)
+   :types (atom {}) :checked-branches (volatile! #{})})
+
+(defn- callback-local-type [callback]
+  (with-meta {:t :fn} {::deferred-callback callback}))
+
+(defn- callback-scope [{:keys [ctx group-scope]}]
+  (if group-scope @group-scope ctx))
+
 (defn- bind-pairs [ctx bindings & [on-init]]
   (reduce (fn [ctx [p init]]
             (let [sym (when (= :sym (:op p)) (:val p))
@@ -2032,13 +2042,11 @@
                   callback (when defer?
                              (or (deferred-callback ctx init)
                                  (when (inline-callback? ctx init)
-                                   (let [callback {:ctx (dissoc ctx :pending-callbacks)
-                                                   :node init :bodies (fn-bodies init)
-                                                   :types (atom {}) :checked-branches (volatile! #{})}]
+                                   (let [callback (local-callback (dissoc ctx :pending-callbacks) init)]
                                      (vswap! pending conj callback)
                                      callback))))
                   ty (if callback
-                       (with-meta {:t :fn} {::deferred-callback callback})
+                       (callback-local-type callback)
                        (dissoc (infer ctx init) :fresh))
                   _ (when on-init (on-init ctx p init ty))
                   why (why-of ctx init ty)
@@ -2221,17 +2229,35 @@
              (sequential? a) (every? true? (map same-type-metadata? a b))
              :else true))))
 
-(defn- force-callback [ctx {:keys [node types] captured :ctx :as callback} expected]
+(defn- callback-analysis-context [ctx callback]
+  (cond-> (callback-scope callback) (:quiet ctx) (assoc :quiet true)))
+
+(defn- infer-deferred-callback [analysis {:keys [node active?] :as callback} expected]
+  (if active?
+    (do (vreset! active? true)
+        (try
+          (infer-callback analysis node expected callback)
+          (finally (vreset! active? false))))
+    (infer-callback analysis node expected callback)))
+
+(defn- force-callback [ctx {:keys [node types active? bodies] :as callback} expected]
   (let [cached @types
         entry (get cached expected)]
-    (if (and entry (same-type-metadata? expected (:expected entry)))
+    (cond
+      (and entry (same-type-metadata? expected (:expected entry)))
       (do (when-let [escapes (seq (:escapes entry))]
             (swap! *trust* (fn [trust] (reduce #(update %1 %2 inc) trust escapes))))
           (:type entry))
+
+      (and active? @active?)
+      (recursive-callback-type (callback-scope callback) bodies
+                               (not-any? #(= :map (:op (:rest %))) bodies) nil)
+
+      :else
       (let [quiet? (:quiet ctx)
-            analysis (cond-> captured quiet? (assoc :quiet true))
+            analysis (callback-analysis-context ctx callback)
             before @*trust*
-            ty (record! analysis node (infer-callback analysis node expected callback))]
+            ty (record! analysis node (infer-deferred-callback analysis callback expected))]
         (when-not quiet?
           (let [after @*trust*
                 escapes (when-not (identical? before after)
@@ -2240,12 +2266,12 @@
             (swap! types assoc expected {:expected expected :type ty :escapes escapes})))
         ty))))
 
-(defn- finish-callback! [ctx {:keys [node bodies types checked-branches] captured :ctx :as callback}]
+(defn- finish-callback! [ctx {:keys [bodies types checked-branches] :as callback}]
   (when (< (count @checked-branches) (count bodies))
     (if (empty? @types)
       (force-callback ctx callback nil)
-      (infer-callback (cond-> captured (:quiet ctx) (assoc :quiet true))
-                      node nil (assoc callback :finishing? true)))))
+      (infer-deferred-callback (callback-analysis-context ctx callback)
+                               (assoc callback :finishing? true) nil))))
 
 (defn- apply-type
   "Result of calling a function type with these argument types; mismatches are reported at `at`."
@@ -2987,6 +3013,28 @@
     (doseq [callback (rseq @pending)]
       (finish-callback! ctx callback))
     result))
+
+(defmethod special 'letfn [ctx node _]
+  (let [[bindings & body] (args-of node)
+        scope (volatile! nil)
+        callbacks (into []
+                        (keep (fn [definition]
+                                (let [[name & declarations] (:children definition)]
+                                  (when (and (= :list (:op definition)) (= :sym (:op name)))
+                                    (let [head {:op :sym :val 'clojure.core/fn :synthetic true}
+                                          init (assoc definition :children (into [head name] declarations))
+                                          callback (assoc (local-callback nil init)
+                                                          :group-scope scope :active? (volatile! false))]
+                                      [name callback])))))
+                        (:children bindings))
+        analysis (reduce (fn [c [name callback]]
+                           (bind c (:val name) (callback-local-type callback)))
+                         ctx callbacks)]
+    (vreset! scope (dissoc analysis :pending-callbacks))
+    (let [result (infer-body analysis body)]
+      (doseq [[_ callback] (rseq callbacks)]
+        (finish-callback! ctx callback))
+      result)))
 
 (defmethod special 'loop [ctx node _]
   (let [[bindings & body] (args-of node)
@@ -5424,7 +5472,7 @@
       (if (empty? (:directives f)) (guards/apply-summary env summary el) [el el])
       (let [descriptor (deferred-callback ctx f)
             node (or (:node descriptor) f)
-            captured (or (:ctx descriptor) ctx)
+            captured (if descriptor (callback-scope descriptor) ctx)
             plan (cond
                    (seq (:directives node)) nil
                    (= :sym (:op node))

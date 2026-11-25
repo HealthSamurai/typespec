@@ -17,6 +17,16 @@
 (defn with-assumption [ty reason]
   (if reason (vary-meta ty assoc ::assumption reason) ty))
 
+(defn may-be-nil-leaf? [ty]
+  (and (#{:nil :unknown :any :rigid :var :ivar :all} (:t ty))
+       (not (:non-nil? ty))))
+
+(defn non-nil-leaf [ty]
+  (case (:t ty)
+    :nil never
+    :unknown (assoc ty :non-nil? true)
+    ty))
+
 (defn literal-number-class [ty]
   (when (and (= :lit (:t ty)) (number? (:val ty)) (not (:ambiguous-number-box? ty)))
     (class (:val ty))))
@@ -50,7 +60,9 @@
             [out nullable?]))
         result (cond (empty? flat) never
                      (some #(= :any (:t %)) flat) any
-                     (some #(= :unknown (:t %)) flat) unknown
+                     (some #(= :unknown (:t %)) flat)
+                     (cond-> unknown
+                       (and (not nullable?) (every? :non-nil? flat)) (assoc :non-nil? true))
                      (= 1 (count flat)) (first flat)
                      :else {:t :union :types flat})]
     (cond-> (with-assumption result (some assumption ts))
@@ -358,10 +370,13 @@
       (= :atom st tt) (atom-sub? env s t)
       (and (= (strip s) (strip t))
            (or (not *contract-subtyping*) (not (#{:map :coll} st)))) true
-      (#{:any :unknown} tt) true
+      (#{:any :unknown} tt) (or (not (:non-nil? t)) (sub? env s some-t))
       (= :never st) true
       (= :any st) (not *contract-subtyping*)
-      (= :unknown st) (inconclusive! :unknown)
+      (= :unknown st) (cond
+                        (and (:non-nil? s) (= :some tt)) true
+                        (and (:non-nil? s) (= :nil tt)) false
+                        :else (inconclusive! :unknown))
       (= :rigid tt) false
       ;; An arbitrary type parameter fits only itself and top (handled above):
       ;; without a bound this is a definite mismatch, not missing information.
@@ -532,7 +547,7 @@
   (or (:as t)
       (some-> t meta ::operator-form pr-str)
     (case (:t t)
-      :any "any?" :unknown "t/unknown" :never "t/never" :nil "nil?" :some "some?"
+      :any "any?" :unknown (if (:non-nil? t) "some?" "t/unknown") :never "t/never" :nil "nil?" :some "some?"
       (:var :ivar :rigid) (str (:name t))
       :all (str "(t/all ["
                 (str/join " " (map (fn [{:keys [name bound]}]

@@ -12,6 +12,30 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest non-nil-guards-preserve-evidence-for-unknown-values
+  (let [api (parse/parse-string
+             "present.clj"
+             "(ns present (:require [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :x some?) :ret string?)
+(defn render [x] (str x))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [present :as p]))
+(defn filtered [xs] (mapv p/render (remove nil? xs)))
+(defn direct [x] (when (some? x) (p/render x)))
+(defn inverse [x] (if (nil? x) \"nil\" (p/render x)))
+(defn impossible [x] (when (some? x) (when (nil? x) (inc \"unreachable\"))))
+(defn keep-false [x] (when (some? x) (if x :yes (inc \"wrong\"))))
+(defn unknown-string [x] (when (some? x) (subs x 0)))
+(p/render nil)")
+        r (check/check-files [api client] {:strict-nil true})
+        ds (:diagnostics r)]
+    (is (= [[6 "TSP2345"] [7 "TSP210-01"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= "(s/coll-of some? :kind seq?)"
+           (main/type-at r "client.clj" 2 36)))))
+
 (deftest truthy-and-falsy-returns-are-proved-independently
   (let [result (check-source
                 "(defn nonblank? [x] (and (string? x) (not (str/blank? x))))

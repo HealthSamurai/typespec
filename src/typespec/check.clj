@@ -650,7 +650,7 @@
            (if boolean? (t/lit truthy?) m)))))
 
 (defn- nil-part [env ty]
-  (if (some #(#{:nil :unknown :any} (:t %)) (t/members env ty)) t/nil-t t/never))
+  (if (some t/may-be-nil-leaf? (t/members env ty)) t/nil-t t/never))
 
 (defn- refine-alternatives [ctx path alternatives select]
   (refine-origin ctx path
@@ -926,8 +926,9 @@
 (defn- some-contexts [ctx node]
   (or (find-contexts ctx node)
       (refine-path ctx node (fn [leaf]
-                             [(when-not (#{:nil :never} (:t leaf)) leaf)
-                              (when (#{:nil :unknown :any} (:t leaf)) t/nil-t)]))))
+                             (let [present (t/non-nil-leaf leaf)]
+                               [(when-not (= t/never present) present)
+                                (when (t/may-be-nil-leaf? leaf) t/nil-t)])))))
 
 (defn- emptiness-contexts [ctx node some?]
   (let [[source & extra] (rest (:children node))]

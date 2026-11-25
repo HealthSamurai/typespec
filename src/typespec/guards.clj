@@ -200,10 +200,7 @@
 (defn- atoms [env [op value] leaf]
   (case op
     :truth (truth-split leaf)
-    :nil (let [parts (case (:t leaf)
-                       (:unknown :any :rigid :var :ivar :all) [leaf t/nil-t]
-                       :nil [t/never leaf]
-                       [leaf t/never])]
+    :nil (let [parts [(t/non-nil-leaf leaf) (if (t/may-be-nil-leaf? leaf) t/nil-t t/never)]]
            (if value (vec (reverse parts)) parts))
     :predicate (predicate-split env leaf (predicates value) value)
     :class (class-split env leaf value)

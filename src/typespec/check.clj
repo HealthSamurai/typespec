@@ -903,6 +903,14 @@
              (assoc shape :req required
                           :opt (apply dissoc (:opt tail) (keys required))
                           :complete-keys? (boolean (:complete-keys? tail))))
+      :map-of (let [env (:env ctx)
+                    keys (mapv selector-literal-key (t/members env (:k tail)))]
+                (if (and (<= (count keys) map-path-budget) (every? some? keys))
+                  (recur ctx shape (assoc empty-map-shape :opt (zipmap keys (repeat (:v tail)))))
+                  (let [required (reduce-kv (fn [required k value]
+                                              (assoc required k (t/union value (or (map-of-entry env tail k) t/never))))
+                                            {} (:req shape))]
+                    (assoc shape :req required :complete-keys? false))))
       (t/prim :map))))
 
 (defn- invalid-destructuring-tail? [member]
@@ -1106,7 +1114,9 @@
               t/never
               (let [items (:items member)
                     map-source? (= :map (:t member))
-                    entry-map (if map-source? (dissoc member :fresh) (:entry-map member))
+                    entry-map (if (or map-source? (= :map-of (:t member)))
+                                (dissoc member :fresh)
+                                (:entry-map member))
                     [min-count max-count] (cond
                                            (= :nil (:t member)) [0 0]
                                            map-source? (let [required (count (:req member))]

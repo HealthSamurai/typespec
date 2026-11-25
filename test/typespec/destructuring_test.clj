@@ -480,6 +480,39 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest odd-sequence-tails-use-enumerated-map-of-keys-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/def ::number-key #{:n :limit})
+(s/fdef numbers :args (s/cat) :ret (s/map-of ::number-key int?))
+(defn numbers [] {:n 4})
+(s/fdef nullable :args (s/cat) :ret (s/map-of #{:n} (s/nilable int?)))
+(defn nullable [] {:n nil})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef amount :args (s/cat) :ret int?)
+(defn amount []
+  (let [entries (seq (options/numbers))
+        {:keys [n limit] :or {limit 0} :as all} (list :n 2 entries)]
+    (+ n limit (get all :limit 0))))
+(let [{:keys [n] :or {n 0}} (list :n 2 (options/nullable))] (inc n))
+(let [{:keys [limit]} (list :n 2 (seq (options/numbers)))] (inc limit))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP2531"] ["client.clj" 8 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest odd-sequence-tails-with-broad-map-of-keys-check-overwrites
+  (let [issues (diagnostics "(s/fdef strings :args (s/cat) :ret (s/map-of string? string?))
+(defn strings [] {\"n\" \"replacement\"})
+(let [{:keys [n] :as all} (list :n 2 (seq (strings)))] (+ n (get all :n)))
+(let [{:strs [n]} (list \"n\" 2 (seq (strings)))] (inc n))
+(let [{:strs [n]} (list \"n\" \"old\" (strings))] (.length n))")]
+    (is (= [[5 "TSP2345"]] (locations issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

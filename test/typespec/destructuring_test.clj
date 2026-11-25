@@ -328,6 +328,42 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest odd-sequence-tails-follow-map-conj-rules
+  (let [issues (diagnostics "(let [{:keys [n]} (list :n \"old\" [:n 3])] (inc n))
+(let [{:keys [n]} (list :n 2 \"\")] (inc n))
+(let [{:as m} (list :n 2 (seq {:n 4}))] m)
+(let [{:as singleton} (list 42)] singleton)
+(let [{:as m} (list :n 2 42)] m)
+(let [{:as m} (list :n 2 \"bad\")] m)
+(let [{:as m} (list :n 2 [:n])] m)
+(let [{:keys [n]} (list :n 2 [:n \"bad\"])] (inc n))
+(defn maybe-tail [flag] (let [{:keys [n]} (list :n 2 (if flag 42 {:n 3}))] (inc n)))
+(defn unknown-key [k] (let [{:as m} (list k 2 42)] m))")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2345"]]
+           (locations issues))
+        (pr-str issues))
+    (is (str/includes? (:message (first issues)) "cannot append 42 as map entries"))
+    (is (= "map destructuring tail expects a two-element vector, got length 1"
+           (:message (nth issues 2))))))
+
+(deftest odd-sequence-tails-use-tuple-specs-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef good :args (s/cat) :ret (s/tuple #{:n} int? (s/tuple #{:n} int?)))
+(defn good [] [:n 2 [:n 3]])
+(s/fdef bad :args (s/cat) :ret (s/tuple #{:n} int? int?))
+(defn bad [] [:n 2 42])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef amount :args (s/cat) :ret int?)
+(defn amount [] (let [{:keys [n]} (seq (options/good))] (inc n)))
+(let [{:as m} (seq (options/bad))] m)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

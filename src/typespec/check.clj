@@ -883,9 +883,15 @@
           (bind-map-entry ctx pattern selector (str "value selected by " (parse/unparse selector))
                           source why nil defaults selected))))))
 
-(defn- append-destructuring-map [shape tail]
+(defn- append-destructuring-map [ctx shape tail]
   (case (:t tail)
     :nil shape
+    :lit (if (= "" (:val tail)) shape (t/prim :map))
+    :coll (let [[key value] (:items tail)]
+            (if-let [k (when (and (= :vector (:kind tail)) (= 2 (count (:items tail))))
+                         (selector-literal-key (t/resolve-t (:env ctx) key)))]
+              (assoc-map-key shape k value)
+              (t/prim :map)))
     :map (if (:complete-keys? tail)
            (let [required (merge (merge-with t/union (:req shape)
                                              (select-keys (:opt tail) (keys (:req shape))))
@@ -894,7 +900,27 @@
            (t/prim :map))
     (t/prim :map)))
 
-(defn- destructuring-sequence-map [ctx member]
+(defn- invalid-destructuring-tail? [member]
+  (case (:t member)
+    :lit (let [value (:val member)]
+           (or (number? value) (boolean? value) (keyword? value) (symbol? value)
+               (and (string? value) (seq value))))
+    :prim (#{:int :double :boolean :keyword :symbol} (:name member))
+    :coll (when (= :vector (:kind member))
+            (let [[lower upper] (length/bounds member)]
+              (or (> lower 2) (and upper (< upper 2)))))
+    false))
+
+(defn- destructuring-tail-members [ctx pattern type]
+  (let [members (t/members (:env ctx) type)]
+    (when-let [bad (some #(when (invalid-destructuring-tail? %) %) members)]
+      (report! ctx pattern "TSP2345"
+               (if (= :vector (:kind bad))
+                 (str "map destructuring tail expects a two-element vector, got length " (length/describe bad))
+                 (str "map destructuring cannot append " (t/show bad) " as map entries"))))
+    (remove invalid-destructuring-tail? members)))
+
+(defn- destructuring-sequence-map [ctx pattern member]
   (let [env (:env ctx)
         items (:items member)
         count-items (count items)]
@@ -916,28 +942,31 @@
             key-choices (mapv (fn [[key-type]] (mapv selector-literal-key (t/members env key-type))) pairs)
             values (mapv second pairs)
             tail? (odd? count-items)
-            steps (cond-> key-choices tail? (conj (t/members env (peek items))))]
-        (if-let [variants (when (every? #(and (seq %) (every? some? %)) key-choices)
-                            (bounded-combinations [steps]))]
-          (apply t/union
-                 (for [variant variants
-                       :let [keys (if tail? (pop variant) variant)
-                             shape (assoc empty-map-shape :req (into (array-map) (map vector keys values)))]]
-                   (if tail? (append-destructuring-map shape (peek variant)) shape)))
-          (t/prim :map))))))
+            tails (when tail? (destructuring-tail-members ctx pattern (peek items)))
+            steps (cond-> key-choices tail? (conj tails))]
+        (if (and tail? (empty? tails))
+          t/never
+          (if-let [variants (when (every? #(and (seq %) (every? some? %)) key-choices)
+                              (bounded-combinations [steps]))]
+            (apply t/union
+                   (for [variant variants
+                         :let [keys (if tail? (pop variant) variant)
+                               shape (assoc empty-map-shape :req (into (array-map) (map vector keys values)))]]
+                     (if tail? (append-destructuring-map ctx shape (peek variant)) shape)))
+            (t/prim :map)))))))
 
-(defn- destructuring-map-input [ctx ty]
+(defn- destructuring-map-input [ctx pattern ty]
   (let [members (t/members (:env ctx) ty)
         seq-type? #(or (= :seq (:kind %)) (and (= :prim (:t %)) (= :seq (:name %))))]
     (if (some seq-type? members)
       (t/with-assumption
-       (apply t/union (map #(if (seq-type? %) (destructuring-sequence-map ctx %) %) members))
+       (apply t/union (map #(if (seq-type? %) (destructuring-sequence-map ctx pattern %) %) members))
        (t/assumption ty))
       ty)))
 
 (defn- destructure-map [ctx pattern ty outer-why projection]
   (let [env (:env ctx)
-        source (destructuring-map-input ctx ty)
+        source (destructuring-map-input ctx pattern ty)
         ;; A sequence and the map constructed from it have different identities.
         projection (when (= source ty) projection)
         ty source

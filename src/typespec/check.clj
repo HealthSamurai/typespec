@@ -401,6 +401,11 @@
   (or (stable-map-key node)
       (selector-literal-key (stable-local-member ctx node))))
 
+(defn- nil-lookup-default? [ctx node]
+  (or (nil? node)
+      (and (= :nil (:op node)) (literal-node? node))
+      (= :nil (:t (stable-local-member ctx node)))))
+
 (defn- lookup-index [^Number key]
   ;; Clojure vector and string lookup uses Number.intValue, including wraparound.
   (.intValue key))
@@ -447,18 +452,20 @@
           {:origin origin :path path :type (get-in ctx [:origins origin])}
           {:local sym :path [] :type ty}))
       (when (= :list (:op node))
-        (let [[head a b & more] (:children node)
+        (let [[head a b default & extra] (:children node)
               h (builtin-head ctx node)
-              map-key (when (and (= 'get h) (empty? more)) (stable-lookup-key ctx b))
-              map-path (when (and (= 'get-in h) (empty? more)) (stable-lookup-path ctx b))
+              map-key (when (and (= 'get h) (empty? extra) (nil-lookup-default? ctx default))
+                        (stable-lookup-key ctx b))
+              map-path (when (and (= 'get-in h) (empty? extra) (nil-lookup-default? ctx default))
+                         (stable-lookup-path ctx b))
               [base path] (cond
-                            (and (= :kw (:op head)) a (nil? b)) [a [(:val head)]]
+                            (and (= :kw (:op head)) a (nil? default) (nil-lookup-default? ctx b)) [a [(:val head)]]
                             map-key [a [map-key]]
                             (and (seq map-path) (every? some? map-path)) [a map-path]
                             (and (#{'first 'second 'key 'val} h) a (nil? b))
                             [a [(if (#{'first 'key} h) 0 1)]]
                             (and (= 'nth h) (= :num (:op b)) (integer? (:val b))
-                                 (<= 0 (:val b) Integer/MAX_VALUE) (empty? more)
+                                 (<= 0 (:val b) Integer/MAX_VALUE) (nil? default)
                                  (empty? (:directives b)) (not (env/tag-node b)))
                             [a [(int (:val b))]])]
           (when-let [p (and base (stable-path ctx base))]

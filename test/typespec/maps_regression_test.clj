@@ -356,6 +356,30 @@
         (pr-str issues))
     (is (= "false is not assignable to int?" (:message (first issues))))))
 
+(deftest nil-lookup-defaults-preserve-narrowing-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::n (s/nilable int?))
+(s/def ::row (s/keys :opt-un [::n]))
+(s/def ::path (s/tuple #{:n}))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))
+(s/fdef with-get-in :args (s/cat :m ::api/row :p ::api/path) :ret int?)
+(defn with-get-in [m p] (if (some? (get-in m p nil)) (api/accept (get m :n)) 0))
+(s/fdef with-get :args (s/cat :m ::api/row) :ret int?)
+(defn with-get [m]
+  (let [fallback nil] (if (some? (get m :n fallback)) (api/accept (:n m)) 0)))
+(s/fdef with-keyword :args (s/cat :m ::api/row) :ret int?)
+(defn with-keyword [m] (if (some? (:n m nil)) (api/accept (get-in m [:n])) 0))
+(s/fdef boolean-default :args (s/cat :m ::api/row) :ret int?)
+(defn boolean-default [m] (if (some? (get-in m [:n] false)) (api/accept (get m :n)) 0))
+(s/fdef mixed-default :args (s/cat :m ::api/row :fallback (s/nilable int?)) :ret int?)
+(defn mixed-default [m fallback] (if (some? (get m :n fallback)) (api/accept (:n m)) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 10 "TSP2531"] ["client.clj" 12 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

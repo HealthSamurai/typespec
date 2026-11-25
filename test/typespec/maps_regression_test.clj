@@ -372,6 +372,39 @@
   (is (= (t/lit :kept)
          (infer-type "(get-in (assoc-in {'config {:n :kept}} ['config 'fixture/n] 4) ['config :n])"))))
 
+(deftest text-and-symbol-update-check-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/fdef accept :args (s/cat :counts ::counts) :ret int?)
+(defn accept [counts] 1)
+(s/fdef symbol-counts :args (s/cat) :ret (s/map-of symbol? int?))
+(defn symbol-counts [] {'fixture/n 4})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/accept (update {\"n\" 4 \"sibling\" 2} \"n\" inc))
+(api/accept (update {\"n\" 4} \"n\" str))
+(inc (get (update nil \"n\" (fn [old n] (or old n)) 4) \"n\"))
+(let [{:as all} (list :tag :count (seq (api/symbol-counts)))
+      {:syms [fixture/n]} (update all (quote fixture/n) (fn [old] (if (nil? old) 0 (inc old))))]
+  (inc n))
+(update {'fixture/n \"bad\"} 'fixture/n inc)
+(update {} \"absent\" inc)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest literal-key-update-checks-homogeneous-maps-and-preserves-siblings
+  (let [file (parse/parse-string "counts.clj" "(ns counts (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of symbol? int?))
+(s/fdef upsert :args (s/cat :m ::counts) :ret ::counts)
+(defn upsert [m] (update m 'fixture/n (fn [old] (if (nil? old) 0 (inc old)))))
+(s/fdef increment :args (s/cat :m ::counts) :ret ::counts)
+(defn increment [m] (update m 'fixture/n inc))")
+        issues (:diagnostics (check/check-files [file] {}))]
+    (is (= [[6 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues)))
+  (is (= (t/lit :kept)
+         (infer-type "(get (update {'n 1 \"n\" :kept} 'n inc) \"n\")"))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

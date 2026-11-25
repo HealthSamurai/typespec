@@ -3310,6 +3310,29 @@
                         members)))))]
       (walk root keys))))
 
+(defn- write-map-paths [ctx mty selector-type paths value arg-types update?]
+  (let [budget (volatile! map-path-budget)
+        writes (vec (for [keys paths
+                          [previous rebuild] (path-writes ctx mty keys budget)]
+                      [(:val (second (peek keys))) previous rebuild]))
+        vty (if (and update? (seq writes))
+              (apply-fn-node ctx value (into [(apply t/union (map second writes))] arg-types))
+              (infer ctx value))]
+    (cond
+      (some #{t/never} (into [mty selector-type vty] arg-types)) t/never
+      (nil? paths) t/unknown
+      :else
+      (let [env (:env ctx)
+            stored (into {} (for [k (distinct (map first writes))]
+                              (let [spec (when (get-in env [:specs k]) (t/ref-t k))]
+                                (check-key-value! ctx k value vty)
+                                [k (if (and spec (not (t/sub? env (eff ctx vty) spec)))
+                                     spec
+                                     (dissoc vty :fresh))])))]
+        (t/with-assumption
+         (apply t/union (map (fn [[k _ rebuild]] (rebuild (get stored k))) writes))
+         (or (t/assumption mty) (t/assumption selector-type)))))))
+
 (defn- write-path [ctx node update?]
   (let [[m path value & args :as arguments] (args-of node)
         mty (infer ctx m)]
@@ -3320,28 +3343,8 @@
       (let [path-type (eff ctx (infer ctx path))
             paths (fixed-map-key-sequences ctx path path-type map-path-key-type?)
             paths (when (every? seq paths) paths)
-            arg-types (mapv #(infer ctx %) args)
-            budget (volatile! map-path-budget)
-            writes (vec (for [keys paths
-                              [previous rebuild] (path-writes ctx mty keys budget)]
-                          [(:val (second (peek keys))) previous rebuild]))
-            vty (if (and update? (seq writes))
-                  (apply-fn-node ctx value (into [(apply t/union (map second writes))] arg-types))
-                  (infer ctx value))]
-        (cond
-          (some #{t/never} (into [mty path-type vty] arg-types)) t/never
-          (nil? paths) t/unknown
-          :else
-          (let [env (:env ctx)
-                stored (into {} (for [k (distinct (map first writes))]
-                                  (let [spec (when (get-in env [:specs k]) (t/ref-t k))]
-                                    (check-key-value! ctx k value vty)
-                                    [k (if (and spec (not (t/sub? env (eff ctx vty) spec)))
-                                         spec
-                                         (dissoc vty :fresh))])))]
-            (t/with-assumption
-             (apply t/union (map (fn [[k _ rebuild]] (rebuild (get stored k))) writes))
-             (or (t/assumption mty) (t/assumption path-type)))))))))
+            arg-types (mapv #(infer ctx %) args)]
+        (write-map-paths ctx mty path-type paths value arg-types update?)))))
 
 (defmethod special 'assoc-in [ctx node _] (write-path ctx node false))
 (defmethod special 'update-in [ctx node _] (write-path ctx node true))
@@ -3415,7 +3418,11 @@
             ret (apply-fn-node ctx f (into [cur] arg-types))]
         (check-key-value! ctx (:val k) f ret)
         (assoc-key-type ctx mty (:val k) (key-type ctx (:val k) ret)))
-      (do (infer ctx k) (infer ctx f) (forget-map-keys ctx mty)))))
+      (let [key-type (infer ctx k)]
+        (if-let [key (and f (stable-map-key k))]
+          (let [literal (t/with-assumption (t/lit key) (t/assumption key-type))]
+            (write-map-paths ctx mty literal [[[k literal]]] f arg-types true))
+          (do (infer ctx f) (forget-map-keys ctx mty)))))))
 
 (defmethod special 'merge [ctx node _]
   (let [tys (map #(infer ctx %) (args-of node))

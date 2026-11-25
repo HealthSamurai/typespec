@@ -883,6 +883,10 @@
     (let [value (:val member)]
       (when (or (keyword? value) (string? value) (symbol? value)) value))))
 
+(defn- finite-map-keys [env ty]
+  (let [keys (mapv selector-literal-key (take (inc map-path-budget) (t/members env ty)))]
+    (when (and (<= 1 (count keys) map-path-budget) (every? some? keys)) keys)))
+
 (defn- select-map-entries [ctx source selector selector-type keys]
   (let [entries (mapv #(key-info ctx source % selector) (distinct keys))
         declared? (every? :declared? entries)]
@@ -3098,13 +3102,13 @@
             env (:env ctx)
             members (t/members env source)
             keys (when (some #(= :map (:t %)) members)
-                   (mapv selector-literal-key (take (inc map-path-budget) (t/members env key-type))))
+                   (finite-map-keys env key-type))
             assumption (or (t/assumption source) (t/assumption key-type))]
         (cond
           (some #{t/never} [source key-type not-found])
           t/never
 
-          (and (<= 1 (count keys) map-path-budget) (every? some? keys))
+          keys
           (t/with-assumption
            (apply t/union (map #(read-literal-map-key ctx source % not-found) keys))
            assumption)
@@ -3397,21 +3401,33 @@
                     pairs)]
     (assoc-entries ctx base (map vector pairs types))))
 
+(defn- dissoc-map-keys [member keys track-absence?]
+  (if (= :map (:t member))
+    (reduce (fn [shape k]
+              (dissoc-map-key shape k (or track-absence? (:map-index shape) (string? k) (symbol? k))))
+            (dissoc member :fresh) keys)
+    member))
+
 (defmethod special 'dissoc [ctx node _]
   (let [[m & ks] (args-of node)
         mty (infer ctx m)
-        members (t/members (:env ctx) mty)
+        env (:env ctx)
+        members (t/members env mty)
+        map-shapes? (every? #(#{:map :nil} (:t %)) members)
         keys (mapv #(if (= :kw (:op %)) (:val %) (stable-map-key %)) ks)]
-    (if (and (every? some? keys)
-             (every? #(#{:map :nil} (:t %)) members))
-      (apply t/union
-             (for [member members]
-               (if (= :map (:t member))
-                 (reduce (fn [shape k]
-                           (dissoc-map-key shape k (or (:map-index shape) (string? k) (symbol? k))))
-                         (dissoc member :fresh) keys)
-                 member)))
-      (do (run! #(infer ctx %) ks) (forget-map-keys ctx mty)))))
+    (if (and map-shapes? (every? some? keys))
+      (apply t/union (map #(dissoc-map-keys % keys false) members))
+      (let [key-types (mapv #(eff ctx (infer ctx %)) ks)
+            choices (when map-shapes?
+                      (mapv (fn [key ty] (if key [key] (finite-map-keys env ty))) keys key-types))
+            variants (when (and choices (every? seq choices))
+                       (bounded-combinations [(into [members] choices)]))]
+        (cond
+          (some #{t/never} key-types) t/never
+          variants (t/with-assumption
+                    (apply t/union (map (fn [[member & keys]] (dissoc-map-keys member keys true)) variants))
+                    (or (t/assumption mty) (some t/assumption key-types)))
+          :else (forget-map-keys ctx mty))))))
 
 (defn- map-update-paths [ctx source node key-type]
   (if-let [key (stable-map-key node)]

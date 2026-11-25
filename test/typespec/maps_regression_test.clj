@@ -468,6 +468,41 @@
   (is (= t/unknown
          (infer-type "(get {:a 1} k)" {'k (apply t/union (map #(t/lit (str %)) (range 257)))}))))
 
+(deftest computed-dissoc-checks-spec-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::drop-key #{:a :b})
+(s/def ::maybe-required #{:a :keep})
+(s/def ::gone #{\"gone\"})
+(s/def ::keep int?)
+(s/def ::options (s/keys :req-un [::keep]))
+(s/def ::words (s/map-of string? string?))
+(s/fdef accept :args (s/cat :options ::options) :ret int?)
+(defn accept [options] (:keep options))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef trim :args (s/cat :key ::api/drop-key) :ret int?)
+(defn trim [key] (api/accept (dissoc {:a 1 :b 2 :keep 4} key)))
+(s/fdef bad-trim :args (s/cat :key ::api/maybe-required) :ret int?)
+(defn bad-trim [key] (api/accept (dissoc {:a 1 :keep 4} key)))
+(s/fdef removed :args (s/cat :words ::api/words :key ::api/gone) :ret int?)
+(defn removed [words key]
+  (let [{:as all} (list :tag :words words)] (inc (get (dissoc all key) \"gone\" 0))))
+(s/fdef nil-after :args (s/cat :key ::api/gone) :ret number?)
+(defn nil-after [key] (inc (get (dissoc {\"gone\" 4} key) \"gone\")))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 10 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest computed-dissoc-preserves-shapes-for-multiple-keys
+  (let [result (infer-type "(dissoc {:a 1 :b 2 \"x\" 3 \"y\" 4 'n 5 :keep 6} k field 'n)"
+                           {'k (t/union (t/lit :a) (t/lit :b))
+                            'field (t/union (t/lit "x") (t/lit "y"))})]
+    (is (= #{#{:a "x" :keep} #{:a "y" :keep} #{:b "x" :keep} #{:b "y" :keep}}
+           (set (map #(set (keys (:req %))) (alternatives result))))))
+  (let [keys (apply t/union (map #(t/lit (str %)) (range 17)))]
+    (is (= (t/prim :map) (infer-type "(dissoc {:keep 1} first-key second-key)"
+                                    {'first-key keys 'second-key keys})))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

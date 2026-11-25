@@ -268,6 +268,33 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest get-in-uses-jvm-index-conversion-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::value (s/nilable int?))
+(s/def ::row (s/tuple ::value))
+(s/def ::wide-path (s/tuple #{4294967296}))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))
+(api/accept (get-in [42] [4294967296]))
+(api/accept (get-in [42] [-4294967296N]))
+(api/accept (get-in [\"bad\"] [4294967296] 0))
+(api/accept (get-in [\"bad\"] [4294967297] 0))
+(api/accept (get-in [\"bad\"] [4294967295] 0))
+(s/fdef with-wide-path :args (s/cat :row ::api/row :path ::api/wide-path) :ret int?)
+(defn with-wide-path [row path]
+  (if (some? (get-in row path)) (api/accept (nth row 0)) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= (t/class-type "java.lang.Character") (infer-type "(get-in \"x\" [4294967296N] :missing)")))
+  (is (= (t/lit :missing) (infer-type "(get-in \"x\" [4294967297] :missing)")))
+  (let [m (assoc (map-type {0 (t/lit :zero) 4294967296 (t/lit :wide)} {})
+                 :map-index {:t :map-of :k (t/prim :int) :v (t/lit :unlisted)})]
+    (is (= #{(t/lit :wide) (t/lit :missing)}
+           (alternatives (infer-type "(get-in m [4294967296] :missing)" {'m m}))))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

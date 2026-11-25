@@ -401,9 +401,14 @@
   (or (stable-map-key node)
       (selector-literal-key (stable-local-member ctx node))))
 
+(defn- lookup-index [^Number key]
+  ;; Clojure vector and string lookup uses Number.intValue, including wraparound.
+  (.intValue key))
+
 (defn- vector-lookup-step [value]
-  (when (and (integer? value) (<= 0 value Integer/MAX_VALUE))
-    {:vector-index (int value)}))
+  (when (integer? value)
+    (let [index (lookup-index value)]
+      (when-not (neg? index) {:vector-index index}))))
 
 (defn- selector-path-step [member]
   (when (= :lit (:t member))
@@ -3207,8 +3212,7 @@
 
                (= :lit (:t key))
                (if (integer? (:val key))
-                 ;; Clojure vectors use Number.intValue for lookup, including wraparound.
-                 (let [index (.intValue ^Number (:val key))
+                 (let [index (lookup-index (:val key))
                        element (vector-element-at member index)]
                    (if (= :present (length/position member index)) element (t/union element not-found)))
                  not-found)
@@ -3249,14 +3253,17 @@
           :else
           (read-map-of ctx source key-type not-found))))))
 
-(defn- numeric-path-value [ctx ty index]
+(defn- string-index-present? [value index]
+  (and (string? value) (<= 0 index (dec (count value)))))
+
+(defn- numeric-path-value [ctx ty key index]
   (let [env (:env ctx)
         vector-type (t/prim :vector)]
     (apply t/union
            (for [member (t/members env ty)]
              (case (:t member)
                :coll (case (:kind member)
-                       :vector (if (<= 0 index Integer/MAX_VALUE) (vector-element-at member index) t/never)
+                       :vector (vector-element-at member index)
                        :set (:of member)
                        ;; A kindless coll-of can be a map whose entries fit the
                        ;; element spec. get returns the value of an entry there.
@@ -3266,14 +3273,14 @@
                              t/unknown (:of member))
                        t/never)
                :map (if-let [index-type (:map-index member)]
-                      (or (get (:req member) index) (get (:opt member) index)
-                          (t/map-of-entry env index-type index) t/never)
+                      (or (get (:req member) key) (get (:opt member) key)
+                          (t/map-of-entry env index-type key) t/never)
                       (if (:complete-keys? member) t/never t/unknown))
                :map-of (:v member)
-               :lit (if (and (string? (:val member)) (<= 0 index (dec (count (:val member)))))
+               :lit (if (string-index-present? (:val member) index)
                       (t/class-type "java.lang.Character") t/never)
                :prim (case (:name member)
-                       :string (if (<= 0 index Integer/MAX_VALUE) (t/class-type "java.lang.Character") t/never)
+                       :string (if (neg? index) t/never (t/class-type "java.lang.Character"))
                        (:map :vector :set :coll) t/unknown
                        t/never)
                :any t/any
@@ -3285,10 +3292,15 @@
 
 (defn- literal-path-step [ctx source node value]
   (if (integer? value)
-    {:type (numeric-path-value ctx source value)
-     :optional? (not (every? #(and (= :vector (:kind %)) (<= 0 value Integer/MAX_VALUE)
-                                   (= :present (length/position % value)))
-                            (t/members (:env ctx) source)))}
+    (let [index (lookup-index value)]
+      {:type (numeric-path-value ctx source value index)
+       :optional? (not (every? (fn [member]
+                                 (case (:t member)
+                                   :coll (and (= :vector (:kind member))
+                                              (= :present (length/position member index)))
+                                   :lit (string-index-present? (:val member) index)
+                                   false))
+                               (t/members (:env ctx) source)))})
     (key-info ctx source value node true)))
 
 (defn- computed-path-step [ctx source node key-type]

@@ -400,6 +400,46 @@
     (is (= [["client.clj" 4 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest odd-sequence-tails-check-map-entry-positions
+  (let [issues (diagnostics "(let [{:keys [n]} (list :n \"old\" (list (find {:n 4} :n)))] (inc n))
+(let [{:keys [n]} (list :n 2 (list))] (inc n))
+(let [{:keys [n]} (list :n 2 (find {} :n))] (inc n))
+(let [{:keys [n] :or {n 0}} (list :n 2 (list (find {:n nil} :n)))] (inc n))
+(let [{:as m} (list :n 2 (list (find {} :n)))] m)
+(let [{:as m} (list :n 2 (list (find {:n 4} :n) 42))] m)
+(s/fdef maybe-entry :args (s/cat :values (s/map-of keyword? int?)) :ret int?)
+(defn maybe-entry [values] (let [{:keys [n]} (list :n 2 (list (find values :n)))] (inc n)))")]
+    (is (= [[5 "TSP2531"] [6 "TSP2531"] [7 "TSP2345"] [9 "TSP2531"]]
+           (locations issues))
+        (pr-str issues))
+    (is (= ["map destructuring tail entry at index 0 may be nil"
+            "map destructuring tail entry at index 1 must be a Map.Entry, got 42"
+            "map destructuring tail entry at index 0 may be nil"]
+           (mapv :message (rest issues))))))
+
+(deftest odd-sequence-tails-apply-map-entries-in-order-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/def :text/n string?)
+(s/fdef numbers :args (s/cat) :ret (s/keys :req-un [::n]))
+(defn numbers [] {:n 4})
+(s/fdef texts :args (s/cat) :ret (s/keys :req-un [:text/n]))
+(defn texts [] {:n \"bad\"})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef amount :args (s/cat) :ret int?)
+(defn amount []
+  (let [{:keys [n]} (list :n \"old\" (list (find (options/texts) :n) (find (options/numbers) :n)))]
+    (inc n)))
+(let [{:keys [n]} (list :n 2 (list (find (options/numbers) :n) (find (options/texts) :n)))]
+  (inc n))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

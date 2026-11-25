@@ -911,6 +911,38 @@
               (or (> lower 2) (and upper (< upper 2)))))
     false))
 
+(defn- invalid-destructuring-entry? [member]
+  (and (not (:map-entry? member))
+       (case (:t member)
+         :nil true
+         :lit true
+         :prim (#{:int :double :boolean :keyword :symbol :string} (:name member))
+         false)))
+
+(defn- destructuring-entry-sequence-members [ctx pattern items]
+  (let [members (mapv #(t/members (:env ctx) %) items)
+        choices (mapv #(remove invalid-destructuring-entry? %) members)]
+    (when-let [[index bad] (first (for [[index types] (map-indexed vector members)
+                                       type types
+                                       :when (invalid-destructuring-entry? type)]
+                                   [index type]))]
+      (let [entry (str "map destructuring tail entry at index " index)]
+        (if (= :nil (:t bad))
+          (report! ctx pattern "TSP2531" (str entry " may be nil"))
+          (report! ctx pattern "TSP2345" (str entry " must be a Map.Entry, got " (t/show bad))))))
+    (cond
+      (some empty? choices) []
+      (every? :map-entry? (mapcat identity choices))
+      (if-let [variants (bounded-combinations [choices])]
+        (mapv (fn [entries]
+                (reduce (fn [shape entry]
+                          (let [next-shape (append-destructuring-map ctx shape entry)]
+                            (if (= :map (:t next-shape)) next-shape (reduced next-shape))))
+                        empty-map-shape entries))
+              variants)
+        [(t/prim :map)])
+      :else [(t/prim :map)])))
+
 (defn- destructuring-tail-members [ctx pattern type]
   (let [members (t/members (:env ctx) type)]
     (when-let [bad (some #(when (invalid-destructuring-tail? %) %) members)]
@@ -918,7 +950,11 @@
                (if (= :vector (:kind bad))
                  (str "map destructuring tail expects a two-element vector, got length " (length/describe bad))
                  (str "map destructuring cannot append " (t/show bad) " as map entries"))))
-    (remove invalid-destructuring-tail? members)))
+    (mapcat (fn [member]
+              (if (and (= :coll (:t member)) (= :seq (:kind member)) (some? (:items member)))
+                (destructuring-entry-sequence-members ctx pattern (:items member))
+                [member]))
+            (remove invalid-destructuring-tail? members))))
 
 (defn- destructuring-sequence-map [ctx pattern member]
   (let [env (:env ctx)

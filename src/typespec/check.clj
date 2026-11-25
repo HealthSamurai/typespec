@@ -5358,19 +5358,88 @@
             (assignable! ctx (first args) (first types) (t/prim :number)))
           source))))
 
+(defn- concatenated-sequences [ctx sources]
+  (let [parts (mapv #(sequence-summary ctx %) sources)]
+    (t/with-assumption
+     (length/with-bounds (coll-of :seq (apply t/union (map :element parts)))
+                         (reduce +' 0 (map :lower parts))
+                         (when (every? :upper parts) (reduce +' 0 (map :upper parts))))
+     (some t/assumption sources))))
+
 (defmethod special 'concat [ctx node _]
   (let [args (args-of node)
         sources (mapv #(eff ctx (infer ctx %)) args)]
     (cond
       (some #{t/never} sources) t/never
       (report-invalid-sequence-args! ctx 'concat args sources) t/unknown
-      :else
-      (let [parts (mapv #(sequence-summary ctx %) sources)]
-        (t/with-assumption
-         (length/with-bounds (coll-of :seq (apply t/union (map :element parts)))
-                             (reduce +' 0 (map :lower parts))
-                             (when (every? :upper parts) (reduce +' 0 (map :upper parts))))
-         (some t/assumption sources))))))
+      :else (concatenated-sequences ctx sources))))
+
+(defn- flatten-kind [member]
+  (case (:t member)
+    :coll (case (:kind member)
+            :vector :sequence
+            :set :leaf
+            (if-let [cls (some-> (:jvm-class member) t/load-class)]
+              (if (.isAssignableFrom clojure.lang.Sequential cls) :sequence :maybe-sequence)
+              :maybe-sequence))
+    :prim (case (:name member)
+            :vector :sequence
+            (:seq :coll) :maybe-sequence
+            :leaf)
+    :class (if-let [^Class cls (t/load-class (:name member))]
+             (cond
+               (.isAssignableFrom clojure.lang.Sequential cls) :sequence
+               (or (.isArray cls) (Modifier/isFinal (.getModifiers cls))) :leaf
+               :else :unknown)
+             :unknown)
+    (:nil :lit :map :map-of :atom) :leaf
+    :unknown))
+
+(defn- flattened-sequence [ctx source]
+  (let [env (:env ctx)
+        budget (volatile! 256)
+        empty-result (length/with-bounds (coll-of :seq t/never) 0 0)
+        unknown-result (coll-of :seq t/unknown)]
+    (letfn [(children [member depth]
+              (if-let [items (:items member)]
+                (concatenated-sequences ctx (mapv #(walk % false depth) items))
+                (let [[lo hi] (length/bounds member)]
+                  (if (= 0 hi)
+                    empty-result
+                    (let [{:keys [element lower upper]} (sequence-summary ctx (walk (or (:of member) t/unknown) false depth))
+                          maximum (cond
+                                    (= 0 upper) 0
+                                    (and hi upper) (*' hi upper))]
+                      (length/with-bounds (coll-of :seq element) (*' lo lower) maximum))))))
+            (walk [ty root? depth]
+              (let [members (vec (take (inc @budget) (t/members env (eff ctx ty))))]
+                (if (or (> depth 32) (neg? (vswap! budget - (count members))))
+                  unknown-result
+                  (t/with-assumption
+                   (apply t/union
+                          (for [member members
+                                :let [leaf (if root? empty-result
+                                               (length/with-bounds (coll-of :seq member) 1 1))]]
+                            (case (flatten-kind member)
+                              :sequence (children member (inc depth))
+                              :maybe-sequence (if root?
+                                                (t/union empty-result (children member (inc depth)))
+                                                unknown-result)
+                              :leaf leaf
+                              unknown-result)))
+                   (t/assumption ty)))))]
+      (walk source true 0))))
+
+(defmethod special 'flatten [ctx node _]
+  (let [args (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "flatten expects one argument") t/unknown)
+
+      (= t/never source) t/never
+
+      :else (flattened-sequence ctx source))))
 
 (def ^:private comp-identity
   (t/parse-type {:fail #(throw (ex-info "Invalid comp identity signature" {:form %}))}

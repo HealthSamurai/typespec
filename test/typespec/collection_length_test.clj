@@ -18,6 +18,51 @@
 (defn- codes [r] (mapv :code (:diagnostics r)))
 (defn- at [r row] (main/type-at r "length.clj" row 1))
 
+(deftest flatten-infers-leaves-and-length-from-known-sequential-values
+  (let [r (checked "(flatten [1 [2 (list 3)] []])
+(flatten nil)
+(flatten \"abc\")
+(flatten {:a [1]})
+(flatten #{1})
+(flatten [nil \"abc\" {:a 1} #{2}])
+(mapv inc (flatten [1 [2]]))
+(mapv inc (flatten [1 [\"wrong\"]]))
+(flatten)")]
+    (is (= [[9 "TSP2345"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"]
+           (mapv #(at r %) (range 2 7))))
+    (is (re-find #"string\?.*:min-count 4 :max-count 4" (at r 7))))
+  (is (= [nil "abc" {:a 1} #{2}] (vec (flatten [nil "abc" {:a 1} #{2}]))))
+  (is (empty? (flatten "abc")))
+  (is (thrown? ClassCastException (mapv inc (flatten [1 ["wrong"]])))))
+
+(deftest flatten-uses-vector-specs-from-another-namespace
+  (let [api (parse/parse-string
+             "rows.clj"
+             "(ns rows (:require [clojure.spec.alpha :as s]))
+(s/def ::row (s/coll-of int? :kind vector? :min-count 2 :max-count 3))
+(s/fdef read-rows :args (s/cat) :ret (s/coll-of ::row :kind vector? :min-count 2 :max-count 2))
+(defn read-rows [] [[1 2] [3 4]])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [rows :as r] [clojure.spec.alpha :as s]))
+(s/fdef leaves :args (s/cat) :ret (s/coll-of int? :kind seq? :min-count 4 :max-count 6))
+(defn leaves [] (flatten (r/read-rows)))
+(s/fdef wrong :args (s/cat) :ret (s/coll-of string? :kind seq?))
+(defn wrong [] (flatten (r/read-rows)))")
+        r (check/check-files [api client] {:strict true})]
+    (is (= [["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "(s/coll-of int? :kind seq? :min-count 4 :max-count 6)"
+           (main/type-at r "client.clj" 3 17)))))
+
 (def ^:private vector-guard-api
   (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::nums (s/coll-of int? :kind vector? :max-count 5))

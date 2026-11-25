@@ -295,6 +295,37 @@
     (is (= #{(t/lit :wide) (t/lit :missing)}
            (alternatives (infer-type "(get-in m [4294967296] :missing)" {'m m}))))))
 
+(deftest get-in-guards-track-missing-vector-positions-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::count (s/nilable int?))
+(s/def ::row (s/keys :req-un [::count]))
+(s/def ::rows (s/nilable (s/tuple ::row)))
+(s/def ::with-rows (s/nilable (s/keys :opt-un [::rows])))
+(s/def ::mixed (s/or :short (s/tuple ::row) :full (s/tuple ::row ::row)))
+(s/def ::path (s/tuple #{:rows} #{0} #{:count}))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))
+(s/fdef optional-parent :args (s/cat :m ::api/with-rows :path ::api/path) :ret int?)
+(defn optional-parent [m path]
+  (if-some [n (get-in m path)] (+ n (api/accept (get-in m [:rows 0 :count]))) 0))
+(s/fdef mixed-lengths :args (s/cat :rows ::api/mixed) :ret int?)
+(defn mixed-lengths [rows]
+  (if (some? (get-in rows [1 :count])) (api/accept (get-in rows [1 :count])) 0))
+(s/fdef nil-parent :args (s/cat :v (s/nilable (s/tuple (s/nilable int?)))) :ret int?)
+(defn nil-parent [v]
+  (if (some? (get-in v [0])) (api/accept (get-in v [0])) 0))
+(s/fdef nil-branch :args (s/cat :rows ::api/mixed) :ret int?)
+(defn nil-branch [rows]
+  (if (nil? (get-in rows [1 :count])) (inc (get-in rows [1 :count] 0)) 0))
+(s/fdef default-proves-nothing :args (s/cat :rows ::api/mixed) :ret int?)
+(defn default-proves-nothing [rows]
+  (if (some? (get-in rows [1 :count] 0)) (api/accept (get-in rows [1 :count])) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 13 "TSP2531"] ["client.clj" 16 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

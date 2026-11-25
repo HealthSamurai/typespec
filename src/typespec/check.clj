@@ -433,6 +433,11 @@
     (when (= :vector (:kind member)) (get (:items member) index))
     (get (:items member) step)))
 
+(defn- missing-vector-position? [member step]
+  (when-let [index (:vector-index step)]
+    (or (= :nil (:t member))
+        (and (= :vector (:kind member)) (= :absent (length/position member index))))))
+
 (defn- stable-path [ctx node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
     (if-let [sym (plain-local ctx node)]
@@ -473,7 +478,9 @@
 (defn- projected-type [ctx ty path]
   (reduce (fn [current key]
             (if (position-step? key)
-              (let [positions (map #(projected-position % key) (t/members (:env ctx) current))]
+              (let [positions (for [member (t/members (:env ctx) current)]
+                                (or (projected-position member key)
+                                    (when (missing-vector-position? member key) t/nil-t)))]
                 (if (every? some? positions) (apply t/union positions) (reduced nil)))
               (let [{:keys [type status]} (lookup-key ctx current key)]
                 (case status
@@ -546,13 +553,15 @@
                            paths (for [m members]
                                    (cond
                                      (position-step? key)
-                                     (when-let [field (projected-position m key)]
+                                     (if-let [field (projected-position m key)]
                                        (when-let [children (walk field more)]
                                          (for [[leaf rebuild] children
                                                :let [index (or (:vector-index key) key)]]
                                            [leaf (fn [new-leaf]
                                                    (let [items (assoc (:items m) index (rebuild new-leaf))]
-                                                     (assoc m :items items :of (apply t/union items))))])))
+                                                     (assoc m :items items :of (apply t/union items))))]))
+                                       (when (missing-vector-position? m key)
+                                         [[t/nil-t (constantly m)]]))
 
                                      (get-in m [:req key]) (required m (get-in m [:req key]))
                                      (and presence? (= :map (:t m))) (optional m)

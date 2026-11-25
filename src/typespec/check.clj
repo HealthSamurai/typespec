@@ -421,14 +421,18 @@
 
 (defn- stable-lookup-path [ctx node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
-    (if (= :vector (:op node))
-      (mapv #(or (stable-map-key %)
-                 (if (literal-node? %)
-                   (vector-lookup-step (:val %))
-                   (selector-path-step (stable-local-member ctx %))))
-            (:children node))
-      (when-let [items (:items (stable-local-member ctx node))]
-        (mapv #(selector-path-step (single-member ctx %)) items)))))
+    (case (:op node)
+      :vector (mapv #(or (stable-map-key %)
+                         (if (literal-node? %)
+                           (vector-lookup-step (:val %))
+                           (selector-path-step (stable-local-member ctx %))))
+                    (:children node))
+      :nil []
+      (when-let [member (stable-local-member ctx node)]
+        (if (= :nil (:t member))
+          []
+          (when-let [items (:items member)]
+            (mapv #(selector-path-step (single-member ctx %)) items)))))))
 
 (defn- position-step? [step]
   (or (integer? step) (some? (:vector-index step))))
@@ -456,12 +460,13 @@
               h (builtin-head ctx node)
               map-key (when (and (= 'get h) (empty? extra) (nil-lookup-default? ctx default))
                         (stable-lookup-key ctx b))
-              map-path (when (and (= 'get-in h) (empty? extra) (nil-lookup-default? ctx default))
-                         (stable-lookup-path ctx b))
+              map-path (when (and (= 'get-in h) (empty? extra)) (stable-lookup-path ctx b))
               [base path] (cond
                             (and (= :kw (:op head)) a (nil? default) (nil-lookup-default? ctx b)) [a [(:val head)]]
                             map-key [a [map-key]]
-                            (and (seq map-path) (every? some? map-path)) [a map-path]
+                            (and (some? map-path)
+                                 (or (empty? map-path)
+                                     (and (nil-lookup-default? ctx default) (every? some? map-path)))) [a map-path]
                             (and (#{'first 'second 'key 'val} h) a (nil? b))
                             [a [(if (#{'first 'key} h) 0 1)]]
                             (and (= 'nth h) (= :num (:op b)) (integer? (:val b))

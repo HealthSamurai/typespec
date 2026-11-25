@@ -380,6 +380,30 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest get-in-with-an-empty-path-narrows-the-root-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::n (s/nilable int?))
+(s/def ::row (s/keys :opt-un [::n]))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))
+(s/fdef empty-vector :args (s/cat :n ::api/n) :ret int?)
+(defn empty-vector [n] (if (some? (get-in n [])) (api/accept n) 0))
+(s/fdef empty-vector-default :args (s/cat :n ::api/n) :ret int?)
+(defn empty-vector-default [n] (if (some? (get-in n [] 99)) (api/accept n) 0))
+(s/fdef nil-path :args (s/cat :n ::api/n) :ret int?)
+(defn nil-path [n] (if (some? (get-in n nil)) (api/accept n) 0))
+(s/fdef local-nil-path :args (s/cat :n ::api/n) :ret int?)
+(defn local-nil-path [n] (let [p nil] (if (some? (get-in n p 99)) (api/accept n) 0)))
+(s/fdef normal-path :args (s/cat :m (s/nilable ::api/row)) :ret int?)
+(defn normal-path [m] (if (some? (get-in m [:n] 99)) (api/accept (:n m)) 0))
+(s/fdef nil-root :args (s/cat :n ::api/n) :ret int?)
+(defn nil-root [n] (if (nil? (get-in n [] 99)) (api/accept n) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 11 "TSP2531"] ["client.clj" 13 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

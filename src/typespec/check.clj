@@ -3409,6 +3409,17 @@
                  member)))
       (do (run! #(infer ctx %) ks) (forget-map-keys ctx mty)))))
 
+(defn- map-update-paths [ctx source node key-type]
+  (if-let [key (stable-map-key node)]
+    [[[node (t/with-assumption (t/lit key) (t/assumption key-type))]]]
+    (let [env (:env ctx)
+          members (t/members env (eff ctx source))]
+      (when (every? #(#{:map :map-of :nil :never} (:t %)) members)
+        (let [keys (vec (take (inc map-path-budget) (t/members env (eff ctx key-type))))
+              supported-key? (if (some #(= :map (:t %)) members) literal-map-key-type? map-path-key-type?)]
+          (when (and (<= 1 (count keys) map-path-budget) (every? supported-key? keys))
+            (mapv (fn [key] [[node key]]) keys)))))))
+
 (defmethod special 'update [ctx node _]
   (let [[m k f & args] (args-of node)
         mty (infer ctx m)
@@ -3419,9 +3430,8 @@
         (check-key-value! ctx (:val k) f ret)
         (assoc-key-type ctx mty (:val k) (key-type ctx (:val k) ret)))
       (let [key-type (infer ctx k)]
-        (if-let [key (and f (stable-map-key k))]
-          (let [literal (t/with-assumption (t/lit key) (t/assumption key-type))]
-            (write-map-paths ctx mty literal [[[k literal]]] f arg-types true))
+        (if-let [paths (when f (map-update-paths ctx mty k key-type))]
+          (write-map-paths ctx mty key-type paths f arg-types true)
           (do (infer ctx f) (forget-map-keys ctx mty)))))))
 
 (defmethod special 'merge [ctx node _]

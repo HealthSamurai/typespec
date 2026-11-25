@@ -405,6 +405,39 @@
   (is (= (t/lit :kept)
          (infer-type "(get (update {'n 1 \"n\" :kept} 'n inc) \"n\")"))))
 
+(deftest computed-key-update-checks-spec-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::choice #{\"n\" \"m\"})
+(s/def ::counts (s/map-of string? int?))
+(s/def ::symbol-counts (s/map-of symbol? int?))
+(s/fdef accept :args (s/cat :counts ::counts) :ret int?)
+(defn accept [counts] 1)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef bump :args (s/cat :key ::api/choice) :ret int?)
+(defn bump [key] (api/accept (update {\"n\" 1 \"m\" 2 \"keep\" 3} key inc)))
+(s/fdef bad-result :args (s/cat :key ::api/choice) :ret int?)
+(defn bad-result [key] (api/accept (update {\"n\" 1 \"m\" 2} key str)))
+(s/fdef maybe-missing :args (s/cat :key ::api/choice) :ret ::api/counts)
+(defn maybe-missing [key] (update {\"n\" 1} key inc))
+(s/fdef upsert :args (s/cat :m ::api/symbol-counts :k symbol?) :ret ::api/symbol-counts)
+(defn upsert [m k] (update m k (fn [n] (if (nil? n) 1 (inc n)))))
+(s/fdef unsafe :args (s/cat :m ::api/symbol-counts :k symbol?) :ret ::api/symbol-counts)
+(defn unsafe [m k] (update m k inc))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2531"] ["client.clj" 11 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest computed-key-update-retains-each-possible-shape
+  (let [result (infer-type "(update {\"a\" 1 \"b\" 2 \"keep\" :sibling} key inc)"
+                           {'key (t/union (t/lit "a") (t/lit "b"))})]
+    (is (= #{{"a" (t/prim :int) "b" (t/lit 2) "keep" (t/lit :sibling)}
+             {"a" (t/lit 1) "b" (t/prim :int) "keep" (t/lit :sibling)}}
+           (set (map :req (alternatives result))))))
+  (is (= (t/prim :map)
+         (infer-type "(update {} key identity)"
+                     {'key (apply t/union (map #(t/lit (str %)) (range 257)))}))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

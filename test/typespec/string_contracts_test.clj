@@ -1,6 +1,7 @@
 (ns typespec.string-contracts-test
   (:require [clojure.test :refer :all]
             [clojure.string :as str]
+            [typespec.check :as check]
             [typespec.parse :as parse]
             [typespec.externs-regression-test :refer [project]]))
 
@@ -67,6 +68,32 @@
   (let [writer (java.io.StringWriter.)]
     (is (nil? (spit writer "text")))
     (is (= "text" (.toString writer)))))
+
+(deftest core-naming-contracts-accept-named-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef label :args (s/cat :x clojure.lang.Named) :ret string?)
+(defn label [x] (name x))
+(s/fdef qualifier :args (s/cat :x clojure.lang.Named) :ret (s/nilable string?))
+(defn qualifier [x] (namespace x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(defn from-hint [^clojure.lang.Named x] (str (api/qualifier x) (api/label x)))
+(name \"plain\")
+(name :ns/name)
+(namespace 'ns/name)
+(name 42)
+(namespace \"plain\")
+(api/label \"plain\")")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [named (reify clojure.lang.Named
+                (getName [_] "label")
+                (getNamespace [_] "example"))]
+    (is (= "label" (name named)))
+    (is (= "example" (namespace named))))
+  (is (thrown? ClassCastException (name 42)))
+  (is (thrown? ClassCastException (namespace "plain"))))
 
 (deftest honest-incomplete-boundaries
   ;; Regex groups reach the callback as a string or a vector.

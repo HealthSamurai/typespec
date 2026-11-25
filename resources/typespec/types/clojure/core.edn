@@ -31,8 +31,8 @@
  clojure.core/count      [any? :-> int?]
  clojure.core/list       [& any? :-> list?]
  clojure.core/subs       ([string? int? :-> string?] [string? int? int? :-> string?])
- clojure.core/name       [(t/or string? keyword? symbol?) :-> string?]
- clojure.core/namespace  [(t/or keyword? symbol?) :-> (s/nilable string?)]
+ clojure.core/name       [(t/or string? clojure.lang.Named) :-> string?]
+ clojure.core/namespace  [clojure.lang.Named :-> (s/nilable string?)]
  clojure.core/keyword    ([(t/or string? keyword? symbol?) :-> keyword?] [(s/nilable string?) string? :-> keyword?])
  clojure.core/symbol     ([(t/or string? keyword? symbol?) :-> symbol?] [(s/nilable string?) string? :-> symbol?])
  clojure.core/parse-long [string? :-> (s/nilable int?)]

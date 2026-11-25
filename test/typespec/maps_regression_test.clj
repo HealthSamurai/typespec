@@ -204,6 +204,37 @@
            (alternatives (infer-type source {'flag (t/prim :boolean) 'path (t/prim :vector)})))
         source)))
 
+(deftest get-in-guards-refine-singleton-tuple-paths-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::count (s/nilable int?))
+(s/def ::other (s/nilable int?))
+(s/def ::stats (s/keys :opt-un [::count ::other]))
+(s/def ::state (s/keys :req-un [::stats]))
+(s/def ::path (s/tuple #{:stats} #{:count}))
+(s/def ::other-path (s/tuple #{:stats} #{:count :other}))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))
+(s/fdef typed :args (s/cat :m ::api/state :path ::api/path) :ret int?)
+(defn typed [m path]
+  (if-some [entry (get-in m path)]
+    (+ entry (api/accept (get-in m [:stats :count]))) 0))
+(s/fdef saved :args (s/cat :m ::api/state) :ret int?)
+(defn saved [m]
+  (let [path [:stats :count]]
+    (if (some? (get-in m path)) (api/accept (get-in m path)) 0)))
+(s/fdef ambiguous :args (s/cat :m ::api/state :path ::api/other-path) :ret int?)
+(defn ambiguous [m path]
+  (if (some? (get-in m path)) (api/accept (get-in m [:stats :count])) 0))
+(s/fdef shadow :args (s/cat :m ::api/state :path ::api/path) :ret int?)
+(defn shadow [m path]
+  (if (some? (get-in m path))
+    (let [path [:stats :other]] (inc (get-in m path))) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 12 "TSP2531"] ["client.clj" 16 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

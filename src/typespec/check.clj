@@ -389,11 +389,21 @@
 (defn- map-entry-type? [ctx ty]
   (every? :map-entry? (t/members (:env ctx) ty)))
 
+(defn- single-member [ctx ty]
+  (let [[member & more] (t/members (:env ctx) (eff ctx ty))]
+    (when-not (seq more) member)))
+
 (defn- stable-lookup-key [ctx node]
   (or (stable-map-key node)
       (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
-        (let [[member & more] (t/members (:env ctx) (eff ctx (get-in ctx [:locals local])))]
-          (when-not (seq more) (selector-literal-key member))))))
+        (selector-literal-key (single-member ctx (get-in ctx [:locals local]))))))
+
+(defn- stable-lookup-path [ctx node]
+  (if (= :vector (:op node))
+    (mapv #(stable-lookup-key ctx %) (:children node))
+    (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
+      (when-let [items (:items (single-member ctx (get-in ctx [:locals local])))]
+        (mapv #(selector-literal-key (single-member ctx %)) items)))))
 
 (defn- stable-path [ctx node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
@@ -407,8 +417,7 @@
         (let [[head a b & more] (:children node)
               h (builtin-head ctx node)
               map-key (when (and (= 'get h) (empty? more)) (stable-lookup-key ctx b))
-              map-path (when (and (= 'get-in h) (= :vector (:op b)) (empty? more))
-                         (mapv #(stable-lookup-key ctx %) (:children b)))
+              map-path (when (and (= 'get-in h) (empty? more)) (stable-lookup-path ctx b))
               [base path] (cond
                             (and (= :kw (:op head)) a (nil? b)) [a [(:val head)]]
                             map-key [a [map-key]]

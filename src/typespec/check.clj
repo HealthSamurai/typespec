@@ -2497,6 +2497,27 @@
                      (str "No overload of " method-name " accepts these arguments. "
                           (str/join ". " (map java-rejection-summary closest))))))))))
 
+(defn- ambiguous-direct-callback [ctx arg-nodes arg-types fits]
+  (when (and (:java-direct? ctx) (next fits))
+    (let [args (mapv vector arg-nodes arg-types)
+          callbacks (keep-indexed (fn [i [node ty]]
+                                    (when (and (= :fn (:t ty)) (not (env/tag-node node))
+                                               (inline-callback? ctx node))
+                                      i)) args)]
+      (when (= 1 (count callbacks))
+        (let [i (first callbacks)
+              same-parameters? (fn [j] (apply = (map #(nth (:params %) j) fits)))
+              others-fit? (every? (fn [j]
+                                    (or (= i j)
+                                        (let [[node ty] (nth args j)]
+                                          (and (compiler-knows? ctx node)
+                                               (same-parameters? j)
+                                               (java-arg-ok? ctx ty (nth (:params (first fits)) j))))))
+                                  (range (count args)))]
+          (when others-fit?
+            (when-let [targets (seq (java/ambiguous-functional-targets (map #(nth (:params %) i) fits)))]
+              [(nth arg-nodes i) targets])))))))
+
 (defn- checked-java-overloads [ctx node label arg-nodes arg-types candidates]
   ;; Clojure calls the JVM descriptor directly, with one array argument for varargs.
   (let [fits (filterv #(= (count arg-nodes) (count (:params %))) candidates)]
@@ -2504,12 +2525,16 @@
       (report! ctx node "TSP2554"
                (str label " takes " (str/join " or " (distinct (map #(count (:params %)) candidates)))
                     " argument(s), got " (count arg-nodes)))
-      (let [ctx (cond-> ctx (next fits) (dissoc :java-direct?))
-            ok (filterv #(every? boolean (map (partial java-arg-ok? ctx) arg-types (:params %))) fits)]
-        (if (seq ok)
-          ok
-          (do (report-java-argument-mismatch! ctx node label arg-nodes arg-types fits)
-              fits))))))
+      (if-let [[arg targets] (ambiguous-direct-callback ctx arg-nodes arg-types fits)]
+        (report! ctx arg "TSP2345"
+                 (str label " has more than one matching overload for the Clojure callback ("
+                      (str/join ", " targets) "). Use Java parameter tags to select one."))
+        (let [ctx (cond-> ctx (next fits) (dissoc :java-direct?))
+              ok (filterv #(every? boolean (map (partial java-arg-ok? ctx) arg-types (:params %))) fits)]
+          (if (seq ok)
+            ok
+            (do (report-java-argument-mismatch! ctx node label arg-nodes arg-types fits)
+                fits)))))))
 
 (defn- java-parameter-tags [member]
   (let [tags (some #(case (:op %)

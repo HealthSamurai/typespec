@@ -109,6 +109,23 @@
     (is (= [["client.clj" 4 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest direct-java-overloads-need-a-unique-functional-target
+  (let [source "(ns sample.choices (:import [java.io File FileFilter FilenameFilter]))
+(.listFiles (File. \".\") (fn [_] false))
+(defn two [^File f] (.listFiles f (fn [_ _] false)))
+(^[FileFilter] File/.listFiles (File. \".\") (fn [_] false))
+(^[FilenameFilter] File/.listFiles (File. \".\") (fn [_ _] false))
+(defn reflective [f] (.listFiles f (fn [_] false)))"
+        ds (:diagnostics (check/check-files [(parse/parse-string "choices.clj" source)] {}))]
+    (is (= [[2 "TSP2345"] [3 "TSP2345"] [6 "TSP7020"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (every? #(re-find #"java.io.FileFilter, java.io.FilenameFilter" (:message %)) (take 2 ds))))
+  (is (try (eval '(.listFiles (java.io.File. ".") (fn [_] false)))
+           false
+           (catch clojure.lang.Compiler$CompilerException ex
+             (re-find #"More than one matching method" (ex-message (ex-cause ex)))))))
+
 (deftest java-overloads-check-the-whole-argument-list
   (let [source "(ns example.overloads)
 (java.util.Arrays/equals (byte-array [1]) (byte-array [1]))

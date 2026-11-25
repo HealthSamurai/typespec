@@ -126,6 +126,20 @@
              (catch LinkageError _ nil)
              (catch SecurityException _ nil)))))))
 
+(defn ambiguous-functional-targets [parameter-classes]
+  (let [targets (->> parameter-classes
+                     distinct
+                     (keep t/load-class)
+                     (filter #(Reflector/paramArgTypeMatch % clojure.lang.AFunction)))]
+    (when (and (next targets)
+               (every? (fn [^Class target]
+                         (and (not (.isAssignableFrom target clojure.lang.AFunction))
+                              (functional-method (.getName target))))
+                       targets))
+      (let [specific (most-specific identity targets)]
+        (when (next specific)
+          (sort (map #(.getName ^Class %) specific)))))))
+
 (defn constructors
   "Public constructor signatures. Returns nil if the signatures cannot be read."
   [^Class cls]

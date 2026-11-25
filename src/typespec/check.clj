@@ -2023,7 +2023,7 @@
                              (or (deferred-callback ctx init)
                                  (when (inline-callback? ctx init)
                                    (let [callback {:ctx (dissoc ctx :pending-callbacks)
-                                                   :node init :type (atom nil)}]
+                                                   :node init :types (atom {})}]
                                      (vswap! pending conj callback)
                                      callback))))
                   ty (if callback
@@ -2163,11 +2163,24 @@
 (defn- infer-fn [ctx node arg-types]
   (infer-callback ctx node (when arg-types {:t :fn :arities [{:params (vec arg-types) :ret t/unknown}]})))
 
-(defn- force-callback [ctx {:keys [node type] captured :ctx} expected]
-  (or @type
-      (let [ty (infer (cond-> captured (:quiet ctx) (assoc :quiet true)) node expected)]
-        (when-not (:quiet ctx) (reset! type ty))
-        ty)))
+(defn- same-type-metadata? [a b]
+  ;; Structural equality of the types has already been established by the lookup.
+  (or (identical? a b)
+      (and (= (meta a) (meta b))
+           (cond
+             (map? a) (every? (fn [[k v]] (same-type-metadata? v (get b k))) a)
+             (sequential? a) (every? true? (map same-type-metadata? a b))
+             :else true))))
+
+(defn- force-callback [ctx {:keys [node types] captured :ctx} expected]
+  (let [cached @types
+        entry (get cached expected)]
+    (if (and entry (same-type-metadata? expected (:expected entry)))
+      (:type entry)
+      (let [quiet? (:quiet ctx)
+            ty (infer (cond-> captured quiet? (assoc :quiet true)) node expected)]
+        (when-not quiet? (swap! types assoc expected {:expected expected :type ty}))
+        ty))))
 
 (defn- apply-type
   "Result of calling a function type with these argument types; mismatches are reported at `at`."
@@ -2904,7 +2917,8 @@
         pending (volatile! [])
         c (bind-pairs (assoc ctx :pending-callbacks pending) bindings)
         result (infer-body (dissoc c :pending-callbacks) body)]
-    (run! #(force-callback ctx % nil) @pending)
+    (doseq [callback @pending :when (empty? @(:types callback))]
+      (force-callback ctx callback nil))
     result))
 
 (defmethod special 'loop [ctx node _]
@@ -6525,6 +6539,13 @@
                         [h d]))))
             directives))))
 
+(defn- record-escape! [ctx directive kind]
+  ;; t/satisfies tracks visits within the expression. The trust summary counts source directives.
+  (let [site [(:file (:file ctx)) (:pos directive)]]
+    (swap! *trust* (fn [trust]
+                    (cond-> (update trust kind inc)
+                      (not (:quiet ctx)) (update-in [::escape-sites kind] (fnil conj #{}) site))))))
+
 (defn- check-satisfies! [ctx node directive actual before-trust]
   (let [annotation (second (:children directive))
         env (:env ctx)
@@ -6732,11 +6753,12 @@
                     (with-meta (t/union (dissoc h :platform) t/nil-t) {:null-return why})
                     h))
               ty)
-         ty (cond
-              (find-d 't/cast) (do (swap! *trust* update :cast inc)
-                                   (t/with-assumption (parse-directive-type ctx (find-d 't/cast)) :cast))
-              (find-d 't/any) (do (swap! *trust* update :any inc) (t/with-assumption t/any :any))
-              :else ty)]
+         ty (if-let [cast (find-d 't/cast)]
+              (do (record-escape! ctx cast :cast)
+                  (t/with-assumption (parse-directive-type ctx cast) :cast))
+              (if-let [any (find-d 't/any)]
+                (do (record-escape! ctx any :any) (t/with-assumption t/any :any))
+                ty))]
      (when satisfies (check-satisfies! ctx node satisfies ty before-trust))
      (record! ctx node ty))))
 
@@ -6846,11 +6868,11 @@
         (binding [t/*cur-ns* (:ns f)]
           (let [ctx {:env env :file f :opts opts :locals {} :load-time? true}]
             (doseq [form (:forms f)] (infer ctx form)))))
-      (let [{:keys [valid invalid count]} (collect-ignores files)
+      (let [{:keys [valid invalid] ignore-count :count} (collect-ignores files)
             ;; Inner ranges win; equal ranges retain source directive order.
             ignores (sort-by (fn [i] [(- (or (:row (:pos i)) 0)) (- (or (:col (:pos i)) 0))
                                      (:end-row (:pos i)) (:end-col (:pos i))]) valid)
-            _ (swap! *trust* assoc :ignore count)
+            _ (swap! *trust* assoc :ignore ignore-count)
             hit (fn [d] (first (filter #(and (= (:file %) (:file d))
                                              (or (nil? (:code %)) (= (:code %) (:code d)))
                                              (inside? (:pos d) (:pos %))) ignores)))
@@ -6863,10 +6885,14 @@
                         (map #(if-let [l (get levels (symbol (:code %)))] (assoc % :severity l) %))
                         (remove #(= :off (:severity %))))
             [visible suppressed] (filter-warnings report (:suppress-warnings opts))
+            {::keys [escape-sites] :as trust} @*trust*
+            trust (assoc (dissoc trust ::escape-sites)
+                         :cast (count (:cast escape-sites))
+                         :any (count (:any escape-sites)))
             ds (->> visible
                     (map #(assoc % :id (diag-id %)))
                     (sort-by (juxt :file #(:row (:pos %)) #(:col (:pos %)) :code)))]
-        (cond-> {:diagnostics (vec ds) :types (if *types* @*types* []) :trust @*trust* :env env
+        (cond-> {:diagnostics (vec ds) :types (if *types* @*types* []) :trust trust :env env
                  :uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :var :kind) (when *var-uses* @*var-uses*)))
                  :spec-uses (vec (sort-by (juxt :file (comp :row :pos) (comp :col :pos) :spec) (when *spec-uses* @*spec-uses*)))
                  :sigs (if (::diagnostics-only opts)

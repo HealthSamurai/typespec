@@ -654,6 +654,69 @@
   (is (= ["TSP2345"] (codes (check-source "(mapv #(+ %1 %2) [1 2] [\"a\" \"b\"])"))))
   (is (empty? (codes (check-source "(mapv #(+ %1 %2) [1 2] [3 4])")))))
 
+(deftest let-bound-callbacks-check-each-direct-use
+  (let [api (parse/parse-string
+             "rows.clj"
+             "(ns rows (:require [clojure.spec.alpha :as s]))
+(s/def ::text string?)
+(s/def ::num int?)
+(s/def ::text-row (s/keys :req-un [::text]))
+(s/def ::number-row (s/keys :req-un [::num]))
+(s/fdef text-row :args (s/cat) :ret ::text-row)
+(defn text-row [] {:text \"hello\"})
+(s/fdef number-row :args (s/cat) :ret ::number-row)
+(defn number-row [] {:num 3})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [rows :as r] [clojure.string :as str]))
+(let [add (fn [row] (assoc row :kind :demo)) alias add
+      text (add (r/text-row)) number (alias (r/number-row))]
+  [(str/upper-case (:text text)) (inc (:num number))])
+(let [step (fn [x]
+             (inc x))]
+  (step 1)
+  (step \"bad\"))")
+        ds (:diagnostics (check/check-files [api client] {:strict true}))]
+    (is (= [["client.clj" 6 "TSP2345" "string? is not assignable to number?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))))
+
+(deftest let-bound-callbacks-use-each-higher-order-context
+  (let [r (check-source "(let [id (fn [x] x) alias id]
+  (id :first-use)
+  (use-name id)
+  [(mapv str/upper-case (mapv alias [\"hi\"])) (mapv inc (mapv id [1]))])
+(let [step (fn [x] (inc x))]
+  (mapv step [1])
+  (mapv step [\"bad\"]))")
+        ds (:diagnostics r)]
+    (is (= [[9 "TSP2345" "string? is not assignable to number?"]]
+           (mapv (juxt (comp :row :pos) :code :message) ds))
+        (pr-str ds))
+    (is (= "(s/coll-of int? :kind vector? :min-count 1 :max-count 1)"
+           (main/type-at r "callbacks.clj" 8 47)))))
+
+(deftest let-bound-callbacks-preserve-trust-across-contexts
+  (let [r (check-source "(let [id (fn [x] [(str #_(t/any \"fixture\") x) x])]
+  (id 1)
+  (id \"two\")
+  (id \"three\"))")]
+    (is (empty? (codes r)) (pr-str (:diagnostics r)))
+    (is (= 1 (get-in r [:trust :any]))))
+  (let [r (check-source "(let [f (fn [x] (if (string? x) #_(t/any \"fixture\") x x))]
+  (f 1)
+  (f \"two\")
+  (f \"three\"))")]
+    (is (= 1 (get-in r [:trust :any]))))
+  (let [r (check-source "(let [id (fn [x] x)
+      assumed #_(t/cast string?) \"assumed\"]
+  (id \"clean\")
+  #_(t/satisfies string?) (id assumed)
+  #_(t/satisfies string?) (id \"clean\"))")
+        ds (:diagnostics r)]
+    (is (= [["TSP280-01" #{:cast}]] (mapv (juxt :code :reasons) ds))
+        (pr-str ds))))
+
 (deftest recursive-callback-calls-use-the-implemented-arities
   (let [res (check-source
              "(map (fn node [x & [option]] (if option (+ x option) (node x 1))) [1 2])

@@ -1674,6 +1674,35 @@
                       [(count rejected) (mapv - rejected) (- i)])))
          ffirst)))
 
+(defn- failed-call-result [ctx node fits arg-nodes arg-types all]
+  ;; Incomplete evidence is not a mismatch. Prefer a candidate whose known
+  ;; arguments fit, but still emit its uncertainty.
+  (let [incomplete? (fn [problems] (every? #(= "TSP210-01" (first (second %))) problems))
+        incomplete (keep-indexed (fn [i ps] (when (and (seq ps) (incomplete? ps)) i)) all)
+        non-nil (mapv #(t/remove-nil (:env ctx) (eff ctx %)) arg-types)
+        non-nil-problems (map #(arg-problems (assoc ctx :quiet true) % arg-nodes non-nil node) fits)
+        nil-only (first (keep-indexed (fn [i ps] (when (empty? ps) i)) non-nil-problems))
+        nil-compatible (keep-indexed (fn [i ps] (when (incomplete? ps) i)) non-nil-problems)
+        unchecked? (some #(= "TSP210-01" (first (second %))) (mapcat identity all))
+        i (or (first incomplete) nil-only (if (next fits) (closest-arity-index arg-nodes all) 0))]
+    (doseq [[pn [code msg extra]] (nth all i)]
+      (apply report! ctx pn code msg (mapcat identity extra)))
+    (if unchecked?
+      (do
+        ;; A merely incomplete candidate must not hide a possible nil boundary
+        ;; on another viable overload.
+        (doseq [[pn [code msg extra]]
+                (distinct (for [j nil-compatible
+                                problem (nth all j)
+                                :when (and (= "TSP2531" (first (second problem)))
+                                           (not (some #{problem} (nth all i))))]
+                            problem))]
+          (apply report! ctx pn code msg (mapcat identity extra)))
+        (let [possible (distinct (concat incomplete nil-compatible))
+              returns (distinct (map :ret (if (seq possible) (map #(nth fits %) possible) fits)))]
+          (if (next returns) t/unknown (first returns))))
+      (:ret (nth fits i)))))
+
 (defn- call-fn [ctx node fname ftype arg-nodes & [typed-args]]
   (if (= :all (:t ftype))
     (call-generic ctx node fname ftype arg-nodes typed-args)
@@ -1689,52 +1718,15 @@
                                  (str fname " expects " (str/join " or " (distinct (map #(str (t/arity-minimum %) (when (or (:rest %) (:kwargs %)) "+")) ars)))
                                       " argument(s), got " n))
                         (apply t/union (map :ret ars)))
-      :else (let [all (map #(arg-problems ctx % arg-nodes arg-types node) fits)
-                  passing (keep-indexed (fn [i ps] (when (empty? ps) i)) all)
-                  vague? (some #(#{:unknown :any} (:t (t/resolve-t (:env ctx) %))) arg-types)
-                  ;; Incomplete evidence is not a mismatch. Prefer a candidate
-                  ;; whose known arguments fit, but still emit its uncertainty.
-                  incomplete (keep-indexed
-                               (fn [i ps]
-                                 (when (and (seq ps)
-                                            (every? #(= "TSP210-01" (first (second %))) ps)) i)) all)
-                  ;; overloads go from narrow to general: with an unknown argument only the general one is safe
-                  ;; nothing fits: if the only trouble is a possible nil, keep the overload that fits otherwise
-                  non-nil (mapv #(t/remove-nil (:env ctx) (eff ctx %)) arg-types)
-                  non-nil-problems (map #(arg-problems (assoc ctx :quiet true) % arg-nodes non-nil node) fits)
-                  nil-only (first (keep-indexed (fn [i ps] (when (empty? ps) i)) non-nil-problems))
-                  ;; Return evidence must include every candidate that could fit
-                  ;; after removing nil, even if another argument is still unknown.
-                  nil-compatible (keep-indexed
-                                   (fn [i ps]
-                                     (when (every? #(= "TSP210-01" (first (second %))) ps) i))
-                                   non-nil-problems)
-                  unchecked? (and (empty? passing)
-                                  (some #(= "TSP210-01" (first (second %))) (mapcat identity all)))
-                  possible (distinct (concat incomplete nil-compatible))
-                  returns (distinct (map :ret (if (seq possible) (map #(nth fits %) possible) fits)))
-                  i (or (if vague? (last passing) (first passing)) (first incomplete) nil-only
-                        (if (next fits) (closest-arity-index arg-nodes all) 0))]
-              (doseq [[pn [code msg extra]] (nth all i)]
-                (apply report! ctx pn code msg (mapcat identity extra)))
-              ;; A merely incomplete candidate must not hide a possible nil
-              ;; boundary on another viable overload. Keep these diagnostics
-              ;; separate from both overload selection and return evidence.
-              (when unchecked?
-                (doseq [[pn [code msg extra]]
-                        (distinct (for [j nil-compatible
-                                        problem (nth all j)
-                                        :when (and (= "TSP2531" (first (second problem)))
-                                                   (not (some #{problem} (nth all i))))]
-                                    problem))]
-                  (apply report! ctx pn code msg (mapcat identity extra))))
-              (cond
-                unchecked? (if (next returns) t/unknown (first returns))
-                (and vague? (next (distinct (map #(:ret (nth fits %)) passing)))) t/unknown
-                :else (let [arity (nth fits i)]
-                        (if (some #{i} passing)
-                          (specialize-map-return ctx arity (first arg-types))
-                          (:ret arity)))))))))
+      :else (let [problems (map #(arg-problems ctx % arg-nodes arg-types node) fits)
+                  passing (keep-indexed (fn [i ps] (when (empty? ps) i)) problems)]
+              (if-let [i (first passing)]
+                (let [vague? (and (next fits)
+                                  (some #(#{:unknown :any} (:t (t/resolve-t (:env ctx) %))) arg-types))]
+                  (if (and vague? (next (distinct (map #(:ret (nth fits %)) passing))))
+                    t/unknown
+                    (specialize-map-return ctx (nth fits (if vague? (last passing) i)) (first arg-types))))
+                (failed-call-result ctx node fits arg-nodes arg-types problems)))))))
 
 ;; ---- inference ----
 

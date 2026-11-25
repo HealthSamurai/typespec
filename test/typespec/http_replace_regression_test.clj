@@ -67,6 +67,26 @@
                            [node (assoc node :val 'known)]))))
         (is (= ["TSP210-01"] (mapv :code @c/*diags*)))))))
 
+(deftest successful-calls-need-no-nil-fallback
+  (let [node {:op :sym :val 'x :pos {:row 1 :col 1}}
+        ctx {:env {} :file {:file "overloads.clj"} :opts {:strict-nil true}}
+        string (t/prim :string)
+        number (t/prim :number)
+        fallback-count (atom 0)
+        remove-nil t/remove-nil
+        ftype {:t :fn :arities [{:params [number] :ret number}
+                                {:params [string] :ret string}]}]
+    (binding [c/*diags* (atom [])]
+      (with-redefs [t/remove-nil (fn [env ty]
+                                  (swap! fallback-count inc)
+                                  (remove-nil env ty))]
+        (is (= string (#'c/call-fn ctx node 'f ftype [node] [string])))
+        (is (empty? @c/*diags*))
+        (is (zero? @fallback-count))
+        (is (= string (#'c/call-fn ctx node 'f ftype [node] [(t/union string t/nil-t)])))
+        (is (= ["TSP2531"] (mapv :code @c/*diags*)))
+        (is (pos? @fallback-count))))))
+
 (deftest rejected-overloads-do-not-prove-a-downstream-return
   (project "(ns app (:require [vendor :as v]))\n(defn f [x] (v/num (v/h x \"s\")))"
            "{vendor/h ([string? int? :-> string?] [keyword? int? :-> keyword?]) vendor/num [number? :-> number?]}"

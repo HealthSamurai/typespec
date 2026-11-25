@@ -135,6 +135,40 @@
         (pr-str issues))
     (is (str/includes? (:message (second issues)) "value selected by selector is (s/nilable int?)"))))
 
+(deftest finite-selectors-preserve-types-presence-and-defaults
+  (let [issues (diagnostics "(defn present [flag] (let [key (if flag :n \"n\") {n key :or {n :unused}} {:n 1 \"n\" 2}] (inc n)))
+(defn fallback [flag] (let [key (if flag :left :right) {n key :or {n 0}} {:left 1}] (inc n)))
+(defn missing [flag] (let [key (if flag :left :right) {n key} {:left 1}] (inc n)))
+(defn stored-nil [flag] (let [key (if flag :left :right) {n key :or {n 0}} {:left 1 :right nil}] (inc n)))
+(defn nested [flag] (let [key (if flag :left :right) {{:strs [n]} key} {:left {\"n\" 1} :right {\"n\" 2}}] (inc n)))
+(defn checked-default [flag] (let [key (if flag :left :right) {n key :or {n (inc \"bad\")}} {:left 1 :right 2}] n))")]
+    (is (= [[4 "TSP2531"] [5 "TSP2531"] [7 "TSP2345"]] (locations issues))
+        (pr-str issues))
+    (is (str/includes? (:message (second issues)) ":or applies only when the key is absent"))))
+
+(deftest finite-selectors-use-specs-from-another-namespace
+  (let [api (parse/parse-string
+             "sides.clj"
+             "(ns sides (:require [clojure.spec.alpha :as s]))
+(s/def ::side #{:left :right})
+(s/def ::left int?)
+(s/def ::right int?)
+(s/fdef choose :args (s/cat :left? boolean?) :ret ::side)
+(defn choose [left?] (if left? :left :right))
+(s/fdef numbers :args (s/cat) :ret (s/keys :req-un [::left ::right]))
+(defn numbers [] {:left 1 :right 2})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [sides :as sides] [clojure.spec.alpha :as s]))
+(s/fdef positive :args (s/cat :left? boolean?) :ret int?)
+(defn positive [left?] (let [key (sides/choose left?) {n key} (sides/numbers)] (inc n)))
+(s/fdef wrong :args (s/cat :left? boolean?) :ret any?)
+(defn wrong [left?] (let [key (sides/choose left?) {n key} {:left 1 :right \"bad\"}] (inc n)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

@@ -808,16 +808,33 @@
                   why
                   (when-not (or default bang?) projection))))
 
+(defn- selector-literal-key [member]
+  (when (= :lit (:t member))
+    (let [value (:val member)]
+      (when (or (keyword? value) (string? value) (symbol? value)) value))))
+
+(defn- select-map-entries [ctx source selector selector-type keys]
+  (let [entries (mapv #(key-info ctx source % selector) (distinct keys))
+        declared? (every? :declared? entries)]
+    {:type (t/with-assumption (apply t/union (map :type entries))
+                              (or (t/assumption source) (t/assumption selector-type)))
+     :declared? declared?
+     :optional? (or (not declared?) (some :optional? entries))
+     :status (when (every? #(= :req (:status %)) entries) :req)}))
+
 (defn- bind-map-selector [ctx pattern selector source why project defaults]
-  (let [literal (static-map-key selector)
-        selector-type (when-not literal (t/resolve-t (:env ctx) (eff ctx (infer ctx selector))))
-        value (when (= :lit (:t selector-type)) (:val selector-type))
-        key (or literal (when (or (keyword? value) (string? value) (symbol? value)) value))]
-    (if key
-      (bind-map-entry ctx pattern selector key source why (project key) defaults)
-      (bind-map-entry ctx pattern selector (str "value selected by " (parse/unparse selector))
-                      source why nil defaults
-                      {:type (read-map-of ctx source selector-type t/never) :optional? true}))))
+  (if-let [key (static-map-key selector)]
+    (bind-map-entry ctx pattern selector key source why (project key) defaults)
+    (let [selector-type (eff ctx (infer ctx selector))
+          keys (mapv selector-literal-key (t/members (:env ctx) selector-type))
+          key (first keys)]
+      (if (and key (= 1 (count keys)))
+        (bind-map-entry ctx pattern selector key source why (project key) defaults)
+        (let [selected (if (and (seq keys) (every? some? keys))
+                         (select-map-entries ctx source selector selector-type keys)
+                         {:type (read-map-of ctx source selector-type t/never) :optional? true})]
+          (bind-map-entry ctx pattern selector (str "value selected by " (parse/unparse selector))
+                          source why nil defaults selected))))))
 
 (defn- destructure-map [ctx pattern ty outer-why projection]
   (let [env (:env ctx)

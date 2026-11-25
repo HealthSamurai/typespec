@@ -293,6 +293,41 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest sequence-pairs-preserve-map-choices-and-last-writes
+  (let [issues (diagnostics "(defn fallback [flag] (let [{:keys [n] :or {n 0}} (list (if flag :n :other) 7)] (inc n)))
+(defn suffix [flag] (let [{:keys [n]} (list :n \"old\" (if flag :n :other) \"bad\" {:n 2})] (inc n)))
+(defn wrong [flag] (let [{:keys [n]} (list :n 2 (if flag :n :other) \"bad\")] (inc n)))
+(defn stored-nil [flag] (let [{:keys [n] :or {n 0}} (list (if flag :n :other) nil)] (inc n)))
+(s/def ::left int?)
+(s/def ::right int?)
+(s/fdef pick :args (s/cat :flag boolean?) :ret (s/or :left (s/keys :req-un [::left]) :right (s/keys :req-un [::right])))
+(defn pick [flag] (let [{:as m} (list (if flag :left :right) 1)] m))")]
+    (is (= [[4 "TSP2345"] [5 "TSP2531"]] (locations issues)) (pr-str issues)))
+  (let [issues (diagnostics (str "(defn many [flag] (let [key (if flag :n :other) "
+                                 "{:keys [n]} (list " (apply str (repeat 9 "key 1 ")) ":n 10)] (inc n)))"))]
+    (is (= [[2 "TSP210-01"]] (locations issues)) (pr-str issues))))
+
+(deftest sequence-pairs-use-selector-and-tuple-specs-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/def ::selector #{:n :other})
+(s/fdef key-for :args (s/cat :flag boolean?) :ret ::selector)
+(defn key-for [flag] (if flag :n :other))
+(s/fdef entries :args (s/cat :flag boolean?) :ret (s/tuple ::selector int?))
+(defn entries [flag] [(key-for flag) 7])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef read-value :args (s/cat :flag boolean?) :ret int?)
+(defn read-value [flag] (let [{:keys [n] :or {n 0}} (seq (options/entries flag))] (inc n)))
+(s/fdef wrong :args (s/cat :flag boolean?) :ret any?)
+(defn wrong [flag] (let [{:keys [n]} (list :n 2 (options/key-for flag) \"bad\")] (inc n)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

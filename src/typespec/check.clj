@@ -771,6 +771,16 @@
 
 (def ^:private empty-map-shape {:t :map :req {} :opt {} :inferred true :complete-keys? true})
 
+(def ^:private map-path-budget 256)
+
+(defn- bounded-combinations [paths]
+  (let [variants (fn [steps]
+                   (reduce (fn [prefixes choices]
+                             (for [prefix prefixes, choice choices] (conj prefix choice)))
+                           [[]] steps))
+        result (vec (take (inc map-path-budget) (mapcat variants paths)))]
+    (when (<= (count result) map-path-budget) result)))
+
 (defn- keys-directive [node]
   (when (= :kw (:op node))
     (let [key (:val node)
@@ -903,12 +913,17 @@
 
       :else
       (let [pairs (partition 2 items)
-            keys (mapv #(selector-literal-key (t/resolve-t env (first %))) pairs)]
-        (if (every? some? keys)
-          (let [shape (assoc empty-map-shape :req (into (array-map) (map vector keys (map second pairs))))]
-            (if (odd? count-items)
-              (apply t/union (map #(append-destructuring-map shape %) (t/members env (peek items))))
-              shape))
+            key-choices (mapv (fn [[key-type]] (mapv selector-literal-key (t/members env key-type))) pairs)
+            values (mapv second pairs)
+            tail? (odd? count-items)
+            steps (cond-> key-choices tail? (conj (t/members env (peek items))))]
+        (if-let [variants (when (every? #(and (seq %) (every? some? %)) key-choices)
+                            (bounded-combinations [steps]))]
+          (apply t/union
+                 (for [variant variants
+                       :let [keys (if tail? (pop variant) variant)
+                             shape (assoc empty-map-shape :req (into (array-map) (map vector keys values)))]]
+                   (if tail? (append-destructuring-map shape (peek variant)) shape)))
           (t/prim :map))))))
 
 (defn- destructuring-map-input [ctx ty]
@@ -3022,8 +3037,6 @@
                          (assoc (dissoc member :items :min-count :max-count) :of t/unknown)
                          :else member))))
 
-(def ^:private map-path-budget 256)
-
 (defn- literal-map-key-type? [ty]
   (and (= :lit (:t ty)) (or (keyword? (:val ty)) (string? (:val ty)))))
 
@@ -3044,12 +3057,7 @@
                         (when-let [items (:items member)] (mapv choices key-nodes items))))
                     (t/members env path-type))]
     (when (every? #(and (some? %) (every? seq %)) paths)
-      (let [variants (fn [steps]
-                       (reduce (fn [prefixes keys]
-                                 (for [prefix prefixes, key keys] (conj prefix key)))
-                               [[]] steps))
-            result (vec (take (inc map-path-budget) (mapcat variants paths)))]
-        (when (<= (count result) map-path-budget) result)))))
+      (bounded-combinations paths))))
 
 (defn- map-path-entry [ctx member key-type]
   (let [env (:env ctx)

@@ -706,6 +706,50 @@
   (when-let [n (get all \"n\" 0)] (inc (get all \"n\"))))")]
     (is (= [[5 "TSP2531"]] (locations issues)) (pr-str issues))))
 
+(deftest conditional-bindings-share-field-narrowing-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef values :args (s/cat) :ret (s/map-of string? (s/or :text string? :count int?)))
+(defn values [] {\"n\" \"word\"})
+(s/fdef size-of :args (s/cat :text string?) :ret int?)
+(defn size-of [^String text] (.length text))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef total :args (s/cat) :ret int?)
+(defn total []
+  (let [{:strs [n] :as all} (list :tag :count (seq (options/values)))]
+    (if-some [value (get all \"n\")]
+      (if (string? value) (+ (options/size-of n) (options/size-of (get all \"n\"))) (inc n))
+      0)))
+(let [{:strs [n] :as all} (list :tag :count (options/values))]
+  (when-some [value n] (when (string? value) (options/size-of (get all \"n\")))))
+(let [{:strs [n] :as all} (list :tag :count (options/values))]
+  (if-let [value (get all \"n\")] (if (string? value) (options/size-of n) (inc n)) 0))
+(let [{:strs [n] :as all} (list :tag :count (options/values))]
+  (when-let [value n] (when (string? value) (options/size-of (get all \"n\")))))
+(let [{:as all} (list :tag :count (options/values))]
+  (when-some [value (get all \"n\")] (when (string? value) (inc (get all \"n\")))))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 15 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "string? is not assignable to number?" (:message (first issues))))))
+
+(deftest conditional-bindings-keep-proofs-about-the-bound-value
+  (let [issues (diagnostics "(s/def ::n int?)
+(s/def ::flag boolean?)
+(s/fdef open-options :args (s/cat) :ret (s/keys :opt-un [::flag]))
+(defn open-options [] {})
+(let [opts (open-options)]
+  (if-some [n (::n opts)] (if (contains? opts :flag) (inc n) 0) 0))
+(s/fdef counts :args (s/cat) :ret (s/map-of string? int?))
+(defn counts [] {})
+(let [{:strs [n] :as all} (list :tag :count (counts))]
+  (when-some [value (get all \"n\" 0)] (when (int? value) (inc n))))")]
+    (is (= [[11 "TSP2531"]] (locations issues)) (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

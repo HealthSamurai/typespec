@@ -2641,6 +2641,14 @@
       (if some? (some-contexts ctx init) (truth-contexts ctx init))
       [ctx ctx]))
 
+(defn- bind-conditional-pattern [ctx pattern init ty]
+  (let [ty (dissoc ty :fresh)
+        projection (when-let [{:keys [type path] :as source} (stable-path ctx init)]
+                     ;; A binding can be narrowed even when its source path could not be split.
+                     (when (= ty (dissoc (projected-type ctx type path) :fresh))
+                       source))]
+    (bind-pattern ctx pattern ty nil projection)))
+
 (defn- if-let-form [ctx node some?]
   (let [[bindings then else] (args-of node)
         [p init] (:children bindings)
@@ -2649,7 +2657,7 @@
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
         [tc fc] (binding-test-contexts ctx init some?)]
     [(if (or (nil? tc) (= :never (:t positive))) t/never
-         (infer (bind-pattern tc p (dissoc positive :fresh)) then))
+         (infer (bind-conditional-pattern tc p init positive) then))
      (if (or (nil? fc) (= :never (:t negative))) t/never (if else (infer fc else) t/nil-t))]))
 
 (defmethod special 'if-let [ctx node _] (apply t/union (if-let-form ctx node false)))
@@ -2663,7 +2671,7 @@
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
         [tc fc] (binding-test-contexts ctx init some?)]
     (t/union (if (or (nil? tc) (= :never (:t positive))) t/never
-                 (infer-body (bind-pattern tc p (dissoc positive :fresh)) body))
+                 (infer-body (bind-conditional-pattern tc p init positive) body))
              (if (or (nil? fc) (= :never (:t negative))) t/never t/nil-t))))
 
 (defmethod special 'when-let [ctx node _] (when-let-form ctx node false))

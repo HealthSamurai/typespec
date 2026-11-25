@@ -93,6 +93,22 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest nth-guards-with-nil-default-refine-vectors-across-namespaces
+  (let [issues (vector-guard-diagnostics
+                 "(s/fdef from-nth :args (s/cat :v ::api/nums :i #{2}) :ret int?)
+(defn from-nth [v i] (if (some? (nth v i nil)) (api/long-enough v) 0))
+(s/fdef tuple-lookup :args (s/cat :v (s/tuple (s/nilable int?))) :ret int?)
+(defn tuple-lookup [v] (if (some? (nth v 0 nil)) (api/integer (nth v 0)) 0))
+(s/fdef fractional :args (s/cat :v ::api/nums) :ret int?)
+(defn fractional [v] (if (some? (nth v 2.9 nil)) (api/long-enough v) 0))
+(s/fdef incorrect-default :args (s/cat :v ::api/nums) :ret int?)
+(defn incorrect-default [v]
+  (if (some? (nth v 2 0)) (api/integer (get v 2)) 0))
+(defn overflow [v] (nth v 4294967296 nil))")]
+    (is (= [["client.clj" 10 "TSP2531"] ["client.clj" 11 "TSP330-02"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest range-checks-start-stop-and-step
   (let [r (checked "(range)
 (range 4.5)

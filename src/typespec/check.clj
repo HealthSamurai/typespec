@@ -416,6 +416,17 @@
   ;; Clojure vector and string lookup uses Number.intValue, including wraparound.
   (.intValue key))
 
+(defn- checked-int-index [value]
+  (try (int value)
+       (catch IllegalArgumentException _ nil)
+       (catch ArithmeticException _ nil)))
+
+(defn- nth-lookup-step [ctx node default]
+  (let [value (stable-selector-value ctx node)
+        index (when (number? value) (checked-int-index value))]
+    (when (and index (not (neg? index)) (nil-lookup-default? ctx default))
+      (if default {:vector-index index} index))))
+
 (defn- vector-lookup-step [value]
   (when (integer? value)
     (let [index (lookup-index value)]
@@ -482,6 +493,7 @@
               lookup-step (when (and (= 'get h) (empty? extra) (nil-lookup-default? ctx default))
                             (stable-lookup-step ctx b))
               map-path (when (and (= 'get-in h) (empty? extra)) (stable-lookup-path ctx b))
+              nth-step (when (and (= 'nth h) (empty? extra)) (nth-lookup-step ctx b default))
               [base path] (cond
                             (and (= :kw (:op head)) a (nil? default) (nil-lookup-default? ctx b)) [a [(:val head)]]
                             lookup-step [a [lookup-step]]
@@ -490,10 +502,7 @@
                                      (and (nil-lookup-default? ctx default) (every? some? map-path)))) [a map-path]
                             (and (#{'first 'second 'key 'val} h) a (nil? b))
                             [a [(if (#{'first 'key} h) 0 1)]]
-                            (and (= 'nth h) (= :num (:op b)) (integer? (:val b))
-                                 (<= 0 (:val b) Integer/MAX_VALUE) (nil? default)
-                                 (empty? (:directives b)) (not (env/tag-node b)))
-                            [a [(int (:val b))]])]
+                            nth-step [a [nth-step]])]
           (when-let [p (and base (stable-path ctx base))]
             (when (or (not (integer? (first path)))
                       (let [base-type (projected-type ctx (:type p) (:path p))]
@@ -3876,11 +3885,6 @@
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)]
       (indexed (elem-type ctx (infer ctx c))))))
-
-(defn- checked-int-index [value]
-  (try (int value)
-       (catch IllegalArgumentException _ nil)
-       (catch ArithmeticException _ nil)))
 
 (defn- infer-nth-positions [ctx index members values default-type]
   (let [candidates (mapv (fn [value] [value (checked-int-index value)]) values)

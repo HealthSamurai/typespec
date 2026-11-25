@@ -750,6 +750,45 @@
   (when-some [value (get all \"n\" 0)] (when (int? value) (inc n))))")]
     (is (= [[11 "TSP2531"]] (locations issues)) (pr-str issues))))
 
+(deftest quoted-symbol-keys-share-field-narrowing-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef values :args (s/cat) :ret (s/map-of symbol? (s/or :text string? :count int?)))
+(defn values [] {'n \"word\"})
+(s/fdef counts :args (s/cat) :ret (s/map-of symbol? int?))
+(defn counts [] {'fixture/n 4})
+(s/fdef nullable :args (s/cat) :ret (s/map-of symbol? (s/nilable int?)))
+(defn nullable [] {'n nil})
+(s/fdef size-of :args (s/cat :text string?) :ret int?)
+(defn size-of [^String text] (.length text))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef total :args (s/cat) :ret int?)
+(defn total []
+  (let [{:syms [n] :as all} (list :tag :count (seq (options/values)))]
+    (if-some [value (get all 'n)]
+      (if (string? value) (+ (options/size-of n) (options/size-of (get-in all ['n]))) (inc n))
+      0)))
+(let [{:syms [fixture/n] :as all} (list :tag :count (options/counts))]
+  (if (contains? all (quote fixture/n)) (+ n (get all 'fixture/n)) 0))
+(let [{:syms [fixture/n] :as all} (list :tag :count (seq (options/counts)))]
+  (if-some [value (get-in all [(quote fixture/n)])] (+ n value (get all 'fixture/n)) 0))
+(let [{:as all} (list :tag :count (options/nullable))]
+  (inc (get all 'n 0)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 13 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest quoted-symbol-reads-distinguish-key-kind-and-namespace
+  (let [issues (diagnostics "(inc (get {'n 4 :n \"keyword\" \"n\" nil} 'n))
+(inc (get {\"n\" nil} 'n 0))
+(inc (get-in {'fixture/n {'n 4}} [(quote fixture/n) 'n]))
+(inc (get {'n 4 'fixture/n \"bad\"} 'fixture/n))")]
+    (is (= [[5 "TSP2345"]] (locations issues)) (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

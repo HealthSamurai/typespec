@@ -45,6 +45,14 @@
 (defn- literal-map-key-node? [node]
   (and (#{:kw :str} (:op node)) (literal-node? node)))
 
+(defn- stable-map-key [node]
+  (when (and (empty? (:directives node)) (not (env/tag-node node)))
+    (static-map-key node)))
+
+(defn- quoted-map-key-type [node ty]
+  (let [key (when (= (t/prim :symbol) ty) (static-map-key node))]
+    (if (symbol? key) (t/with-assumption (t/lit key) (t/assumption ty)) ty)))
+
 (defn- at-type-path [node path]
   (reduce (fn [current step]
             (if-let [child (case (:op current)
@@ -381,12 +389,13 @@
       (when (= :list (:op node))
         (let [[head a b & more] (:children node)
               h (builtin-head ctx node)
+              map-key (when (and (= 'get h) (empty? more)) (stable-map-key b))
+              map-path (when (and (= 'get-in h) (= :vector (:op b)) (empty? more))
+                         (mapv stable-map-key (:children b)))
               [base path] (cond
                             (and (= :kw (:op head)) a (nil? b)) [a [(:val head)]]
-                            (and (= 'get h) (literal-map-key-node? b) (empty? more)) [a [(:val b)]]
-                            (and (= 'get-in h) (= :vector (:op b)) (seq (:children b))
-                                 (every? literal-map-key-node? (:children b)) (empty? more))
-                            [a (mapv :val (:children b))]
+                            map-key [a [map-key]]
+                            (and (seq map-path) (every? some? map-path)) [a map-path]
                             (and (#{'first 'second 'key 'val} h) a (nil? b))
                             [a [(if (#{'first 'key} h) 0 1)]]
                             (and (= 'nth h) (= :num (:op b)) (integer? (:val b))
@@ -753,8 +762,10 @@
       (and (#{'< '<= '> '>=} h) (= 2 (count args)))
       (or (count-order-contexts ctx h a b) [ctx ctx])
 
-      (and (= 'contains? h) (= 2 (count args)) (literal-map-key-node? b))
-      (or (refine-path ctx a #(presence-parts env (:val b) %)) [ctx ctx])
+      (and (= 'contains? h) (= 2 (count args)))
+      (or (when-let [key (stable-map-key b)]
+            (refine-path ctx a #(presence-parts env key %)))
+          [ctx ctx])
 
       (and (= 'instance? h) (= 2 (count args)) (= :sym (:op a)))
       (or (when-let [c (t/resolve-class (:imports (:file ctx)) (:val a))]
@@ -2999,7 +3010,7 @@
        (or (t/assumption source) (t/assumption key-type)))
       t/unknown)))
 
-(defn- read-string-key [ctx source k not-found]
+(defn- read-literal-map-key [ctx source k not-found]
   (let [{:keys [status type]} (lookup-key ctx source k)]
     (case status
       :req (if (t/nilable? (:env ctx) source) (t/union type not-found) type)
@@ -3030,10 +3041,7 @@
 (defmethod special 'find [ctx node _]
   (let [args (args-of node)
         [source key-type :as types] (mapv #(eff ctx (infer ctx %)) args)
-        literal-key (when (= (t/prim :symbol) key-type) (static-map-key (second args)))
-        key-type (if (symbol? literal-key)
-                   (t/with-assumption (t/lit literal-key) (t/assumption key-type))
-                   key-type)]
+        key-type (quoted-map-key-type (second args) key-type)]
     (cond
       (not= 2 (count args))
       (do (report! ctx node "TSP2554" "find expects two arguments") t/unknown)
@@ -3087,7 +3095,7 @@
         (read-key-default ctx mty (:val k) k (infer ctx default))
         (read-key ctx mty (:val k) k))
       (let [source (eff ctx mty)
-            key-type (eff ctx (infer ctx k))
+            key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
             not-found (if default (infer ctx default) t/nil-t)
             members (t/members (:env ctx) source)
             assumption (or (t/assumption source) (t/assumption key-type))]
@@ -3095,8 +3103,9 @@
           (some #{t/never} [source key-type not-found])
           t/never
 
-          (and (= :lit (:t key-type)) (string? (:val key-type)) (some #(= :map (:t %)) members))
-          (t/with-assumption (read-string-key ctx source (:val key-type) not-found) assumption)
+          (and (= :lit (:t key-type)) (or (string? (:val key-type)) (symbol? (:val key-type)))
+               (some #(= :map (:t %)) members))
+          (t/with-assumption (read-literal-map-key ctx source (:val key-type) not-found) assumption)
 
           (and (some vector-member? members) (every? #(or (vector-member? %) (#{:nil :never} (:t %))) members))
           (t/with-assumption (read-vector-index ctx members key-type not-found) assumption)
@@ -3136,7 +3145,7 @@
                t/never)))))
 
 (defn- literal-path-key? [value]
-  (or (keyword? value) (string? value) (integer? value)))
+  (or (keyword? value) (string? value) (symbol? value) (integer? value)))
 
 (defn- literal-path-step [ctx source node value]
   (if (integer? value)
@@ -3166,7 +3175,7 @@
     (if (and steps (not= :never (:t ty)))
       (let [[[key key-type] & more] steps
             current (eff ctx ty)
-            key-type (eff ctx key-type)]
+            key-type (quoted-map-key-type key (eff ctx key-type))]
         (if-let [{:keys [type optional?]} (if (and (literal-node? key) (literal-path-key? (:val key)))
                                          (literal-path-step ctx current key (:val key))
                                          (computed-path-step ctx current (or key path) key-type))]

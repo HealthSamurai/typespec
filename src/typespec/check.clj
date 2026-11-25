@@ -28,7 +28,7 @@
 (def ^:private map-path-budget 256)
 (def ^:private empty-map-shape {:t :map :req {} :opt {} :inferred true :complete-keys? true})
 
-(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
+(declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys)
 
@@ -2023,7 +2023,8 @@
                              (or (deferred-callback ctx init)
                                  (when (inline-callback? ctx init)
                                    (let [callback {:ctx (dissoc ctx :pending-callbacks)
-                                                   :node init :types (atom {})}]
+                                                   :node init :bodies (fn-bodies init)
+                                                   :types (atom {}) :checked-branches (volatile! #{})}]
                                      (vswap! pending conj callback)
                                      callback))))
                   ty (if callback
@@ -2125,21 +2126,23 @@
              :ret (let [ret (infer-body c body)] (if (seq contracts) (eff ctx ret) ret))}
       kwargs (assoc :kwargs kwargs))))
 
-(defn- recursive-callback-type [ctx bodies positional? expected]
+(defn- callback-branch-shape [ctx {:keys [fixed rest]}]
   (let [{:keys [env file]} ctx
-        arities (mapv (fn [{:keys [fixed rest]}]
-                        (cond-> {:params (mapv #(env/pattern-type env file %) fixed)
-                                 :ret t/unknown}
-                          (= :map (:op rest)) (assoc :kwargs (env/pattern-type env file rest))
-                          (and rest (not= :map (:op rest))) (assoc :rest t/unknown)))
-                      bodies)
-        shape (with-meta {:t :fn :arities arities} {::t/dispatch positional?})]
+        kwargs? (= :map (:op rest))]
+    (cond-> {:params (mapv #(env/pattern-type env file %) fixed)
+             :ret t/unknown}
+      kwargs? (assoc :kwargs (env/pattern-type env file rest))
+      (and rest (not kwargs?)) (assoc :rest t/unknown))))
+
+(defn- recursive-callback-type [ctx bodies positional? expected]
+  (let [shape (with-meta {:t :fn :arities (mapv #(callback-branch-shape ctx %) bodies)}
+                {::t/dispatch positional?})]
     ;; The callback's caller supplies types for its own calls. Recursion can
     ;; also use other arities implemented by the function.
     (if expected (vary-meta expected assoc ::recursive-callback-shape shape) shape)))
 
-(defn- infer-callback [ctx node expected]
-  (let [bodies (fn-bodies node)
+(defn- infer-callback [ctx node expected & [{:keys [bodies checked-branches finishing?]}]]
+  (let [bodies (or bodies (fn-bodies node))
         shapes (mapv (fn [i {:keys [fixed rest]}]
                        {:i i :params (vec (repeat (count fixed) t/unknown)) :rest (when rest t/unknown)})
                      (range) bodies)
@@ -2147,12 +2150,20 @@
         targets (:arities expected)
         plans (when positional? (mapv #(t/dispatch-plan shapes %) targets))
         contracts (group-by (comp :i first) (mapcat identity plans))
+        branch-selected? (cond
+                           finishing? (complement @checked-branches)
+                           (and checked-branches expected positional?) contracts
+                           :else (constantly true))
         name-node (second (:children node))
         ctx (cond-> (dissoc ctx :recur-types :load-time?)
               (and (= :list (:op node)) (= :sym (:op name-node)))
               (bind (:val name-node) (recursive-callback-type ctx bodies positional? expected)))
         ft (with-meta {:t :fn :arities (mapv (fn [i branch]
-                                             (infer-fn-branch ctx branch (map second (get contracts i))))
+                                             (if (branch-selected? i)
+                                               (do (when (and checked-branches (not (:quiet ctx)))
+                                                     (vswap! checked-branches conj i))
+                                                   (infer-fn-branch ctx branch (map second (get contracts i))))
+                                               (callback-branch-shape ctx branch)))
                                            (range) bodies)}
              {::t/dispatch positional?})]
     (cond-> ft
@@ -2172,15 +2183,23 @@
              (sequential? a) (every? true? (map same-type-metadata? a b))
              :else true))))
 
-(defn- force-callback [ctx {:keys [node types] captured :ctx} expected]
+(defn- force-callback [ctx {:keys [node types] captured :ctx :as callback} expected]
   (let [cached @types
         entry (get cached expected)]
     (if (and entry (same-type-metadata? expected (:expected entry)))
       (:type entry)
       (let [quiet? (:quiet ctx)
-            ty (infer (cond-> captured quiet? (assoc :quiet true)) node expected)]
+            analysis (cond-> captured quiet? (assoc :quiet true))
+            ty (record! analysis node (infer-callback analysis node expected callback))]
         (when-not quiet? (swap! types assoc expected {:expected expected :type ty}))
         ty))))
+
+(defn- finish-callback! [ctx {:keys [node bodies types checked-branches] captured :ctx :as callback}]
+  (when (< (count @checked-branches) (count bodies))
+    (if (empty? @types)
+      (force-callback ctx callback nil)
+      (infer-callback (cond-> captured (:quiet ctx) (assoc :quiet true))
+                      node nil (assoc callback :finishing? true)))))
 
 (defn- apply-type
   "Result of calling a function type with these argument types; mismatches are reported at `at`."
@@ -2917,8 +2936,9 @@
         pending (volatile! [])
         c (bind-pairs (assoc ctx :pending-callbacks pending) bindings)
         result (infer-body (dissoc c :pending-callbacks) body)]
-    (doseq [callback @pending :when (empty? @(:types callback))]
-      (force-callback ctx callback nil))
+    ;; Later bindings may provide context for earlier callbacks.
+    (doseq [callback (rseq @pending)]
+      (finish-callback! ctx callback))
     result))
 
 (defmethod special 'loop [ctx node _]

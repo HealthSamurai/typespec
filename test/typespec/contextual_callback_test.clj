@@ -696,6 +696,46 @@
     (is (= "(s/coll-of int? :kind vector? :min-count 1 :max-count 1)"
            (main/type-at r "callbacks.clj" 8 47)))))
 
+(deftest let-bound-callbacks-infer-only-the-selected-arity
+  (let [api (parse/parse-string
+             "numbers.clj"
+             "(ns numbers (:require [clojure.spec.alpha :as s]))
+(s/def ::combine (s/fspec :args (s/cat :x int? :y int?) :ret int?))
+(s/fdef combine :args (s/cat :f ::combine) :ret int?)
+(defn combine [f] (f 1 2))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [numbers :as n]))
+(let [f (fn ([x] (subs x 1)) ([x y] (+ x y))) alias f]
+  [(f \"abc\") (n/combine alias)])
+(let [f (fn ([x] (subs x 1)) ([x y] (+ x y)))]
+  (n/combine f)
+  (f \"abc\")
+  (f 1 \"bad\"))
+(let [f (fn ([x] x) ([x y] (inc \"bad\")))]
+  (f \"abc\"))")
+        r (check/check-files [api client] {:strict true})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 4 "TSP2345" "string? is not assignable to number?"]
+            ["client.clj" 8 "TSP2345" "\"bad\" is not assignable to number?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))
+    (is (= "(s/coll-of (t/or string? int?) :kind vector?)"
+           (main/type-at r "client.clj" 3 3)))))
+
+(deftest unused-local-callbacks-can-provide-arity-context
+  (let [r (check-source "(let [f (fn [x] (subs x 1))
+      unused (fn [] (f \"abc\"))]
+  :ok)
+(let [f (fn ([x] x) ([x y] (+ x y)))
+      unused (fn [] (f 1 2))]
+  (f \"abc\"))
+(let [f (fn ([x] x) ([x y] (+ x y)))]
+  f)")]
+    (is (= [[11 "TSP210-01"] [11 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest let-bound-callbacks-preserve-trust-across-contexts
   (let [r (check-source "(let [id (fn [x] [(str #_(t/any \"fixture\") x) x])]
   (id 1)

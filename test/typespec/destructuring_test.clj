@@ -265,6 +265,34 @@
         issues (:diagnostics (check/check-files [api client] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest map-destructuring-keeps-quoted-list-positions
+  (let [issues (diagnostics "(let [{:keys [port]} '(:port 5432)] (inc port))
+(let [{:syms [port]} '(port 5432)] (inc port))
+(let [{:keys [port]} '({:port 5432})] (inc port))
+(let [{:keys [port] :or {port 0}} (quote ())] (inc port))
+(let [{[port] :ports} '(:ports [5432])] (inc port))
+(let [{:keys [expression]} '(:expression (inc \"data\"))] (first expression))
+(let [{:keys [port]} '(:port 5432 :port \"bad\")] (inc port))
+(let [{:keys [port] :or {port 0}} '(:port 5432 {:port nil})] (inc port))")]
+    (is (= [[8 "TSP2345"] [9 "TSP2531"]] (locations issues)) (pr-str issues))))
+
+(deftest quoted-list-destructuring-supports-spec-contracts-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/def ::port int?)
+(s/fdef configured :args (s/cat) :ret (s/keys :req-un [::port]))
+(defn configured [] (let [{:keys [port] :as m} (quote (:port 5432))] (inc port) m))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options]))
+(inc (:port (options/configured)))
+(subs (:port (options/configured)) 0)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

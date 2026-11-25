@@ -2354,16 +2354,38 @@
 (defmethod special 'var [ctx node _]
   (var-reference ctx (args-of node)))
 
-(defn- quoted-type [node]
+(defn- list-value-type [ctx items]
+  (assoc (t/tuple items (literal-element-type ctx items))
+         :kind :seq
+         :jvm-class (if (seq items) "clojure.lang.PersistentList" "clojure.lang.PersistentList$EmptyList")))
+
+(defn- quoted-data-type [ctx node]
+  (let [children (:children node)]
+    (case (:op node)
+      (:sym :kw :str :num :bool) (t/lit (:val node))
+      :nil t/nil-t
+      :char (t/class-type "java.lang.Character")
+      :list (list-value-type ctx (mapv #(quoted-data-type ctx %) children))
+      :vector (let [items (mapv #(quoted-data-type ctx %) children)]
+                (t/tuple items (literal-element-type ctx items)))
+      :map (let [pairs (partition 2 children)]
+             (if (every? #(#{:sym :kw :str} (:op (first %))) pairs)
+               (assoc empty-map-shape :req
+                      (into (array-map) (map (fn [[k v]] [(:val k) (quoted-data-type ctx v)])) pairs))
+               (t/prim :map)))
+      :set (t/prim :set)
+      :quote (list-value-type ctx [(t/lit 'quote) (quoted-data-type ctx (first children))])
+      :var (list-value-type ctx [(t/lit 'var) (quoted-data-type ctx (first children))])
+      t/unknown)))
+
+(defn- quoted-type [ctx node]
   (case (:op node)
     :sym (t/prim :symbol)
-    :list (t/class-type (if (seq (:children node))
-                         "clojure.lang.PersistentList"
-                         "clojure.lang.PersistentList$EmptyList"))
+    :list (quoted-data-type ctx node)
     t/unknown))
 
-(defmethod special 'quote [_ node _]
-  (quoted-type (second (:children node))))
+(defmethod special 'quote [ctx node _]
+  (quoted-type ctx (second (:children node))))
 
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
@@ -4314,9 +4336,7 @@
   (let [items (mapv #(dissoc (infer ctx %) :fresh) (args-of node))]
     (if (some #{t/never} items)
       t/never
-      (assoc (t/tuple items (literal-element-type ctx items))
-             :kind :seq
-             :jvm-class (if (seq items) "clojure.lang.PersistentList" "clojure.lang.PersistentList$EmptyList")))))
+      (list-value-type ctx items))))
 
 (doseq [h '[distinct shuffle set]]
   (defmethod special h [ctx node _]
@@ -6068,7 +6088,7 @@
                                    (dissoc vty :fresh))]))
                               pairs static-keys))}
              (do (run! #(infer ctx %) (:children node)) (t/prim :map))))
-    :quote (quoted-type (first (:children node)))
+    :quote (quoted-type ctx (first (:children node)))
     :fn-lit (infer-callback ctx node nil)
     :list (infer-list ctx node)
     t/unknown))

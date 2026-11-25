@@ -335,6 +335,11 @@
              (contains? (:locals ctx) (:val node)))
     (:val node)))
 
+(defn- active-condition [ctx local]
+  (when-let [{:keys [bindings] :as condition} (get-in ctx [:conditions local])]
+    (when (every? (fn [[sym id]] (= id (get-in ctx [:binding-ids sym]))) bindings)
+      condition)))
+
 (defn- builtin-head [ctx node]
   (let [head (env/head (:file ctx) node)
         raw (:val (first (:children node)))
@@ -559,6 +564,19 @@
 (defn- expand-boolean [ty]
   (if (boolean-type? ty) [(t/lit false) (t/lit true)] [ty]))
 
+(defn- found-value-path [ctx node]
+  (when (and (= 'val (builtin-head ctx node)) (= 2 (count (:children node))))
+    (let [entry (second (:children node))
+          local (when-not (env/tag-node entry) (plain-local ctx entry))
+          {:keys [head test]} (active-condition ctx local)]
+      (when (= 'find head)
+        (let [[_ source key-node] (:children test)]
+          (when-let [key (stable-lookup-key ctx key-node)]
+            (when-let [{:keys [type path] :as subject} (stable-path ctx source)]
+              (let [field (conj path key)]
+                (when (required-map-projection? ctx type field)
+                  (assoc subject :path field))))))))))
+
 (defn- refine-path [ctx node split]
   (let [subject (stable-path ctx node)
         alternatives (when subject (path-alternatives ctx (:type subject) (:path subject) true))
@@ -566,9 +584,17 @@
         subject (if local {:local local} subject)
         alternatives (or alternatives (when local (path-alternatives ctx (get-in ctx [:locals local]) [])))]
     (when alternatives
-      (let [parts (map (fn [[leaf rebuild]] [(split leaf) rebuild]) alternatives)
+      (let [split-leaves (fn [leaves] (map (fn [[leaf rebuild]] [(split leaf) rebuild]) leaves))
+            parts (split-leaves alternatives)
+            field (found-value-path ctx node)
+            field-parts (when field
+                          (when-let [leaves (path-alternatives ctx (:type field) (:path field) true)]
+                            (split-leaves leaves)))
             branch (fn [i]
-                     (refine-alternatives ctx subject parts #(nth % i)))]
+                     (when-let [branch (refine-alternatives ctx subject parts #(nth % i))]
+                       (if field-parts
+                         (refine-alternatives branch field field-parts #(nth % i))
+                         branch)))]
         [(branch 0) (branch 1)]))))
 
 (defn- equality-parts [ctx value leaf]
@@ -741,11 +767,6 @@
        :head head
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
                             [(:val n) (get-in ctx [:binding-ids (:val n)])]))})))
-
-(defn- active-condition [ctx local]
-  (when-let [{:keys [bindings] :as condition} (get-in ctx [:conditions local])]
-    (when (every? (fn [[sym id]] (= id (get-in ctx [:binding-ids sym]))) bindings)
-      condition)))
 
 (defn- find-call-contexts [ctx node]
   (when (and (= :list (:op node)) (= 'find (builtin-head ctx node)))
@@ -2726,11 +2747,15 @@
 
 (defn- bind-conditional-pattern [ctx pattern init ty]
   (let [ty (dissoc ty :fresh)
+        captured (when (and (= :sym (:op pattern)) (not (env/tag-node pattern))
+                            (= 'find (builtin-head ctx init)))
+                   (condition-capture ctx init))
         projection (when-let [{:keys [type path] :as source} (stable-path ctx init)]
                      ;; A binding can be narrowed even when its source path could not be split.
                      (when (= ty (dissoc (projected-type ctx type path) :fresh))
                        source))]
-    (bind-pattern ctx pattern ty nil projection)))
+    (cond-> (bind-pattern ctx pattern ty nil projection)
+      captured (assoc-in [:conditions (:val pattern)] captured))))
 
 (defn- if-let-form [ctx node some?]
   (let [[bindings then else] (args-of node)

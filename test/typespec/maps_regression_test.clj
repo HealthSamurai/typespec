@@ -751,6 +751,38 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (= [[5 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues))))
 
+(deftest find-value-guards-refine-the-source-field-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? (s/nilable int?)))
+(s/def ::mixed (s/map-of string? (s/or :word string? :count int?)))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef by-entry :args (s/cat :m ::api/counts) :ret int?)
+(defn by-entry [m]
+  (if-some [entry (find m \"n\")]
+    (if (some? (val entry)) (api/accept (get m \"n\")) 0) 0))
+(s/fdef saved :args (s/cat :m ::api/counts) :ret int?)
+(defn saved [m]
+  (let [entry (find m \"n\")]
+    (if (and entry (some? (val entry))) (+ (val entry) (get m \"n\")) 0)))
+(s/fdef by-predicate :args (s/cat :m ::api/mixed :key #{\"n\"}) :ret int?)
+(defn by-predicate [m key]
+  (if-let [entry (find m key)]
+    (if (string? (val entry)) (count (get m key)) (api/accept (get m key))) 0))
+(s/fdef nil-field :args (s/cat :m ::api/counts) :ret int?)
+(defn nil-field [m]
+  (if-some [entry (find m \"n\")]
+    (if (nil? (val entry)) (inc (get m \"n\" 0)) 0) 0))
+(s/fdef shadow :args (s/cat :m ::api/counts) :ret int?)
+(defn shadow [m]
+  (let [entry (find m \"n\") m {}]
+    (if (and entry (some? (val entry))) (inc (get m \"n\")) 0)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 17 "TSP2531"] ["client.clj" 21 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

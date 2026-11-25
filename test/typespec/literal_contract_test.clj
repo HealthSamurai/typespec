@@ -72,6 +72,19 @@
     (is (= [#{:unknown} #{:cast} #{:cast} #{:any} #{:cast}] (mapv :reasons (:diagnostics result))))
     (is (= {:cast 3 :any 1 :ignore 0} (:trust result)))))
 
+(deftest satisfies-sees-cached-callback-escapes
+  (let [result (checked "(let [render (fn [x] (if (string? x) (str #_(t/any \"fixture\") x) (str x)))
+      wrapper (fn [x] (render x))]
+  (wrapper \"warm the cache\")
+  #_(t/satisfies string?) (wrapper 1)
+  #_(t/satisfies string?) (wrapper \"first check\")
+  #_(t/satisfies string?) (wrapper \"second check\"))")
+        ds (:diagnostics result)]
+    (is (= [[9 "TSP280-01" #{:any}] [10 "TSP280-01" #{:any}]]
+           (mapv (juxt (comp :row :pos) :code :reasons) ds))
+        (pr-str ds))
+    (is (= {:cast 0 :any 1 :ignore 0} (:trust result)))))
+
 (deftest approximation-is-visible-in-explicit-contracts
   (let [result (checked "#_(t/satisfies (s/tuple int? string?)) [\"reversed\" 1]
                          #_(t/satisfies (s/coll-of int? :min-count 2)) []

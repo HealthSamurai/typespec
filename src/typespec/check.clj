@@ -2187,11 +2187,19 @@
   (let [cached @types
         entry (get cached expected)]
     (if (and entry (same-type-metadata? expected (:expected entry)))
-      (:type entry)
+      (do (when-let [escapes (seq (:escapes entry))]
+            (swap! *trust* (fn [trust] (reduce #(update %1 %2 inc) trust escapes))))
+          (:type entry))
       (let [quiet? (:quiet ctx)
             analysis (cond-> captured quiet? (assoc :quiet true))
+            before @*trust*
             ty (record! analysis node (infer-callback analysis node expected callback))]
-        (when-not quiet? (swap! types assoc expected {:expected expected :type ty}))
+        (when-not quiet?
+          (let [after @*trust*
+                escapes (when-not (identical? before after)
+                          (filterv #(> (get after % 0) (get before % 0)) [:cast :any]))]
+            ;; t/satisfies must see the same evidence on a cache hit.
+            (swap! types assoc expected {:expected expected :type ty :escapes escapes})))
         ty))))
 
 (defn- finish-callback! [ctx {:keys [node bodies types checked-branches] captured :ctx :as callback}]

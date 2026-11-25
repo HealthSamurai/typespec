@@ -75,6 +75,24 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest contains-guards-refine-vector-length-across-namespaces
+  (let [issues (vector-guard-diagnostics
+                 "(s/fdef present :args (s/cat :v ::api/nullable) :ret int?)
+(defn present [v]
+  (if (contains? v 2) (api/nullable-long-enough v) (api/nullable-short-enough v)))
+(s/fdef singleton :args (s/cat :v ::api/nums :i #{2}) :ret int?)
+(defn singleton [v i] (if (contains? v i) (api/integer (get v 2)) 0))
+(s/fdef wrapped :args (s/cat :v (s/nilable (s/tuple int?))) :ret int?)
+(defn wrapped [v] (if (contains? v 4294967296N) (api/integer (get v 0)) 0))
+(s/fdef nil-element :args (s/cat :v ::api/nullable) :ret int?)
+(defn nil-element [v] (if (contains? v 2) (api/integer (get v 2)) 0))
+(s/fdef shadowed :args (s/cat :v ::api/nums) :ret int?)
+(defn shadowed [v]
+  (let [contains? (fn [v i] true)] (if (contains? v 2) (api/integer (get v 2)) 0)))")]
+    (is (= [["client.clj" 10 "TSP2531"] ["client.clj" 13 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest range-checks-start-stop-and-step
   (let [r (checked "(range)
 (range 4.5)

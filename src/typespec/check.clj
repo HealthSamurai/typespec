@@ -397,6 +397,12 @@
   (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
     (single-member ctx (get-in ctx [:locals local]))))
 
+(defn- stable-selector-value [ctx node]
+  (if (literal-node? node)
+    (:val node)
+    (let [member (stable-local-member ctx node)]
+      (when (= :lit (:t member)) (:val member)))))
+
 (defn- stable-lookup-key [ctx node]
   (or (stable-map-key node)
       (selector-literal-key (stable-local-member ctx node))))
@@ -831,6 +837,24 @@
     (refine-path ctx source #(presence-parts (:env ctx) key %))
     (computed-presence-contexts ctx source key-node)))
 
+(defn- vector-presence-parts [index member]
+  (cond
+    (= :nil (:t member)) [nil member]
+    (= :vector (:kind member))
+    (case (length/position member index)
+      :absent [nil member]
+      :present [member nil]
+      :possible [(vector-with-position member index) (vector-without-position member index)])
+    :else [member member]))
+
+(defn- contains-contexts [ctx source key-node]
+  (or (when-not (:guards-disabled? ctx)
+        (let [key (stable-selector-value ctx key-node)]
+          (when (integer? key)
+            (let [index (lookup-index key)]
+              (refine-path ctx source #(vector-presence-parts index %))))))
+      (presence-contexts ctx source key-node)))
+
 (defn- logical-contexts [ctx args and?]
   (let [proceed (if and? first second)
         stop (if and? second first)
@@ -947,7 +971,7 @@
       (or (count-order-contexts ctx h a b) [ctx ctx])
 
       (and (= 'contains? h) (= 2 (count args)))
-      (or (presence-contexts ctx a b) [ctx ctx])
+      (or (contains-contexts ctx a b) [ctx ctx])
 
       (and (= 'instance? h) (= 2 (count args)) (= :sym (:op a)))
       (or (when-let [c (t/resolve-class (:imports (:file ctx)) (:val a))]

@@ -3230,17 +3230,17 @@
                          :else member))))
 
 (defn- literal-map-key-type? [ty]
-  (and (= :lit (:t ty)) (or (keyword? (:val ty)) (string? (:val ty)))))
+  (some? (selector-literal-key ty)))
 
 (defn- map-path-key-type? [ty]
   (or (literal-map-key-type? ty)
-      (and (= :prim (:t ty)) (#{:keyword :string} (:name ty)))))
+      (and (= :prim (:t ty)) (#{:keyword :string :symbol} (:name ty)))))
 
 (defn- fixed-map-key-sequences [ctx path path-type supported-key?]
   (let [env (:env ctx)
         key-nodes (concat (path-key-nodes path) (repeat path))
         choices (fn [node ty]
-                  (let [keys (t/members env (eff ctx ty))]
+                  (let [keys (t/members env (quoted-map-key-type node (eff ctx ty)))]
                     (when (every? supported-key? keys)
                       (mapv (fn [key-type] [node key-type]) keys))))
         paths (mapv (fn [member]

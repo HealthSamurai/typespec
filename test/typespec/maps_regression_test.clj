@@ -332,6 +332,46 @@
   (is (= (map-type {} {}) (select-keys (infer-type "(select-keys {:id 1} nil)") [:req :opt :t])))
   (is (= t/unknown (infer-type "(select-keys {:id 1} keys)" {'keys (t/prim :vector)}))))
 
+(deftest symbolic-map-operations-check-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj"
+                               "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of symbol? int?))
+(s/def ::options (s/keys :req-un [::counts]))
+(s/fdef accept :args (s/cat :options ::options) :ret int?)
+(defn accept [options] 1)
+(s/fdef accept-counts :args (s/cat :counts ::counts) :ret int?)
+(defn accept-counts [counts] 1)")
+        client (parse/parse-string "client.clj"
+                                  "(ns client (:require [api :as api]))
+(api/accept (assoc-in {:counts {}} [:counts 'fixture/n] 4))
+(api/accept (assoc-in {:counts {}} [:counts (quote fixture/n)] \"bad\"))
+(inc (get-in (assoc-in nil ['config 'fixture/n] 4) ['config 'fixture/n]))
+(inc (get-in (update-in {'config {'fixture/n 4 :n \"keyword\"}} ['config 'fixture/n] inc) ['config 'fixture/n]))
+(update-in {'config {'fixture/n \"bad\"}} ['config 'fixture/n] inc)
+(update-in {} ['config 'fixture/n] inc)
+(assoc-in {'config 1} ['config 'fixture/n] 4)
+(api/accept-counts (select-keys {'fixture/n 4 'ignored \"bad\"} ['fixture/n]))
+(api/accept-counts (select-keys {'fixture/n \"bad\"} [(quote fixture/n)]))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2531"]
+            ["client.clj" 8 "TSP2339"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest computed-symbol-paths-check-values-and-possible-absence
+  (let [file (parse/parse-string "index.clj" "(ns index (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of symbol? (s/map-of symbol? int?)))
+(s/def ::path (s/tuple symbol? symbol?))
+(s/fdef upsert :args (s/cat :m ::counts :path ::path) :ret ::counts)
+(defn upsert [m path] (update-in m path (fn [n] (if (nil? n) 1 (inc n)))))
+(s/fdef bump :args (s/cat :m ::counts :path ::path) :ret ::counts)
+(defn bump [m path] (update-in m path inc))")
+        issues (:diagnostics (check/check-files [file] {}))]
+    (is (= [[7 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues)))
+  (is (= t/nil-t (infer-type "(get-in (assoc-in {} '(config fixture/n) nil) ['config 'fixture/n] :missing)")))
+  (is (= (t/lit :kept)
+         (infer-type "(get-in (assoc-in {'config {:n :kept}} ['config 'fixture/n] 4) ['config :n])"))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

@@ -1439,6 +1439,11 @@
 (defn- call-shape [ftype]
   (or (::recursive-callback-shape (meta ftype)) ftype))
 
+(defn- contextual-call-target [ctx ftype arg-types]
+  (if-let [target (::contextual-self-call (meta ftype))]
+    (or (target ctx arg-types) ftype)
+    ftype))
+
 (defn- matching-arities [ftype n]
   (let [arities (:arities ftype)
         fits (if (::t/dispatch (meta ftype))
@@ -1673,9 +1678,11 @@
   (if (= :all (:t ftype))
     (call-generic ctx node fname ftype arg-nodes typed-args)
     (let [n (count arg-nodes)
-          ars (:arities (call-shape ftype))
-          fits (matching-arities ftype n)
-        arg-types (or typed-args (infer-call-arguments ctx node arg-nodes fits))]
+          initial-fits (matching-arities ftype n)
+          arg-types (or typed-args (infer-call-arguments ctx node arg-nodes initial-fits))
+          target (contextual-call-target ctx ftype arg-types)
+          ars (:arities (call-shape target))
+          fits (if (identical? ftype target) initial-fits (matching-arities target n))]
     (cond
       (empty? ars) (or (:ret ftype) t/unknown)
       (empty? fits) (do (report! ctx node "TSP2554"
@@ -1849,6 +1856,9 @@
             :union (apply t/union (map widen (:types ty)))
             ty)
     (:platform ty) (assoc :platform true)))
+
+(defn- direct-callback-context [types]
+  {:t :fn :arities [{:params (mapv #(widen (dissoc % :fresh)) types) :ret t/unknown}]})
 
 (defn- vector-member? [member]
   (or (= :vector (:kind member))
@@ -2155,21 +2165,49 @@
                            (and checked-branches expected positional?) contracts
                            :else (constantly true))
         name-node (second (:children node))
-        ctx (cond-> (dissoc ctx :recur-types :load-time?)
-              (and (= :list (:op node)) (= :sym (:op name-node)))
-              (bind (:val name-node) (recursive-callback-type ctx bodies positional? expected)))
-        ft (with-meta {:t :fn :arities (mapv (fn [i branch]
-                                             (if (branch-selected? i)
-                                               (do (when (and checked-branches (not (:quiet ctx)))
-                                                     (vswap! checked-branches conj i))
-                                                   (infer-fn-branch ctx branch (map second (get contracts i))))
-                                               (callback-branch-shape ctx branch)))
-                                           (range) bodies)}
-             {::t/dispatch positional?})]
-    (cond-> ft
-      (and positional? (= 1 (count targets) (count shapes)) (nil? (first plans)) (not (:rest (first targets))))
-      (vary-meta assoc ::callback-arity-error
-                 [(count (:params (first targets))) (count (:params (first shapes)))]))))
+        name (when (and (= :list (:op node)) (= :sym (:op name-node))) (:val name-node))
+        self-type (when name (recursive-callback-type ctx bodies positional? expected))
+        siblings (when (and name positional? (> (count bodies) 1)) (volatile! #{}))
+        ;; Bound repeated exploration of different arities even on an acyclic path.
+        budget (when siblings (volatile! 64))
+        ctx (dissoc ctx :recur-types :load-time?)]
+    (letfn [(check-branch [analysis i contracts active]
+              (when (and checked-branches (not (:quiet analysis)))
+                (vswap! checked-branches conj i))
+              (infer-fn-branch
+               (if self-type
+                 (bind analysis name
+                       (cond-> self-type
+                         siblings (vary-meta assoc ::contextual-self-call (partial check-sibling (conj active i)))))
+                 analysis)
+               (nth bodies i) contracts))
+            (check-sibling [active caller arg-types]
+              (when-let [{:keys [i]} (t/dispatch-arity shapes (count arg-types))]
+                (when (and (not (contains? active i)) (pos? @budget))
+                  (vswap! budget dec)
+                  (when (or (:quiet ctx) (not (:quiet caller)))
+                    (vswap! siblings conj i))
+                  (let [analysis (cond-> ctx (:quiet caller) (assoc :quiet true))
+                        arity (check-branch analysis i (:arities (direct-callback-context arg-types)) active)]
+                    {:t :fn :arities [arity]}))))]
+      (let [indices (range (count bodies))
+            ;; Analyze the external entry arities before deciding which siblings
+            ;; still need an ordinary check.
+            contextual (when siblings
+                         (into {} (for [i indices :when (and (branch-selected? i) (contains? contracts i))]
+                                    [i (check-branch ctx i (map second (get contracts i)) #{})])))
+            arities (mapv (fn [i]
+                            (or (get contextual i)
+                                (if (and (branch-selected? i)
+                                         (not (and siblings (or expected finishing?) (contains? @siblings i))))
+                                  (check-branch ctx i (map second (get contracts i)) #{})
+                                  (callback-branch-shape ctx (nth bodies i)))))
+                          indices)
+            ft (with-meta {:t :fn :arities arities} {::t/dispatch positional?})]
+        (cond-> ft
+          (and positional? (= 1 (count targets) (count shapes)) (nil? (first plans)) (not (:rest (first targets))))
+          (vary-meta assoc ::callback-arity-error
+                     [(count (:params (first targets))) (count (:params (first shapes)))]))))))
 
 (defn- infer-fn [ctx node arg-types]
   (infer-callback ctx node (when arg-types {:t :fn :arities [{:params (vec arg-types) :ret t/unknown}]})))
@@ -2267,6 +2305,7 @@
                (infer ctx fnode {:t :fn :arities [{:params arg-types :ret t/unknown}]})
                (infer ctx fnode))
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)
+          ty (contextual-call-target ctx ty arg-types)
           index (positional-callback-index ctx fnode arg-types)]
       (cond
         (some? index)
@@ -6636,9 +6675,6 @@
         ctx (cond-> ctx possible? (update :possible-bindings (fnil into #{}) (map :val bindings)))]
     (run! #(infer ctx %) args)
     t/unknown))
-
-(defn- direct-callback-context [types]
-  {:t :fn :arities [{:params (mapv #(widen (dissoc % :fresh)) types) :ret t/unknown}]})
 
 (defn- infer-list [ctx node]
   (let [h (first (:children node))

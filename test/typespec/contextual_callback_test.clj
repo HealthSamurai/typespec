@@ -817,6 +817,50 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest named-callbacks-infer-the-arity-they-forward-to
+  (let [api (parse/parse-string
+             "visitors.clj"
+             "(ns visitors (:require [clojure.spec.alpha :as s]))
+(s/def ::visitor (s/fspec :args (s/cat :name string?) :ret int?))
+(s/fdef visit :args (s/cat :f ::visitor) :ret int?)
+(defn visit [f] (f \"abc\"))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [visitors :as v]))
+(v/visit (fn step
+  ([s offset] (count (subs s offset)))
+  ([s] (step s 1))))
+(v/visit (fn step
+  ([s] (step s \"wrong\"))
+  ([s offset] (count (subs s offset)))))")
+        r (check/check-files [api client] {:strict true})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 7 "TSP2345" "string? is not assignable to int?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))
+    (is (= "int?" (main/type-at r "client.clj" 4 8)))))
+
+(deftest named-callbacks-forward-through-apply-and-collections-without-looping
+  (let [r (check-source "(let [prefix \"start\"
+      render (fn step
+               ([s] (apply step [s 1]))
+               ([s offset] (str (subs prefix 1) (subs s offset))))
+      prefix 42]
+  (subs (render \"abc\") 1))
+(let [f (fn step
+          ([s] (mapv step [s] [1]))
+          ([s offset] (subs s offset)))]
+  (mapv #(subs % 0) (f \"abc\")))
+(s/fdef finish :args (s/cat :n int?) :ret any?)
+(defn finish [n]
+  (let [f (fn step
+            ([n] (if (zero? n) :done (step n true)))
+            ([n _] (step (dec n))))]
+    (f n)))" {:strict true})]
+    (is (empty? (codes r)) (pr-str (:diagnostics r)))
+    (is (= ["string?" "(s/coll-of string? :kind vector? :min-count 1 :max-count 1)"]
+           (mapv #(apply main/type-at r "callbacks.clj" %) [[10 3] [14 3]])))))
+
 (deftest map-indexed-infers-the-callback-and-lazy-result
   (let [result (check-source "(clojure.core/map-indexed #(str (inc %1) (str/upper-case %2)) [\"abc\"])
 (->> [\"abc\"] (map-indexed #(str %1 %2)) (into []))

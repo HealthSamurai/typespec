@@ -573,6 +573,47 @@
     (is (= #{(t/lit :present) (t/lit :c)}
            (alternatives (infer-type "(let [m {:a 1 :b 2}] (if (contains? m k) :present k))" bindings))))))
 
+(deftest contains-narrows-map-of-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/def ::words (s/map-of string? string?))
+(s/def ::nullable (s/map-of string? (s/nilable int?)))
+(s/def ::key #{\"n\" :missing})
+(s/fdef present :args (s/cat :key #{\"n\"} :n int?) :ret int?)
+(defn present [key n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef count-at :args (s/cat :m ::api/counts) :ret int?)
+(defn count-at [m] (if (contains? m \"n\") (inc (get m \"n\")) 0))
+(s/fdef computed :args (s/cat :m ::api/counts :key ::api/key) :ret int?)
+(defn computed [m key] (if (contains? m key) (api/present key (get m key)) 0))
+(s/fdef absent :args (s/cat :m ::api/words) :ret int?)
+(defn absent [m] (if (contains? m \"n\") 0 (inc (get m \"n\" 0))))
+(s/fdef stored-nil :args (s/cat :m ::api/nullable) :ret int?)
+(defn stored-nil [m] (if (contains? m \"n\") (inc (get m \"n\")) 0))
+(s/fdef unsafe :args (s/cat :m ::api/counts :key string?) :ret ::api/counts)
+(defn unsafe [m key] (if (contains? m \"n\") (update m key inc) m))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2531"] ["client.clj" 11 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest contains-preserves-dictionary-types-for-iteration-and-writes
+  (let [file (parse/parse-string "counts.clj" "(ns counts (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/fdef names :args (s/cat :m ::counts) :ret (s/nilable (s/coll-of string? :kind seq?)))
+(defn names [m] (when (contains? m \"n\") (keys m)))
+(s/fdef values :args (s/cat :m ::counts) :ret (s/nilable (s/coll-of int? :kind seq?)))
+(defn values [m] (when (contains? m \"n\") (vals m)))
+(s/fdef total :args (s/cat :m ::counts) :ret int?)
+(defn total [m] (if (contains? m \"n\") (reduce-kv (fn [acc _ n] (+ acc n)) 0 m) 0))
+(s/fdef edit :args (s/cat :m ::counts :key string?) :ret ::counts)
+(defn edit [m key] (if (contains? m \"n\") (assoc m key 1) (dissoc m key)))
+(s/fdef upsert :args (s/cat :m ::counts :key string?) :ret ::counts)
+(defn upsert [m key]
+  (if (contains? m \"n\") (update-in m [key] (fn [n] (if (nil? n) 1 (inc n)))) m))")
+        issues (:diagnostics (check/check-files [file] {}))]
+    (is (empty? issues) (pr-str issues))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

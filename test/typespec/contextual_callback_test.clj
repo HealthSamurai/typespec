@@ -654,6 +654,29 @@
   (is (= ["TSP2345"] (codes (check-source "(mapv #(+ %1 %2) [1 2] [\"a\" \"b\"])"))))
   (is (empty? (codes (check-source "(mapv #(+ %1 %2) [1 2] [3 4])")))))
 
+(deftest directly-invoked-function-literals-use-their-arguments
+  (let [api (parse/parse-string
+             "source.clj"
+             "(ns source (:require [clojure.spec.alpha :as s]))
+(s/def ::value int?)
+(s/fdef row :args (s/cat) :ret (s/keys :req-un [::value]))
+(defn row [] {:value 42})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [source :as s]))
+(inc ((fn [{:keys [value]}] value) (s/row)))
+(#(subs % 1) \"abc\")
+((fn [x] (subs x 1)) 42)
+((fn [x] x))")
+        r (check/check-files [api client] {:strict true})]
+    (is (= [[4 "TSP2345"] [5 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?" "string?"] (mapv #(main/type-at r "client.clj" % 1) [2 3]))))
+  (let [r (check-source "((fn [x] (str x)) #_(t/any \"fixture\") 42)")]
+    (is (empty? (codes r)) (pr-str (:diagnostics r)))
+    (is (= 1 (get-in r [:trust :any])))))
+
 (deftest let-bound-callbacks-check-each-direct-use
   (let [api (parse/parse-string
              "rows.clj"

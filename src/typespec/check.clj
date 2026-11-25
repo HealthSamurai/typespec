@@ -6637,6 +6637,9 @@
     (run! #(infer ctx %) args)
     t/unknown))
 
+(defn- direct-callback-context [types]
+  {:t :fn :arities [{:params (mapv #(widen (dissoc % :fresh)) types) :ret t/unknown}]})
+
 (defn- infer-list [ctx node]
   (let [h (first (:children node))
         args (args-of node)
@@ -6652,15 +6655,15 @@
                           (read-key-default ctx ty (:val h) h (infer ctx default))
                           (read-key ctx ty (:val h) h)))
       (not= :sym (:op h))
-      (let [ft (t/resolve-t (:env ctx) (eff ctx (infer ctx h)))]
+      (let [types (when (inline-callback? ctx h) (mapv #(infer ctx %) args))
+            ft (t/resolve-t (:env ctx) (eff ctx (infer ctx h (some-> types direct-callback-context))))]
         (if (#{:fn :all} (:t ft))
-          (call-fn ctx node (parse/unparse h) ft args)
-          (do (run! #(infer ctx %) args) t/unknown)))
+          (call-fn ctx node (parse/unparse h) ft args types)
+          (do (when-not types (run! #(infer ctx %) args)) t/unknown)))
       (contains? (:locals ctx) (:val h))
       (if-let [callback (deferred-callback ctx h)]
         (let [types (mapv #(infer ctx %) args)
-              params (mapv #(widen (dissoc % :fresh)) types)
-              ft (force-callback ctx callback {:t :fn :arities [{:params params :ret t/unknown}]})]
+              ft (force-callback ctx callback (direct-callback-context types))]
           (apply-type ctx ft types node (str (:val h))))
         (let [local (get-in ctx [:locals (:val h)])
               ft (if (= :ref (:t local)) (t/resolve-t (:env ctx) local) local)]

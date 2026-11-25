@@ -689,6 +689,11 @@
                                :let [ty (truth-part (:env ctx) leaf truthy?)]]
                            (when-not (= :never (:t ty)) ty)))))
 
+(defn- some-contexts [ctx node]
+  (refine-path ctx node (fn [leaf]
+                          [(when-not (#{:nil :never} (:t leaf)) leaf)
+                           (when (#{:nil :unknown :any} (:t leaf)) t/nil-t)])))
+
 (defn- emptiness-contexts [ctx node some?]
   (let [[source & extra] (rest (:children node))]
     (when (and source (empty? extra))
@@ -726,14 +731,9 @@
                fc)]))
 
       (#{'some? 'nil?} h)
-      (or (when (= 1 (count args))
-            (refine-path ctx a (fn [leaf]
-                                 (let [nil? (= :nil (:t leaf))
-                                       vague? (#{:unknown :any} (:t leaf))
-                                       present (when-not (or nil? (= :never (:t leaf))) leaf)
-                                       absent (when (or nil? vague?) t/nil-t)]
-                                   (if (= 'some? h) [present absent] [absent present])))))
-          [ctx ctx])
+      (if-let [branches (when (= 1 (count args)) (some-contexts ctx a))]
+        (if (= 'some? h) branches (vec (rseq branches)))
+        [ctx ctx])
 
       (and (= 'not h) (= 1 (count args))) (vec (reverse (narrow ctx a)))
       (#{'empty? 'seq} h) (or (emptiness-contexts ctx test false) [ctx ctx])
@@ -2636,13 +2636,18 @@
 (defmethod special 'when [ctx node _] (when-form ctx node false))
 (defmethod special 'when-not [ctx node _] (when-form ctx node true))
 
+(defn- binding-test-contexts [ctx init some?]
+  (or (emptiness-contexts ctx init some?)
+      (when some? (some-contexts ctx init))
+      [ctx ctx]))
+
 (defn- if-let-form [ctx node some?]
   (let [[bindings then else] (args-of node)
         [p init] (:children bindings)
         ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
-        [tc fc] (or (emptiness-contexts ctx init some?) [ctx ctx])]
+        [tc fc] (binding-test-contexts ctx init some?)]
     [(if (or (nil? tc) (= :never (:t positive))) t/never
          (infer (bind-pattern tc p (dissoc positive :fresh)) then))
      (if (or (nil? fc) (= :never (:t negative))) t/never (if else (infer fc else) t/nil-t))]))
@@ -2656,7 +2661,7 @@
         ty (eff ctx (infer ctx init))
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
-        [tc fc] (or (emptiness-contexts ctx init some?) [ctx ctx])]
+        [tc fc] (binding-test-contexts ctx init some?)]
     (t/union (if (or (nil? tc) (= :never (:t positive))) t/never
                  (infer-body (bind-pattern tc p (dissoc positive :fresh)) body))
              (if (or (nil? fc) (= :never (:t negative))) t/never t/nil-t))))

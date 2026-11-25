@@ -884,21 +884,26 @@
                           source why nil defaults selected))))))
 
 (defn- append-destructuring-map [ctx shape tail]
-  (case (:t tail)
-    :nil shape
-    :lit (if (= "" (:val tail)) shape (t/prim :map))
-    :coll (let [[key value] (:items tail)]
-            (if-let [k (when (and (= :vector (:kind tail)) (= 2 (count (:items tail))))
-                         (selector-literal-key (t/resolve-t (:env ctx) key)))]
-              (assoc-map-key shape k value)
-              (t/prim :map)))
-    :map (if (:complete-keys? tail)
-           (let [required (merge (merge-with t/union (:req shape)
-                                             (select-keys (:opt tail) (keys (:req shape))))
-                                 (:req tail))]
-             (assoc shape :req required :opt (apply dissoc (:opt tail) (keys required))))
-           (t/prim :map))
-    (t/prim :map)))
+  ;; Only an unmodified entry sequence in the tail acts like its source map.
+  (let [tail (or (:entry-map tail) tail)]
+    (case (:t tail)
+      :nil shape
+      :lit (if (= "" (:val tail)) shape (t/prim :map))
+      :coll (let [[key value] (:items tail)]
+              (if-let [k (when (and (= :vector (:kind tail)) (= 2 (count (:items tail))))
+                           (selector-literal-key (t/resolve-t (:env ctx) key)))]
+                (assoc-map-key shape k value)
+                (t/prim :map)))
+      :map (let [unspecified (if (:complete-keys? tail) t/never t/unknown)
+                 required (reduce-kv (fn [required k value]
+                                       (if (contains? required k)
+                                         required
+                                         (assoc required k (t/union value (get (:opt tail) k unspecified)))))
+                                     (:req tail) (:req shape))]
+             (assoc shape :req required
+                          :opt (apply dissoc (:opt tail) (keys required))
+                          :complete-keys? (boolean (:complete-keys? tail))))
+      (t/prim :map))))
 
 (defn- invalid-destructuring-tail? [member]
   (case (:t member)
@@ -950,10 +955,11 @@
                (if (= :vector (:kind bad))
                  (str "map destructuring tail expects a two-element vector, got length " (length/describe bad))
                  (str "map destructuring cannot append " (t/show bad) " as map entries"))))
-    (mapcat (fn [member]
-              (if (and (= :coll (:t member)) (= :seq (:kind member)) (some? (:items member)))
-                (destructuring-entry-sequence-members ctx pattern (:items member))
-                [member]))
+    (mapcat (fn [{:keys [kind items] :as member}]
+              (cond
+                (and (= :seq kind) (= 0 (second (length/bounds member)))) [empty-map-shape]
+                (and (= :seq kind) items) (destructuring-entry-sequence-members ctx pattern items)
+                :else [member]))
             (remove invalid-destructuring-tail? members))))
 
 (defn- destructuring-sequence-map [ctx pattern member]
@@ -1099,14 +1105,22 @@
             (if (= :never (:t member))
               t/never
               (let [items (:items member)
-                    [min-count max-count] (if (= :nil (:t member)) [0 0] (length/bounds member))
+                    map-source? (= :map (:t member))
+                    entry-map (if map-source? (dissoc member :fresh) (:entry-map member))
+                    [min-count max-count] (cond
+                                           (= :nil (:t member)) [0 0]
+                                           map-source? (let [required (count (:req member))]
+                                                         [required (when (:complete-keys? member)
+                                                                     (+ required (count (:opt member))))])
+                                           :else (length/bounds member))
                     lo (max 0 (- min-count skip))
                     hi (when max-count (max 0 (- max-count skip)))
                     tail (cond
                            (and nullable? (= 0 hi)) t/nil-t
                            items (assoc (t/tuple (subvec items (min skip (count items)))) :kind :seq)
-                           :else (length/with-bounds {:t :coll :kind :seq :of (elem-type ctx member)}
-                                                     (if nullable? (max lo 1) lo) hi))]
+                           :else (cond-> (length/with-bounds {:t :coll :kind :seq :of (elem-type ctx member)}
+                                                           (if nullable? (max lo 1) lo) hi)
+                                   (and entry-map (zero? skip)) (assoc :entry-map entry-map)))]
                 (if (and nullable? (zero? lo)) (t/union tail t/nil-t) tail)))))
    (t/assumption ty)))
 
@@ -3141,7 +3155,7 @@
   (apply t/union (for [member (t/members (:env ctx) ty)]
                    (cond (= :map (:t member)) (t/prim :map)
                          (or (:items member) (length/constrained? member))
-                         (assoc (dissoc member :items :min-count :max-count) :of t/unknown)
+                         (assoc (dissoc member :items :min-count :max-count :entry-map) :of t/unknown)
                          :else member))))
 
 (defn- literal-map-key-type? [ty]
@@ -4999,7 +5013,7 @@
 
 (defn- join-accumulator [ctx acc step]
   (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
-    (update (dissoc acc :items :min-count :max-count) :of t/union (:of step))
+    (update (dissoc acc :items :min-count :max-count :entry-map) :of t/union (:of step))
     (let [joined (t/union acc step)]
       (or (widen-vector-growth (:env ctx) joined) joined))))
 
@@ -5228,7 +5242,7 @@
         (if (some #{t/never} items)
           t/never
           (append-to-vectors ctx cty members (t/tuple items))))
-      (= :coll (:t m)) (assoc (dissoc m :items :min-count :max-count)
+      (= :coll (:t m)) (assoc (dissoc m :items :min-count :max-count :entry-map)
                              :of (apply t/union (:of m) (map widen xts)))
       :else cty)))
 
@@ -5397,7 +5411,7 @@
       (apply t/union
              (for [m (t/members (:env ctx) target)]
                (case (:t m)
-                 :coll (let [result (update (dissoc m :fresh :items :min-count :max-count) :of t/union out)]
+                 :coll (let [result (update (dissoc m :fresh :items :min-count :max-count :entry-map) :of t/union out)]
                          (if output
                            (let [[target-min target-max] (length/bounds m)]
                              (length/with-bounds result target-min
@@ -5443,7 +5457,7 @@
     :map (t/prim :map)
     :coll (if (and (= :never (:t (:of ty))) (:kind ty))
             (t/prim (:kind ty))
-            (dissoc ty :items :min-count :max-count :fresh))
+            (dissoc ty :items :min-count :max-count :fresh :entry-map))
     :union (apply t/union (map initial-atom-content (:types ty)))
     (widen (dissoc ty :fresh))))
 

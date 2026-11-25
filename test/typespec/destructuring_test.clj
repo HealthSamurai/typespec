@@ -440,6 +440,46 @@
     (is (= [["client.clj" 7 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest odd-sequence-tails-use-the-source-map-of-seq
+  (let [issues (diagnostics "(let [{:keys [n]} (list :n \"old\" (seq {:n 4 :other 3}))] (inc n))
+(let [{:keys [n]} (list :n 2 (seq {:other \"unrelated\"}))] (inc n))
+(let [{:keys [n]} (list :n 2 (seq (seq {})))] (inc n))
+(let [{:keys [n]} (list :n 2 (next (seq {:n \"removed\"})))] (inc n))
+(let [{:keys [n]} (list :n 2 (rest (seq {:n \"removed\"})))] (inc n))
+(let [{:keys [n]} (list :n 2 (seq {:n \"bad\"}))] (inc n))
+(let [{:keys [n] :or {n 0}} (list :n 2 (seq {:n nil}))] (inc n))
+(let [{:keys [n]} (list :n \"old\" (conj (seq {:other 2}) (find {:n 4} :n)))] (inc n))
+(let [{:keys [n]} (seq {:n \"bad\" :other 4})] (inc n))")]
+    (is (= [[7 "TSP2345"] [8 "TSP2531"] [9 "TSP210-01"] [10 "TSP210-01"]]
+           (locations issues))
+        (pr-str issues))))
+
+(deftest odd-sequence-tails-use-open-map-contracts-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/def ::amount int?)
+(s/def :text/n string?)
+(s/fdef numbers :args (s/cat) :ret (s/keys :req-un [::n] :opt-un [::amount]))
+(defn numbers [] {:n 4})
+(s/fdef texts :args (s/cat) :ret (s/keys :req-un [:text/n]))
+(defn texts [] {:n \"bad\" :extra \"text\"})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef amount :args (s/cat) :ret int?)
+(defn amount []
+  (let [entries (seq (options/numbers))
+        {:keys [n amount]} (list :n \"old\" :amount 2 (seq entries))]
+    (+ n amount)))
+(let [{:keys [n]} (list :n 2 (seq (options/texts)))] (inc n))
+(let [{:keys [extra]} (list :n 2 :extra 0 (seq (options/texts)))] (inc extra))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

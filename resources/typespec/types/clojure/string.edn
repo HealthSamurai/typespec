@@ -16,9 +16,10 @@
  clojure.string/split       ([java.lang.CharSequence java.util.regex.Pattern :-> (s/coll-of string? :kind vector?)]
                             [java.lang.CharSequence java.util.regex.Pattern int? :-> (s/coll-of string? :kind vector?)])
  clojure.string/split-lines [java.lang.CharSequence :-> (s/coll-of string? :kind vector?)]
- clojure.string/starts-with? [java.lang.CharSequence string? :-> boolean?]
- clojure.string/ends-with?  [java.lang.CharSequence string? :-> boolean?]
- clojure.string/includes?   [java.lang.CharSequence java.lang.CharSequence :-> boolean?]
+ ;; These predicates invoke .toString on the receiver and pass the needle as is.
+ clojure.string/starts-with? [some? string? :-> boolean?]
+ clojure.string/ends-with?  [some? string? :-> boolean?]
+ clojure.string/includes?   [some? java.lang.CharSequence :-> boolean?]
  ;; Correlated pairs, not independent unions. A Pattern callback must handle
  ;; both ungrouped matches and vectors with nullable unmatched groups.
  clojure.string/replace     ([some? java.lang.Character java.lang.Character :-> string?]

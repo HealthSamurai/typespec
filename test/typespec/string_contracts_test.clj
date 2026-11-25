@@ -63,6 +63,32 @@
                       (#{"TSP2345" "TSP2554" "TSP2322"} (:code %))) ds)
           (str form " => " (pr-str ds))))))
 
+(deftest substring-predicates-stringify-only-the-receiver
+  (let [api (parse/parse-string
+             "source.clj"
+             "(ns source (:require [clojure.spec.alpha :as s]))
+(s/fdef flag :args (s/cat) :ret boolean?)
+(defn flag [] false)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [source :as source] [clojure.string :as s]))
+(s/starts-with? 42 \"4\")
+(s/ends-with? :ready \"dy\")
+(s/includes? (source/flag) (StringBuilder. \"als\"))
+(s/starts-with? nil \"\")
+(s/ends-with? \"abc\" (StringBuilder. \"c\"))
+(s/includes? \"abc\" :a)")
+        ds (:diagnostics (check/check-files [api client] {:strict-nil true}))]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds)))
+  (is (str/starts-with? 42 "4"))
+  (is (str/ends-with? :ready "dy"))
+  (is (str/includes? false (StringBuilder. "als")))
+  (is (thrown? NullPointerException (str/starts-with? nil "")))
+  (is (thrown? ClassCastException (str/ends-with? "abc" (StringBuilder. "c"))))
+  (is (thrown? ClassCastException (str/includes? "abc" :a))))
+
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
   (let [writer (java.io.StringWriter.)]

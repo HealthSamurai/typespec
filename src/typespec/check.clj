@@ -2390,13 +2390,43 @@
           :lit (t/prim->class (:name (t/lit-prim (:val m))))
           nil)))))
 
+(defn- functional-return-type [ctx ret]
+  (cond
+    (= "void" ret) nil
+    ;; Reflector uses Clojure truthiness, while a direct adapter unboxes Boolean.
+    (= "boolean" ret) (when (:java-direct? ctx) (t/prim :boolean))
+    (= "char" ret) (t/class-type "java.lang.Character")
+    (t/primitives ret) (t/union (t/prim :number) (t/class-type "java.lang.Character"))
+    :else (t/union (t/class-type ret) t/nil-t)))
+
+(defn- functional-argument-problem [ctx fn-type {:keys [params ret name]}]
+  (let [n (count params)]
+    (if-let [arity (t/dispatch-arity (:arities fn-type) n)]
+      (when-let [expected (functional-return-type ctx ret)]
+        (let [actual (eff ctx (:ret arity))]
+          (when (= :mismatch (:status (t/sub-result (:env ctx) actual expected)))
+            ["TSP2345" (str "expects a callback returning " (t/show expected) " for " name ", got " (t/show actual))])))
+      ["TSP2554" (str "expects a callback accepting " n " argument(s) for " name)])))
+
+(defn- functional-argument-ok? [ctx ty pclass]
+  (let [env (:env ctx)
+        members (t/members env ty)]
+    (when (some #(= :fn (:t %)) members)
+      (when-let [method (java/functional-method pclass)]
+        (every? (fn [member]
+                  (if (= :fn (:t member))
+                    (nil? (functional-argument-problem ctx member method))
+                    (t/sub? env member (t/class-type pclass))))
+                members)))))
+
 (defn- java-arg-ok? [ctx a pclass]
   (let [p (t/class-type pclass) env (:env ctx)
         num? (fn [x] (t/sub? env x (t/prim :number)))]
     (or (#{:unknown :any} (:t (t/resolve-t env a)))
         (t/sub? env (if (t/primitives pclass) a (t/remove-nil env a)) p)
         (and (num? (t/remove-nil env a)) (num? p))
-        (and (= "char" pclass) (= :class (:t a))))))
+        (and (= "char" pclass) (= :class (:t a)))
+        (functional-argument-ok? ctx (t/remove-nil env a) pclass))))
 
 (defn- java-ret [cname m]
   (let [base (t/class-type (:ret m))
@@ -2431,9 +2461,16 @@
 (defn- report-java-argument-mismatch! [ctx node method-name arg-nodes arg-types fits]
   (let [alternatives (mapv #(t/members (:env ctx) %) arg-types)]
     (if-let [i (java-unmatched-argument ctx alternatives fits)]
-      (report! ctx (nth arg-nodes i) "TSP2345"
-               (str (t/show (nth arg-types i)) " is not assignable to " (java/short-name (nth (:params (first fits)) i)) ", "
-                    (if (= 1 (count fits)) "the parameter" "a parameter") " of " method-name))
+      (let [pclass (nth (:params (first fits)) i)
+            members (remove #(= :nil (:t %)) (nth alternatives i))
+            [code message] (when (and (= 1 (count fits)) (seq members) (every? #(= :fn (:t %)) members))
+                             (when-let [method (java/functional-method pclass)]
+                               (some #(functional-argument-problem ctx % method) members)))]
+        (if code
+          (report! ctx (nth arg-nodes i) code (str method-name " " message))
+          (report! ctx (nth arg-nodes i) "TSP2345"
+                   (str (t/show (nth arg-types i)) " is not assignable to " (java/short-name pclass) ", "
+                        (if (= 1 (count fits)) "the parameter" "a parameter") " of " method-name))))
       ;; A union can be accepted by different overloads at runtime.
       (let [rejected (mapv #(java-rejected-args ctx alternatives (:params %)) fits)]
         (when (every? seq rejected)
@@ -2451,7 +2488,8 @@
       (report! ctx node "TSP2554"
                (str label " takes " (str/join " or " (distinct (map #(count (:params %)) candidates)))
                     " argument(s), got " (count arg-nodes)))
-      (let [ok (filterv #(every? boolean (map (partial java-arg-ok? ctx) arg-types (:params %))) fits)]
+      (let [ctx (cond-> ctx (next fits) (dissoc :java-direct?))
+            ok (filterv #(every? boolean (map (partial java-arg-ok? ctx) arg-types (:params %))) fits)]
         (if (seq ok)
           ok
           (do (report-java-argument-mismatch! ctx node label arg-nodes arg-types fits)
@@ -2498,7 +2536,9 @@
       :else
       (let [label (str shown "." mname)
             methods (if tags (tagged-java-overload ctx tags label ms) ms)
-            candidates (when (seq methods) (checked-java-overloads ctx node label arg-nodes arg-types methods))
+            candidates (when (seq methods)
+                         (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
+                                                 node label arg-nodes arg-types methods))
             rets (distinct (map #(java-ret cname %) candidates))]
         (if (= 1 (count rets)) (first rets) t/unknown)))))
 
@@ -2517,7 +2557,8 @@
                 (report! ctx node "TSP2345" (str shown " is abstract and cannot be constructed"))
 
                 :else
-                (checked-java-overloads ctx node (str "the " shown " constructor") arg-nodes arg-types constructors)))))
+                (checked-java-overloads (assoc ctx :java-direct? true)
+                                        node (str "the " shown " constructor") arg-nodes arg-types constructors)))))
         ;; Direct instantiation of Object produces a concrete value.
         (if (= cname "java.lang.Object") {:t :class :name cname} (t/class-type cname)))
       t/unknown)))
@@ -2554,7 +2595,7 @@
           boxed (assignable! ctx target {:t :class :name (.getName ^Class boxed)} {:t :class :name cname})
           (class-symbol-name ctx target) (assignable! ctx target (t/class-type "java.lang.Class") (t/class-type cname))
           :else (assignable! ctx target non-nil (t/class-type cname)))
-        (java-call ctx node member cname mname false arg-nodes nil (java-parameter-tags member))))))
+        (java-call (assoc ctx :java-direct? true) node member cname mname false arg-nodes nil (java-parameter-tags member))))))
 
 (defn- instance-field-owner [ctx target]
   (let [ty (java-receiver-type ctx target)]
@@ -2644,7 +2685,8 @@
                               :edits [{:range {:start [(:row (:pos target)) (:col (:pos target))]
                                                :end [(:row (:pos target)) (:col (:pos target))]}
                                        :text (str "^" hint " ")}]}])))
-        (java-call ctx node member-node cname mname false arg-nodes field-fallback)))))
+        (java-call (assoc ctx :java-direct? (compiler-knows? ctx target))
+                   node member-node cname mname false arg-nodes field-fallback)))))
 
 ;; ---- special forms ----
 

@@ -4,6 +4,43 @@
             [typespec.main :as main]
             [typespec.parse :as parse]))
 
+(deftest clojure-functions-adapt-to-java-interfaces-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef make-future :args (s/cat) :ret java.util.concurrent.CompletableFuture)
+(defn make-future [] (java.util.concurrent.CompletableFuture/completedFuture 3))
+(defn stringify [x] (str x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api])
+  (:import [java.util.concurrent CompletableFuture] [java.util.concurrent.atomic AtomicInteger]))
+(.thenApply ^CompletableFuture (api/make-future) api/stringify)
+(.thenApply ^CompletableFuture (api/make-future) (fn [x & more] (str x)))
+(.thenApply ^CompletableFuture (api/make-future) (fn [] 1))
+(.thenApply ^CompletableFuture (api/make-future) 42)
+(.updateAndGet (AtomicInteger. 3) (fn [x] 4))
+(.updateAndGet (AtomicInteger. 3) (fn [x] \\A))
+(.updateAndGet (AtomicInteger. 3) (fn [x] \"wrong\"))
+(.filter (java.util.stream.IntStream/range 0 3) (fn [x] true))
+(java.util.stream.IntStream/.filter (java.util.stream.IntStream/range 0 3) (fn [x] \"wrong\"))
+(.setURIResolver (javax.xml.transform.TransformerFactory/newInstance) (fn [href base] nil))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2554"] ["client.clj" 6 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 11 "TSP2345"] ["client.clj" 12 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (re-find #"callback accepting 1 argument" (:message (first ds))))
+    (is (re-find #"callback returning .* for applyAsInt" (:message (nth ds 2))))))
+
+(deftest java-functional-interface-adaptation-on-the-jvm
+  (let [^java.util.concurrent.CompletableFuture f (java.util.concurrent.CompletableFuture/completedFuture 3)]
+    (is (= "3" (.join (.thenApply f (fn [x] (str x))))))
+    (is (instance? clojure.lang.ArityException
+                   (try (.join (.thenApply f (fn [] 1)))
+                        (catch java.util.concurrent.CompletionException ex (ex-cause ex))))))
+  (let [^java.util.concurrent.atomic.AtomicInteger cell (java.util.concurrent.atomic.AtomicInteger. 3)]
+    (is (= 65 (.updateAndGet cell (fn [_] \A))))
+    (is (thrown? ClassCastException (.updateAndGet cell (fn [_] "wrong")))))
+  (let [^java.util.stream.IntStream stream (java.util.stream.IntStream/range 0 3)]
+    (is (thrown? ClassCastException (.count (.filter stream (fn [_] "truthy")))))))
+
 (deftest java-overloads-check-the-whole-argument-list
   (let [source "(ns example.overloads)
 (java.util.Arrays/equals (byte-array [1]) (byte-array [1]))

@@ -203,6 +203,43 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest named-map-bindings-follow-the-expanded-map-order
+  (let [issues (diagnostics "(let [i \"outer\" {:keys [a b c d e f g h i] :or {a (inc i)}} {:i 2}] a)
+(let [a \"outer\" {:keys [a b c d e f g h i] :or {i (inc a)}} {:a 2}] i)
+(let [i :outer {n i :keys [a b c d e f g h i]} {:i :value :outer \"bad\" :value 3}] (inc n))
+(let [i \"outer\" {a :a b :b c :c d :d e :e f :f g :g h :h i :i :or {a (inc i)}} {:i 2}] a)
+(let [{n (inc \"unused\") :keys [n]} {:n 7}] (inc n))
+(let [{:keys [n] :strs [n]} {:n 2 \"n\" \"right\"}] (subs n 0))
+(let [{^String n :unused :keys [n]} {:n \"kept\"}] (.substring n 0))
+(let [{^String n :unused :keys [n]} {:n 1}] (.substring n 0))")]
+    (is (= [[3 "TSP2345"] [9 "TSP2322"]] (locations issues)) (pr-str issues))))
+
+(deftest binding-order-preserves-the-spec-contract-across-namespaces
+  (let [api (parse/parse-string
+             "rows.clj"
+             "(ns rows (:require [clojure.spec.alpha :as s]))
+(s/def ::a int?)
+(s/def ::b int?)
+(s/def ::c int?)
+(s/def ::d int?)
+(s/def ::e int?)
+(s/def ::f int?)
+(s/def ::g int?)
+(s/def ::h int?)
+(s/def ::i int?)
+(s/fdef default-a :args (s/cat :row (s/keys :req-un [::i] :opt-un [::a ::b ::c ::d ::e ::f ::g ::h])) :ret int?)
+(defn default-a [row]
+  (let [i \"outer\" {:keys [a b c d e f g h i] :or {a (inc i)}} row] a))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [rows :as rows]))
+(rows/default-a {:i 2})
+(rows/default-a {:i \"bad\"})")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

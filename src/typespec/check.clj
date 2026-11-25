@@ -786,6 +786,35 @@
   (and (= :map (:op pattern))
        (some (fn [[k _]] (or (:bang? (keys-directive k)) (has-bang? k))) (partition 2 (:children pattern)))))
 
+(defn- ordinary-named-binding? [[node _]]
+  (case (:op node)
+    :sym true
+    :kw (not (or (:bang? (keys-directive node))
+                 (#{:missing :select :excess :all :strs! :syms!} (:val node))))
+    false))
+
+(defn- map-binding-order [pairs]
+  (if (every? ordinary-named-binding? pairs)
+    ;; Clojure expands the directives into a map before binding any fields.
+    ;; Assoc can overwrite an explicit binding or promote the array map.
+    (let [entries (into {} (map (juxt (comp :val first) identity)) pairs)
+          directives (into {}
+                           (keep (fn [[name [node selectors]]]
+                                   (when (= :vector (:op selectors))
+                                     (when-let [directive (keys-directive node)]
+                                       [name [directive selectors]]))))
+                           entries)]
+      (vals (reduce (fn [bindings [name [{:keys [key-of]} selectors]]]
+                      (reduce (fn [bindings node]
+                                (let [local (:val node)]
+                                  (if-let [key (and (#{:sym :kw} (:op node)) (key-of local))]
+                                    (let [binding (or (first (get bindings local)) node)]
+                                      (assoc bindings local [binding node key]))
+                                    bindings)))
+                              (dissoc bindings name) (:children selectors)))
+                    (dissoc entries :as :or) directives)))
+    (sort-by (fn [[k _]] (if (keys-directive k) 1 0)) pairs)))
+
 (defn- bind-map-entry [ctx pattern node key ty outer-why projection defaults & [selected]]
   (let [env (:env ctx)
         {:keys [type optional? declared? status]} (or selected (key-info ctx ty key node))
@@ -906,9 +935,13 @@
               ctx)
         project (fn [key] {:origin origin :path (conj path key)})
         ctx (reduce
-             (fn [ctx [k v]]
-               (let [kd (keys-directive k)]
+             (fn [ctx [k v key]]
+               (let [kd (keys-directive k)
+                     binding (if (#{:sym :kw} (:op k)) (assoc k :op :sym :val (symbol (name (:val k)))) k)]
                  (cond
+                   key
+                   (bind-map-entry ctx binding v key ty outer-why (project key) defaults)
+
                    (and kd (= :vector (:op v)))
                    (reduce
                     (fn [ctx s]
@@ -934,9 +967,8 @@
                    (reduce #(bind %1 (:val %2) t/unknown) ctx (filter #(= :sym (:op %)) (:children v)))
 
                    :else
-                   (let [binding (if (#{:sym :kw} (:op k)) (assoc k :op :sym :val (symbol (name (:val k)))) k)]
-                     (bind-map-selector ctx binding v ty outer-why project defaults)))))
-             ctx (sort-by (fn [[k _]] (if (keys-directive k) 1 0)) pairs))]
+                   (bind-map-selector ctx binding v ty outer-why project defaults))))
+             ctx (map-binding-order pairs))]
     ctx))
 
 (defn- elem-type [ctx ty]

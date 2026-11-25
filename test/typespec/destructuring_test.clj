@@ -240,6 +240,31 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest nested-map-and-vector-bindings-follow-the-expanded-map-order
+  (let [issues (diagnostics "(let [i :outer {{:keys [n]} i :keys [a b c d e f g h i]} {:i :value :outer {:n \"bad\"} :value {:n 3}}] (inc n))
+(let [i :outer {[amount] i :keys [a b c d e f g h i]} {:i :value :outer [\"bad\"] :value [3]}] (inc amount))
+(let [i :outer {[amount] i :keys [a b c d e f g h i]} {:i :value :outer [3] :value [\"bad\"]}] (inc amount))
+(let [i :outer {[n] i :keys [a b c d e f g h i]} {:i :value :outer [3] :value [\"bad\"]}] (inc n))")]
+    (is (= [[4 "TSP2345"]] (locations issues)) (pr-str issues))))
+
+(deftest nested-binding-order-uses-specs-from-another-namespace
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/def :outer/n string?)
+(s/fdef data :args (s/cat)
+  :ret (s/tuple #{:i} #{:value} #{:value} (s/keys :req-un [::n]) #{:outer} (s/keys :req-un [:outer/n])))
+(defn data [] [:i :value :value {:n 3} :outer {:n \"bad\"}])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef read-value :args (s/cat) :ret int?)
+(defn read-value []
+  (let [i :outer {{:keys [n]} i :keys [a b c d e f g h i]} (seq (options/data))] (inc n)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (empty? issues) (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

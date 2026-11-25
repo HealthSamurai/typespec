@@ -2411,7 +2411,8 @@
             (let [actual (functional-input-type cname)]
               (when (and target
                          (= :mismatch (:status (t/sub-result env actual target)))
-                         (not (and (t/primitives cname) (numeric? actual) (numeric? target))))
+                         (not (and (t/primitives cname) (t/primitives (:as target))
+                                   (numeric? actual) (numeric? target))))
                 ["TSP2345" (str "passes " (t/show actual) " to callback parameter " i
                                " for " name ", which expects " (t/show target))])))
           (map vector (iterate inc 1) params expected))))

@@ -84,6 +84,19 @@
     (is (= [1 2] (vec ordered))))
   (is (thrown? clojure.lang.ArityException (.run (Thread. (fn [x] x))))))
 
+(deftest java-callbacks-distinguish-primitive-hints-from-spec-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef only-doubles :args (s/cat :x double?) :ret int?)
+(defn only-doubles [x] (if (double? x) 1 (throw (IllegalArgumentException. \"expected Double\"))))
+(defn hinted-double [^double x] (long x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(.updateAndGet (java.util.concurrent.atomic.AtomicInteger. 7) api/hinted-double)
+(.updateAndGet (java.util.concurrent.atomic.AtomicInteger. 7) api/only-doubles)")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (re-find #"passes int\? to callback parameter 1 .* expects double\?" (:message (first ds))))))
+
 (deftest java-overloads-check-the-whole-argument-list
   (let [source "(ns example.overloads)
 (java.util.Arrays/equals (byte-array [1]) (byte-array [1]))

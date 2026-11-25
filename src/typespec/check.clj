@@ -735,17 +735,36 @@
   (let [head (builtin-head ctx node)]
     (when (or (primitive-predicates head)
               (guard-call ctx node)
-              (#{'some? 'nil? 'seq 'empty? 'not 'and 'or '= 'not= '< '<= '> '>= 'contains? 'instance?
+              (#{'some? 'nil? 'seq 'empty? 'not 'and 'or '= 'not= '< '<= '> '>= 'contains? 'find 'instance?
                  'clojure.spec.alpha/valid? 'clojure.spec.alpha/invalid?} head))
       {:test node
+       :head head
        :bindings (into {} (for [n (tree-seq (comp seq :children) :children node) :when (= :sym (:op n))]
                             [(:val n) (get-in ctx [:binding-ids (:val n)])]))})))
 
-(defn- find-contexts [ctx node]
+(defn- active-condition [ctx local]
+  (when-let [{:keys [bindings] :as condition} (get-in ctx [:conditions local])]
+    (when (every? (fn [[sym id]] (= id (get-in ctx [:binding-ids sym]))) bindings)
+      condition)))
+
+(defn- find-call-contexts [ctx node]
   (when (and (= :list (:op node)) (= 'find (builtin-head ctx node)))
     (let [[_ source key & extra] (:children node)]
       (when (and key (empty? extra))
         (presence-contexts ctx source key)))))
+
+(defn- find-contexts [ctx node]
+  (or (find-call-contexts ctx node)
+      (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
+        (let [{:keys [head test]} (active-condition ctx local)]
+          (when (= 'find head)
+            (when-let [branches (find-call-contexts ctx test)]
+              (let [env (:env ctx)
+                    ty (eff ctx (get-in ctx [:locals local]))]
+                (mapv (fn [branch type]
+                        (when (and branch (not= t/never type))
+                          (assoc-in branch [:locals local] type)))
+                      branches [(t/remove-nil env ty) (nil-part env ty)]))))))))
 
 (defn- truth-contexts [ctx node]
   (or (find-contexts ctx node)
@@ -776,9 +795,9 @@
         h (builtin-head ctx test)
         [a b :as args] (vec (rest (:children test)))
         local (plain-local ctx test)
-        {captured-test :test bindings :bindings} (get-in ctx [:conditions local])]
+        {captured-test :test captured-head :head} (active-condition ctx local)]
     (cond
-      (and captured-test (every? (fn [[sym id]] (= id (get-in ctx [:binding-ids sym]))) bindings))
+      (and captured-test (not= 'find captured-head))
       (narrow ctx captured-test)
 
       (literal-node? test)
@@ -790,7 +809,8 @@
             negative (truth-part env ty false)
             update-type (fn [ty] (when-not (= :never (:t ty)) (assoc-in ctx [:locals local] ty)))
             fc (update-type negative)]
-        (or (when (seq (get-in ctx [:projections local :path])) (truth-contexts ctx test))
+        (or (when (or (= 'find captured-head) (seq (get-in ctx [:projections local :path])))
+              (truth-contexts ctx test))
             [(update-type positive)
              (if (= t/nil-t negative)
                (reduce (fn [c s] (update-in c [:locals s] #(t/remove-nil env %))) fc (get-in ctx [:missing-of local]))

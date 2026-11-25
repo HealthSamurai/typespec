@@ -714,6 +714,43 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (= [[5 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues))))
 
+(deftest saved-find-results-refine-keys-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/def ::words (s/map-of string? string?))
+(s/def ::key #{\"n\" :missing})
+(s/fdef accept :args (s/cat :key #{\"n\"} :n int?) :ret int?)
+(defn accept [key n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef direct :args (s/cat :m ::api/counts) :ret int?)
+(defn direct [m]
+  (let [entry (find m \"n\")]
+    (if entry (+ (val entry) (get m \"n\")) 0)))
+(s/fdef computed :args (s/cat :m ::api/counts :key ::api/key) :ret int?)
+(defn computed [m key]
+  (let [entry (find m key)]
+    (if (some? entry) (api/accept key (+ (val entry) (get m key))) 0)))
+(s/fdef absent :args (s/cat :m ::api/words) :ret int?)
+(defn absent [m]
+  (let [entry (find m \"n\")]
+    (if (nil? entry) (inc (get m \"n\" 0)) 0)))
+(s/fdef rebind :args (s/cat :m ::api/counts) :ret int?)
+(defn rebind [m]
+  (let [entry (find m \"n\") m {}]
+    (if entry (inc (get m \"n\")) 0)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 17 "TSP2531"]] (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest saved-find-results-respect-key-rebinding
+  (let [file (parse/parse-string "counts.clj" "(ns counts (:require [clojure.spec.alpha :as s]))
+(s/fdef read-n :args (s/cat :m (s/map-of string? int?) :key #{\"n\"}) :ret int?)
+(defn read-n [m key]
+  (let [entry (find m key) key \"other\"]
+    (if (some? entry) (+ (val entry) (get m key)) 0)))")
+        issues (:diagnostics (check/check-files [file] {}))]
+    (is (= [[5 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

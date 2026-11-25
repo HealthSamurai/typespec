@@ -92,6 +92,17 @@ api/delayed")
     (is (= 19 (get-in ds [0 :pos :col]))))
   (is (= #{"TSP2554"} (codes (checked "(cond-> 0 true)")))))
 
+(deftest threaded-value-does-not-shadow-source-names
+  (let [r (checked "\n(defn __threaded {:t/sig '[:-> string?]} [] \"abc\")
+(->> 1 (subs (__threaded)))
+(let [__threaded \"abc\" __threaded_0 \"def\"]
+  (->> 1 (subs (str (subs __threaded 0) (subs __threaded_0 0)))))
+(->> \"bad\" (subs (__threaded)))")]
+    (is (= ["string?" "string?"] (mapv #(main/type-at r "app.clj" % 1) [6 7])))
+    (is (= [[9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest conditional-thread-joins-shapes-and-uses-branch-narrowing
   (let [r (checked "\n(defn thread-value {:t/sig '[(t/or nil? string?) :-> (t/or nil? int?)]}
                           [s] (cond-> s (some? s) count))

@@ -3312,12 +3312,17 @@
         cleanup (mapv #(infer-body ctx (args-of %)) (filter finally? forms))]
     (if (some #(= :never (:t %)) cleanup) t/never normal)))
 
+(defn- mentions-symbol? [node sym]
+  (or (and (= :sym (:op node)) (= sym (:val node)))
+      (some #(mentions-symbol? % sym) (:children node))))
+
 (defn- threaded-step [ctx step first? previous display input hinted?]
-  (let [names (into (set (keys (:locals ctx)))
-                    (keep #(when (= :sym (:op %)) (:val %)))
-                    (tree-seq (comp seq :children) :children step))
-        sym (if (contains? names '__threaded)
-              (first (remove names (map #(symbol (str "__threaded_" %)) (range))))
+  (let [locals (:locals ctx)
+        sym (if (or (contains? locals '__threaded) (mentions-symbol? step '__threaded))
+              (let [step-names (into #{} (keep #(when (= :sym (:op %)) (:val %)))
+                                     (tree-seq (comp seq :children) :children step))]
+                (first (remove #(or (contains? locals %) (contains? step-names %))
+                               (map #(symbol (str "__threaded_" %)) (range)))))
               '__threaded)
         acc {:op :sym :val sym :pos (:pos previous) :synthetic true :display display}
         call (if (= :list (:op step))

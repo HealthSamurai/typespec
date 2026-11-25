@@ -646,6 +646,40 @@
            (alternatives
             (infer-type "(if (some? (get m \"flag\")) (get m \"flag\" :missing) :absent)" bindings))))))
 
+(deftest stable-local-lookup-keys-refine-map-reads-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::key #{\"n\"})
+(s/def ::maybe-key #{\"n\" :missing})
+(s/def ::bucket #{\"outer\"})
+(s/def ::field #{:n})
+(s/def ::counts (s/map-of string? (s/nilable int?)))
+(s/def ::rows (s/map-of string? (s/map-of keyword? int?)))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef simple :args (s/cat :m ::api/counts :k ::api/key) :ret int?)
+(defn simple [m k] (if (some? (get m k)) (api/accept (get m \"n\")) 0))
+(s/fdef guarded :args (s/cat :m ::api/counts :k ::api/maybe-key) :ret int?)
+(defn guarded [m k]
+  (if (and (contains? m k) (some? (get m k))) (inc (get m \"n\")) 0))
+(s/fdef nested :args (s/cat :m ::api/rows :outer ::api/bucket :inner ::api/field) :ret int?)
+(defn nested [m outer inner]
+  (if (some? (get-in m [outer inner])) (api/accept (get-in m [\"outer\" :n])) 0))
+(s/fdef shadow :args (s/cat :m ::api/counts :k ::api/key) :ret int?)
+(defn shadow [m k]
+  (if (some? (get m k)) (let [k \"other\"] (inc (get m k))) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 12 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest a-lookup-with-multiple-key-choices-does-not-prove-an-exact-field
+  (let [file (parse/parse-string "counts.clj" "(ns counts (:require [clojure.spec.alpha :as s]))
+(s/fdef read-n :args (s/cat :m (s/map-of string? int?) :key #{\"n\" \"other\"}) :ret int?)
+(defn read-n [m key] (if (some? (get m key)) (inc (get m \"n\")) 0))")
+        issues (:diagnostics (check/check-files [file] {}))]
+    (is (= [[3 "TSP2531"]] (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

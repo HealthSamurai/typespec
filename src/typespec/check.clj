@@ -50,6 +50,11 @@
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
     (static-map-key node)))
 
+(defn- selector-literal-key [member]
+  (when (= :lit (:t member))
+    (let [value (:val member)]
+      (when (or (keyword? value) (string? value) (symbol? value)) value))))
+
 (defn- quoted-map-key-type [node ty]
   (let [key (when (= (t/prim :symbol) ty) (static-map-key node))]
     (if (symbol? key) (t/with-assumption (t/lit key) (t/assumption ty)) ty)))
@@ -379,6 +384,12 @@
 (defn- map-entry-type? [ctx ty]
   (every? :map-entry? (t/members (:env ctx) ty)))
 
+(defn- stable-lookup-key [ctx node]
+  (or (stable-map-key node)
+      (when-let [local (when-not (env/tag-node node) (plain-local ctx node))]
+        (let [[member & more] (t/members (:env ctx) (eff ctx (get-in ctx [:locals local])))]
+          (when-not (seq more) (selector-literal-key member))))))
+
 (defn- stable-path [ctx node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
     (if-let [sym (plain-local ctx node)]
@@ -390,9 +401,9 @@
       (when (= :list (:op node))
         (let [[head a b & more] (:children node)
               h (builtin-head ctx node)
-              map-key (when (and (= 'get h) (empty? more)) (stable-map-key b))
+              map-key (when (and (= 'get h) (empty? more)) (stable-lookup-key ctx b))
               map-path (when (and (= 'get-in h) (= :vector (:op b)) (empty? more))
-                         (mapv stable-map-key (:children b)))
+                         (mapv #(stable-lookup-key ctx %) (:children b)))
               [base path] (cond
                             (and (= :kw (:op head)) a (nil? b)) [a [(:val head)]]
                             map-key [a [map-key]]
@@ -910,11 +921,6 @@
                                     :else type)
                   why
                   (when-not (or default bang?) projection))))
-
-(defn- selector-literal-key [member]
-  (when (= :lit (:t member))
-    (let [value (:val member)]
-      (when (or (keyword? value) (string? value) (symbol? value)) value))))
 
 (defn- finite-map-keys [env ty]
   (let [keys (mapv selector-literal-key (take (inc map-path-budget) (t/members env ty)))]

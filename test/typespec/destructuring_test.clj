@@ -364,6 +364,42 @@
     (is (= [["client.clj" 4 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest find-entries-preserve-presence-and-the-selected-value
+  (let [issues (diagnostics "(let [{:keys [n]} (list :n \"old\" (find {:n 4} :n))] (inc n))
+(let [{:keys [n]} (list :n 2 (find {} :n))] (inc n))
+(let [{:keys [n]} (list :n 2 (find nil :n))] (inc n))
+(let [{:keys [n] :or {n 0}} (list :n 2 (find {:n nil} :n))] (inc n))
+(let [{:strs [n]} (list \"n\" 2 (find {\"n\" \"bad\"} \"n\"))] (inc n))
+(s/fdef entry-key :args (s/cat) :ret #{:n})
+(defn entry-key [] (key (find {:n 4} :n)))
+(s/fdef from-map :args (s/cat :values (s/map-of string? int?)) :ret int?)
+(defn from-map [values] (let [{:strs [n]} (list \"n\" 2 (find values \"n\"))] (inc n)))
+(let [{:syms [n]} (list :unused \"old\" (find {'n 4} 'n))] (inc n))
+(find {} :n :extra)")]
+    (is (= [[5 "TSP2531"] [6 "TSP2345"] [12 "TSP2554"]] (locations issues)) (pr-str issues))))
+
+(deftest find-entries-preserve-field-contracts-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/def :text/n string?)
+(s/fdef numbers :args (s/cat) :ret (s/keys :req-un [::n]))
+(defn numbers [] {:n 4})
+(s/fdef texts :args (s/cat) :ret (s/keys :req-un [:text/n]))
+(defn texts [] {:n \"bad\"})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef amount :args (s/cat) :ret int?)
+(defn amount [] (let [{:keys [n]} (list :n \"old\" (find (options/numbers) :n))] (inc n)))
+(let [{:keys [n]} (list :n 2 (find (options/texts) :n))] (inc n))
+(s/fdef entry-value :args (s/cat) :ret int?)
+(defn entry-value [] (val (find (options/numbers) :n)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

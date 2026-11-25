@@ -2903,6 +2903,48 @@
       (:nil :absent) not-found
       t/unknown)))
 
+(defn- found-map-entry [key-type value-type optional?]
+  (if (= t/never value-type)
+    t/nil-t
+    (let [entry (assoc (t/tuple [key-type value-type])
+                       :map-entry? true :jvm-class "clojure.lang.IMapEntry")]
+      (if optional? (t/union entry t/nil-t) entry))))
+
+(defn- find-map-entry [ctx source key-type]
+  (case (:t source)
+    :nil t/nil-t
+    :map (if (= :lit (:t key-type))
+           (let [{:keys [status type]} (lookup-key ctx source (:val key-type))]
+             (case status
+               (:nil :absent) t/nil-t
+               (:req :opt :unknown) (found-map-entry key-type type (not= :req status))
+               t/unknown))
+           t/unknown)
+    :map-of (found-map-entry key-type (read-map-of ctx source key-type t/never) true)
+    t/unknown))
+
+(defmethod special 'find [ctx node _]
+  (let [args (args-of node)
+        [source key-type :as types] (mapv #(eff ctx (infer ctx %)) args)
+        literal-key (when (= (t/prim :symbol) key-type) (static-map-key (second args)))
+        key-type (if (symbol? literal-key)
+                   (t/with-assumption (t/lit literal-key) (t/assumption key-type))
+                   key-type)]
+    (cond
+      (not= 2 (count args))
+      (do (report! ctx node "TSP2554" "find expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [env (:env ctx)]
+        (t/with-assumption
+         (apply t/union
+                (for [member (t/members env source)
+                      key (t/members env key-type)]
+                  (find-map-entry ctx member key)))
+         (or (t/assumption source) (t/assumption key-type)))))))
+
 (defn- vector-element-at [member index]
   (cond
     (= :absent (length/position member index)) t/never

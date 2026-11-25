@@ -26,7 +26,7 @@
 (def ^:dynamic *rets* nil)
 
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
-         assoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type)
+         assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -41,9 +41,6 @@
 (defn- literal-node? [node]
   (and (#{:str :kw :num :bool :nil} (:op node)) (empty? (:directives node))
        (not (env/tag-node node))))
-
-(defn- literal-map-key-node? [node]
-  (and (#{:kw :str} (:op node)) (literal-node? node)))
 
 (defn- stable-map-key [node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
@@ -1626,17 +1623,19 @@
 (defn- map-edits [ctx head args]
   (case head
     assoc (when (and (seq args) (even? (count args)))
-            (let [pairs (partition 2 args)]
-              (when (every? literal-map-key-node? (map first pairs))
-                (let [edits (mapv (fn [[key value]] [(:val key) (quietly ctx value)]) pairs)]
+            (let [pairs (partition 2 args)
+                  keys (mapv (comp stable-map-key first) pairs)]
+              (when (every? some? keys)
+                (let [edits (mapv (fn [key [_ value]] [key (quietly ctx value)]) keys pairs)]
                   (when (every? (fn [[k ty]]
                                   (and (not (t/assumption ty))
                                        (or (nil? (get-in (:env ctx) [:specs k]))
                                            (t/sub? (:env ctx) (eff ctx ty) (t/ref-t k)))))
                                 edits)
                     edits)))))
-    dissoc (when (every? literal-map-key-node? args)
-             (mapv (fn [key] [(:val key) nil]) args))
+    dissoc (let [keys (mapv stable-map-key args)]
+             (when (every? some? keys)
+               (mapv (fn [key] [key nil]) keys)))
     nil))
 
 (defn- infer-map-edits [ctx param node]
@@ -1663,8 +1662,7 @@
                               (reduce (fn [shape [k v]]
                                         (if v
                                           (assoc-map-key shape k (widen (dissoc v :fresh)))
-                                          (cond-> (-> shape (update :req dissoc k) (update :opt dissoc k))
-                                            (not (:complete-keys? shape)) (assoc-in [:opt k] t/never))))
+                                          (dissoc-map-key shape k true)))
                                       (dissoc m :fresh) map-edits)))]
           (if (t/sub? (:env ctx) result ret) (t/with-assumption result (t/assumption arg)) ret))
         ret))))
@@ -3214,6 +3212,10 @@
 (defn- assoc-map-key [m k ty]
   (-> m (dissoc :fresh) (assoc-in [:req k] ty) (update :opt dissoc k)))
 
+(defn- dissoc-map-key [shape key track-absence?]
+  (cond-> (-> shape (update :req dissoc key) (update :opt dissoc key))
+    (and track-absence? (not (:complete-keys? shape))) (assoc-in [:opt key] t/never)))
+
 (defn- assoc-key-type [ctx ty k value]
   (let [members (t/members (:env ctx) ty)]
     (if (every? #(#{:map :nil} (:t %)) members)
@@ -3347,7 +3349,7 @@
 (defn- assoc-entries [ctx base entries]
   (reduce (fn [ty [[k v] [kt vt]]]
             (when (= :kw (:op k)) (check-key-value! ctx (:val k) v vt))
-            (let [literal-key (when (or (= :kw (:op k)) (literal-map-key-node? k)) (:val k))
+            (let [literal-key (if (= :kw (:op k)) (:val k) (stable-map-key k))
                   env (:env ctx)
                   members (t/members env ty)
                   add (fn [base shape]
@@ -3383,7 +3385,7 @@
         pairs (partition 2 kvs)
         types (mapv (fn [[k v]]
                       (let [vt (infer ctx v)
-                            kt (if (= :kw (:op k)) (t/lit (:val k)) (infer ctx k))]
+                            kt (if (= :kw (:op k)) (t/lit (:val k)) (quoted-map-key-type k (infer ctx k)))]
                         [kt vt]))
                     pairs)]
     (assoc-entries ctx base (map vector pairs types))))
@@ -3391,18 +3393,16 @@
 (defmethod special 'dissoc [ctx node _]
   (let [[m & ks] (args-of node)
         mty (infer ctx m)
-        members (t/members (:env ctx) mty)]
-    (if (and (every? #(or (= :kw (:op %)) (literal-map-key-node? %)) ks)
+        members (t/members (:env ctx) mty)
+        keys (mapv #(if (= :kw (:op %)) (:val %) (stable-map-key %)) ks)]
+    (if (and (every? some? keys)
              (every? #(#{:map :nil} (:t %)) members))
       (apply t/union
              (for [member members]
                (if (= :map (:t member))
-                 (reduce (fn [shape node]
-                           (let [k (:val node)]
-                             (cond-> (-> shape (update :req dissoc k) (update :opt dissoc k))
-                               (or (:map-index shape) (and (string? k) (not (:complete-keys? shape))))
-                               (assoc-in [:opt k] t/never))))
-                         (dissoc member :fresh) ks)
+                 (reduce (fn [shape k]
+                           (dissoc-map-key shape k (or (:map-index shape) (string? k) (symbol? k))))
+                         (dissoc member :fresh) keys)
                  member)))
       (do (run! #(infer ctx %) ks) (forget-map-keys ctx mty)))))
 

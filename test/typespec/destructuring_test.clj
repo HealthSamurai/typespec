@@ -789,6 +789,42 @@
 (inc (get {'n 4 'fixture/n \"bad\"} 'fixture/n))")]
     (is (= [[5 "TSP2345"]] (locations issues)) (pr-str issues))))
 
+(deftest quoted-symbol-map-edits-retain-shapes-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef stamp :args (s/cat :options map?) :ret map?)
+(defn stamp [options] (assoc options 'fixture/n 4))
+(s/fdef discard :args (s/cat :options map?) :ret map?)
+(defn discard [options] (-> options (dissoc (quote fixture/n))))
+(s/fdef counts :args (s/cat) :ret (s/map-of symbol? int?))
+(defn counts [] {'fixture/n 4})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef total :args (s/cat) :ret int?)
+(defn total []
+  (let [{:syms [fixture/n] :as all} (options/stamp {'fixture/n \"old\" 'n 2})]
+    (+ n (get all 'n))))
+(inc (get (options/discard {'fixture/n nil 'n 4}) 'fixture/n 0))
+(let [{:as all} (list :tag :count (options/counts))
+      {:syms [fixture/n]} (assoc all 'fixture/n \"bad\")]
+  (inc n))
+(inc (get (assoc {'n 1} (quote fixture/n) nil) 'fixture/n 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest quoted-symbol-map-edits-distinguish-missing-and-stored-values
+  (let [issues (diagnostics "(s/fdef words :args (s/cat) :ret (s/map-of symbol? string?))
+(defn words [] {'fixture/n \"old\"})
+(let [{:as all} (list :tag :count (seq (words)))]
+  (inc (get (dissoc all (quote fixture/n)) 'fixture/n 0)))
+(inc (get (assoc {'n nil} 'n \"old\" (quote n) 4) 'n))
+(inc (get (dissoc {'n 1 \"n\" \"bad\"} 'n) \"n\"))")]
+    (is (= [[7 "TSP2345"]] (locations issues)) (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

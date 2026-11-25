@@ -72,6 +72,70 @@
     (is (= ["TSP2554"] (codes r)) (pr-str (:diagnostics r)))
     (is (= "(t/or int? string?)" (main/type-at r "spread.clj" 4 21)))))
 
+(deftest applies-finite-length-intervals-from-spec
+  (let [api (parse/parse-string
+             "render.clj"
+             "(ns render (:require [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/alt :one (s/cat :x int?) :two (s/cat :x int? :y int?)) :ret string?)
+(defn render ([x] (str x)) ([x y] (str x \":\" y)))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [render :as r] [clojure.spec.alpha :as s]))
+(s/def ::tail (s/coll-of int? :kind vector? :min-count 1 :max-count 2))
+(s/fdef good :args (s/cat :xs ::tail) :ret string?)
+(defn good [xs] (apply r/render xs))
+(s/fdef bad :args (s/cat :xs ::tail) :ret any?)
+(defn bad [xs] (apply inc xs))")
+        r (check/check-files [api client] {:strict true})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 6 "TSP2554" "apply inc expects 1 argument(s), got 2"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))
+    (is (= "string?" (main/type-at r "client.clj" 4 17)))))
+
+(deftest spreads-counted-string-literals
+  (let [r (checked "(apply (fn [x y] (str x y)) \"ab\")
+(apply (fn [x y] (str x y)) \"😀\")
+(apply + \"ab\")
+(apply + \"\")")]
+    (is (= [[4 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["string?" "string?" "int?"] (mapv #(type-at r %) [2 3 5]))))
+  (is (= "😀" (apply (fn [x y] (str x y)) "😀")))
+  (is (thrown? ClassCastException (apply + "ab"))))
+
+(deftest spreads-jvm-arrays-using-component-type-and-length
+  (let [r (checked "(apply (fn [x y] (+ x y)) (int-array [1 2]))
+(apply subs (int-array [1 2]))
+(apply inc (int-array 0))
+(s/fdef nullable :args (s/cat :x string?) :ret string?)
+(defn nullable [x] x)
+(apply nullable (make-array String 1))")]
+    (is (= [[3 "TSP2345"] [4 "TSP2554"] [7 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "int?" (type-at r 2))))
+  (is (= 3 (apply + (int-array [1 2]))))
+  (is (thrown? ClassCastException (apply subs (int-array [1 2]))))
+  (is (thrown? clojure.lang.ArityException (apply inc (int-array 0)))))
+
+(deftest uses-array-return-hints-from-another-namespace
+  (let [api (parse/parse-string "arrays.clj"
+                               "(ns arrays)
+(defn ^ints values [] (int-array [1 2]))
+(defn ^booleans flags [] (boolean-array [true]))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [arrays :as a] [clojure.spec.alpha :as s]))
+(s/fdef total :args (s/cat) :ret int?)
+(defn total [] (apply + (a/values)))
+(defn bad [] (apply + (a/flags)))")
+        r (check/check-files [api client] {})]
+    (is (= "int?" (main/type-at r "client.clj" 3 16)))
+    (is (= [[4 "TSP2345"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest callback-inference-keeps-spread-positions-correlated
   (let [api (parse/parse-string
              "choices.clj"
@@ -136,6 +200,40 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))
     (is (= "string?" (main/type-at r "spread.clj" 3 20)))))
+
+(deftest homogeneous-spread-uses-minimum-length-and-overloads
+  (let [api (parse/parse-string
+             "total.clj"
+             "(ns total (:require [clojure.spec.alpha :as s]))
+(s/fdef required :args (s/cat :x int? :more (s/+ int?)) :ret int?)
+(defn required [x & more] (reduce + x more))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [total :as total] [clojure.spec.alpha :as s]))
+(s/def ::numbers (s/coll-of int? :kind vector? :min-count 2))
+(s/def ::strings (s/coll-of string? :kind vector? :min-count 2))
+(s/fdef sum :args (s/cat :xs ::numbers) :ret int?)
+(defn sum [xs] (apply total/required xs))
+(s/fdef bad :args (s/cat :xs ::strings) :ret any?)
+(defn bad [xs] (apply total/required xs))
+(s/fdef add :args (s/cat :xs (s/coll-of int? :kind vector?)) :ret int?)
+(defn add [xs] (apply + xs))
+(s/fdef maybe-short :args (s/cat :xs (s/coll-of int? :kind vector? :min-count 1)) :ret any?)
+(defn maybe-short [xs] (apply total/required xs))")
+        r (check/check-files [api client] {})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 11 "TSP410-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["int?" "int?"] (mapv #(main/type-at r "client.clj" % 16) [5 9])))))
+
+(deftest homogeneous-spread-includes-the-empty-call-and-fixed-overloads
+  (let [r (checked "(defn combine {:t/sig '(t/fn ([:-> string?] [int? :-> keyword?] [int? int? & int? :-> int?]))}
+  ([] \"empty\") ([x] :one) ([x y & tail] (+ x y)))
+(s/fdef forward :args (s/cat :xs (s/coll-of int? :kind vector?)) :ret any?)
+(defn forward [xs] (apply combine xs))")]
+    (is (empty? (codes r)) (pr-str (:diagnostics r)))
+    (is (= "(t/or string? keyword? int?)" (main/type-at r "spread.clj" 5 20)))))
 
 (deftest spread-arguments-are-inferred-once
   (let [r (checked "(apply str [#_(t/any \"fixture\") 42])")]

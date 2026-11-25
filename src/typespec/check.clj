@@ -30,7 +30,7 @@
 
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
-         finite-map-keys)
+         finite-map-keys array-component array-read-type)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -4024,7 +4024,19 @@
       (report! ctx arg "TSP2345" (str head " cannot sequence " (t/show member))))
     (boolean (seq invalid))))
 
-(defn- spread-tail-types [ctx tail ty]
+(defn- spread-member-bounds [member]
+  (if-some [size (or (:array-length member)
+                     (when (and (= :lit (:t member)) (string? (:val member)))
+                       (count (:val member))))]
+    [size size]
+    (length/bounds member)))
+
+(defn- spread-element-type [ctx member]
+  (if (array-component member)
+    (array-read-type member)
+    (elem-type ctx member)))
+
+(defn- spread-tail-types [ctx tail members]
   (let [form (if (= :quote (:op tail)) (first (:children tail)) tail)]
     (if (and (= :list (:op form)) (empty? (:children form)) (empty? (:directives tail)))
       [[]]
@@ -4032,10 +4044,24 @@
               (cond
                 (= :nil (:t member)) []
                 (:items member) (:items member)
-                (= :coll (:t member)) (let [[lo hi] (length/bounds member)]
-                                        (when (and (= lo hi) (<= lo 64))
-                                          (vec (repeat lo (:of member)))))))
-            (t/members (:env ctx) (eff ctx ty))))))
+                :else (let [[lo hi] (spread-member-bounds member)]
+                        (when (and (= lo hi) (<= lo 64))
+                          (vec (repeat lo (spread-element-type ctx member)))))))
+            members))))
+
+(defn- finite-spreads [spreads members]
+  (if (every? some? spreads)
+    spreads
+    (let [choices (map (fn [items member]
+                         (if items [items]
+                             (when (= :coll (:t member))
+                               (let [[lo hi] (length/bounds member)]
+                                 (when (and hi (<= hi 64))
+                                   (map #(vec (repeat % (:of member))) (range lo (inc hi))))))))
+                       spreads members)]
+      (when (every? some? choices)
+        (let [spreads (vec (take 65 (mapcat identity choices)))]
+          (when (<= (count spreads) 64) spreads))))))
 
 (defn- spread-tail-nodes [tail items]
   (if (and (= :vector (:op tail)) (empty? (:directives tail)) (not (env/tag-node tail))
@@ -4065,6 +4091,30 @@
                        [clojure.lang.Seqable java.lang.Iterable java.lang.CharSequence java.util.Map])))
     false))
 
+(defn- spread-call-candidates [ctx shape prefix-size members spreads]
+  (let [arities (:arities shape)]
+    (when (and (= :fn (:t shape)) (seq arities) (not-any? :kwargs arities)
+               (every? spread-seqable? members))
+      ;; Above the last fixed arity and every variadic minimum, only
+      ;; homogeneous rest parameters are added. One call covers that region.
+      (let [limit (max 1 (- (inc (apply max (map t/arity-minimum arities))) prefix-size))]
+        (when (<= limit 64)
+          (let [choices (map (fn [member items]
+                               (if items
+                                 [{:items items :exact? true}]
+                                 (let [element (spread-element-type ctx member)
+                                       [lo hi] (if (= t/never element) [0 0] (spread-member-bounds member))
+                                       low (min lo limit)
+                                       high (min (or hi limit) limit)]
+                                   (map (fn [n] {:items (vec (repeat n element))})
+                                        (range low (inc high))))))
+                             members spreads)
+                candidates (vec (take 65 (mapcat identity choices)))]
+            (when (and (<= (count candidates) 64)
+                       (every? #(seq (matching-arities shape (+ prefix-size (count (:items %)))))
+                               candidates))
+              candidates)))))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4075,21 +4125,19 @@
             tail (last args)
             prefix-types (mapv #(infer ctx %) prefix)
             tail-type (infer ctx tail)
-            spreads (spread-tail-types ctx tail tail-type)
-            exact? (every? some? spreads)
+            tail-members (t/members (:env ctx) (eff ctx tail-type))
+            spreads (spread-tail-types ctx tail tail-members)
+            known-spreads (finite-spreads spreads tail-members)
+            exact? (some? known-spreads)
             callback? (and exact? (callback-node? ctx f))
             spread-context (fn [items] {:t :fn :arities [{:params (into prefix-types items) :ret t/unknown}]})
             ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
             shape (call-shape ftype)
-            [arity & overloads] (:arities shape)
-            tail-members (when-not exact? (t/members (:env ctx) (eff ctx tail-type)))
-            variadic? (and (not exact?) (= :fn (:t ftype)) (:rest arity) (not (:kwargs arity))
-                           (empty? overloads) (<= (t/arity-minimum arity) (count prefix))
-                           (every? spread-seqable? tail-members))
+            candidates (when-not exact? (spread-call-candidates ctx shape (count prefix) tail-members spreads))
             invalid-tail (unsupported-sequence-member ctx tail-type)]
         (cond
           (some #(= :never (:t %)) (into [ftype tail-type] prefix-types))
-          (do (when callback? (infer ctx f (some-> (first spreads) spread-context)))
+          (do (when callback? (infer ctx f (some-> (first known-spreads) spread-context)))
               t/never)
 
           invalid-tail
@@ -4112,20 +4160,21 @@
                           :else
                           (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
                               t/unknown))))
-                    spreads)))
+                    known-spreads)))
 
-          variadic?
-          (let [element (apply t/union
-                               (map (fn [items member]
-                                      (if items (apply t/union items) (elem-type ctx member)))
-                                    spreads tail-members))
+          candidates
+          (let [label (str "apply " (parse/unparse f))
                 element-node {:op :spread :pos (:pos tail) :synthetic true
                               :display (str "element of " (parse/unparse tail))}
-                ;; The representative call does not fix the length of the spread.
-                shape (if (seq prefix) shape (assoc shape :arities [(dissoc arity :map-edits)]))]
+                ;; A representative call without a prefix cannot specialize a
+                ;; map edit for an arbitrarily positioned spread element.
+                general (if (seq prefix) shape (update shape :arities #(mapv (fn [a] (dissoc a :map-edits)) %)))]
             (t/with-assumption
-             (call-fn ctx node (str "apply " (parse/unparse f)) shape
-                      (conj prefix element-node) (conj prefix-types element))
+             (apply t/union
+                    (for [{:keys [items exact?]} candidates]
+                      (let [nodes (if exact? (spread-tail-nodes tail items) (repeat (count items) element-node))]
+                        (call-fn ctx node label (if exact? shape general) (into prefix nodes)
+                                 (into prefix-types items)))))
              (t/assumption tail-type)))
 
           :else

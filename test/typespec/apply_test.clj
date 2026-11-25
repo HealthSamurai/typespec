@@ -72,6 +72,40 @@
     (is (= ["TSP2554"] (codes r)) (pr-str (:diagnostics r)))
     (is (= "(t/or int? string?)" (main/type-at r "spread.clj" 4 21)))))
 
+(deftest callback-inference-keeps-spread-positions-correlated
+  (let [api (parse/parse-string
+             "choices.clj"
+             "(ns choices (:require [clojure.spec.alpha :as s]))
+(s/fdef pairs :args (s/cat :flag boolean?) :ret (s/or :text (s/tuple string? string?) :number (s/tuple int? int?)))
+(defn pairs [flag] (if flag [\"x\" \"y\"] [1 2]))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [choices :as c] [clojure.spec.alpha :as s]))
+(s/fdef inline :args (s/cat :flag boolean?) :ret (s/or :text string? :number int?))
+(defn inline [flag]
+  (apply (fn [x y] (if (string? x) (subs y 0) (inc y))) (c/pairs flag)))
+(s/fdef local :args (s/cat :flag boolean?) :ret (s/or :text string? :number int?))
+(defn local [flag]
+  (let [render (fn [x y] (if (string? x) (subs y 0) (inc y)))]
+    (apply render (c/pairs flag))))
+(defn invalid [flag]
+  (apply (fn [x y] (if (string? x) (subs y 0) (inc y))) (if flag [\"x\" 1] [1 2])))")
+        r (check/check-files [api client] {})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 10 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(t/or string? int?)" "(t/or string? int?)"]
+           (mapv #(apply main/type-at r "client.clj" %) [[4 3] [8 5]])))))
+
+(deftest spread-callback-trust-counts-directives-across-branches
+  (let [r (checked "(defn render [flag]
+  (apply (fn [x]
+           (str #_(t/any \"shared\") x)
+           (if (string? x) x #_(t/cast int?) x))
+         (if flag [\"x\"] [1])))")]
+    (is (empty? (codes r)) (pr-str (:diagnostics r)))
+    (is (= {:any 1 :cast 1 :ignore 0} (:trust r)))))
+
 (deftest reports-unknown-tail-shapes-and-supports-targeted-ignore
   (let [r (checked "(s/fdef forward :args (s/cat :xs (s/coll-of int? :kind vector?)) :ret any?)
 (defn forward [xs] (apply inc xs))

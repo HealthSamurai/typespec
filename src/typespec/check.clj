@@ -3964,34 +3964,42 @@
             tail-type (infer ctx tail)
             spreads (spread-tail-types ctx tail tail-type)
             exact? (every? some? spreads)
-            expected (when (and exact? (callback-node? ctx f))
-                       {:t :fn :arities (mapv #(hash-map :params (into prefix-types %) :ret t/unknown) spreads)})
-            ftype (t/resolve-t (:env ctx) (infer ctx f expected))
+            callback? (and exact? (callback-node? ctx f))
+            spread-context (fn [items] {:t :fn :arities [{:params (into prefix-types items) :ret t/unknown}]})
+            ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
             shape (call-shape ftype)
             [arity & overloads] (:arities shape)
             tail-members (when-not exact? (t/members (:env ctx) (eff ctx tail-type)))
             variadic? (and (not exact?) (= :fn (:t ftype)) (:rest arity) (not (:kwargs arity))
                            (empty? overloads) (<= (t/arity-minimum arity) (count prefix))
                            (every? spread-seqable? tail-members))
-            invalid-tail (unsupported-sequence-member ctx tail-type)
-            callable? (or (= :all (:t ftype)) (seq (:arities ftype)))]
+            invalid-tail (unsupported-sequence-member ctx tail-type)]
         (cond
-          (some #(= :never (:t %)) (into [ftype tail-type] prefix-types)) t/never
+          (some #(= :never (:t %)) (into [ftype tail-type] prefix-types))
+          (do (when callback? (infer ctx f (some-> (first spreads) spread-context)))
+              t/never)
 
           invalid-tail
           (do (report! ctx tail "TSP2345" (str "apply cannot spread " (t/show invalid-tail)))
               t/unknown)
 
-          (and exact? callable?)
+          exact?
           (let [label (str "apply " (parse/unparse f))]
             (apply t/union
-                   (for [items spreads]
-                     (call-fn ctx node label ftype (into prefix (spread-tail-nodes tail items))
-                              (into prefix-types items)))))
-
-          exact?
-          (do (when-not (= :any (:t ftype)) (check-composable! ctx f ftype "apply"))
-              t/unknown)
+                   (map
+                    (fn [items]
+                      (let [ty (if callback?
+                                 (t/resolve-t (:env ctx) (infer ctx f (spread-context items)))
+                                 ftype)]
+                        (cond
+                          (= :never (:t ty)) t/never
+                          (or (= :all (:t ty)) (seq (:arities ty)))
+                          (call-fn ctx node label ty (into prefix (spread-tail-nodes tail items))
+                                   (into prefix-types items))
+                          :else
+                          (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
+                              t/unknown))))
+                    spreads)))
 
           variadic?
           (let [element (apply t/union

@@ -8,7 +8,8 @@
 
 (defn- structural-children [ty]
   (case (:t ty)
-    :map (concat (vals (:req ty)) (vals (:opt ty)))
+    :map (concat (vals (:req ty)) (vals (:opt ty))
+                 (when-let [index (:map-index ty)] [(:k index) (:v index)]))
     :coll (or (:items ty) [(:of ty)])
     :union (:types ty)
     []))
@@ -215,7 +216,10 @@
       (= :union st) {:all (mapv #(vector nil % b) (:types a))}
       (= :union tt) {:any (mapv #(vector nil a %) (:types b))
                      :preferred (keep-indexed #(when (= st (head-kind specs %2)) %1) (:types b))}
-      (and (= :map st) (= :map tt)) (map-obligation a b strict-contracts?)
+      (and (= :map st) (= :map tt))
+      (if (or (:map-index a) (:map-index b))
+        (unknown-proof :unsupported-recursive-type)
+        (map-obligation a b strict-contracts?))
       (and (= :coll st) (= :coll tt)) (collection-obligation a b leaf)
       :else (leaf a b))))
 

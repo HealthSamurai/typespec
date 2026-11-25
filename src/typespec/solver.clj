@@ -14,10 +14,12 @@
       :fn (update ty :arities #(mapv (fn [a] (cond-> (-> a (update :params (fn [ps] (mapv s ps))) (update :ret s))
                                                (:rest a) (update :rest s)
                                                (:kwargs a) (update :kwargs s))) %))
-      :coll (cond-> (update ty :of s) (:items ty) (update :items #(mapv s %)))
+      :coll (cond-> (update ty :of s)
+              (:items ty) (update :items #(mapv s %))
+              (:entry-map ty) (update :entry-map s))
       :map-of (-> ty (update :k s) (update :v s))
-      :map (-> ty (update :req #(into {} (map (fn [[k v]] [k (s v)]) %)))
-                 (update :opt #(into {} (map (fn [[k v]] [k (s v)]) %))))
+      :map (cond-> (-> ty (update :req #(update-vals % s)) (update :opt #(update-vals % s)))
+             (:map-index ty) (update :map-index s))
       (:union :merge) (update ty :types #(mapv s %))
       ty)))
 
@@ -37,11 +39,12 @@
 
 (defn- children [ty]
   (case (:t ty)
-    :coll (or (:items ty) [(:of ty)])
+    :coll (cond-> (or (:items ty) [(:of ty)]) (:entry-map ty) (conj (:entry-map ty)))
     :map-of [(:k ty) (:v ty)]
     :fn (mapcat #(concat (:params %) [(:ret %)] (when (:rest %) [(:rest %)])) (:arities ty))
     (:union :merge) (:types ty)
-    :map (concat (vals (:req ty)) (vals (:opt ty)))
+    :map (concat (vals (:req ty)) (vals (:opt ty))
+                 (when-let [index (:map-index ty)] [(:k index) (:v index)]))
     []))
 
 (defn- uncertain? [ty]
@@ -98,12 +101,14 @@
           :else (normalize env (get-in env [:specs k :type]) (dec budget) (conj seen k) fuel)))
       :else
       (case (:t ty)
-        :coll (if (:items ty)
-                (let [items (mapv step (:items ty))] (assoc ty :items items :of (apply t/union items)))
-                (update ty :of step))
+        :coll (cond-> (if (:items ty)
+                        (let [items (mapv step (:items ty))]
+                          (assoc ty :items items :of (apply t/union items)))
+                        (update ty :of step))
+                (:entry-map ty) (update :entry-map step))
         :map-of (-> ty (update :k step) (update :v step))
-        :map (-> ty (update :req #(into {} (map (fn [[k v]] [k (step v)]) %)))
-                   (update :opt #(into {} (map (fn [[k v]] [k (step v)]) %))))
+        :map (cond-> (-> ty (update :req #(update-vals % step)) (update :opt #(update-vals % step)))
+               (:map-index ty) (update :map-index step))
         :fn (update ty :arities #(mapv (fn [a]
                                        (cond-> (-> a (update :params (fn [ps] (mapv step ps)))
                                                    (update :ret step))
@@ -142,7 +147,7 @@
           (and (= 1 (count open)) (contains? #{nil :mismatch} closed-status))
           (recur-all [(child l (first open) [:union-right])])
           :else [(assoc c :failure :unsupported)]))
-      (and (= :map (:t l)) (= :map (:t r)))
+      (and (= :map (:t l) (:t r)) (not (:map-index r)))
       (concat
        (mapcat (fn [[k v]]
                  (if (contains? (:req l) k)
@@ -150,9 +155,9 @@
                    [(assoc (child t/never v [:key k]) :mismatch :missing-required-key)]))
                (:req r))
        (mapcat (fn [[k v]]
-                 (let [fields (merge (:opt l) (:req l))]
-                   (when (contains? fields k)
-                     (recur-all [(child (get fields k) v [:key k])]))))
+                 (when-let [actual (or (get (:req l) k) (get (:opt l) k)
+                                       (when-let [index (:map-index l)] (t/map-of-entry {} index k)))]
+                   (recur-all [(child actual v [:key k])])))
                (:opt r)))
       ;; Right unions need disjunctive search; leave them to concrete subtyping.
       (and (= :coll (:t l) (:t r))

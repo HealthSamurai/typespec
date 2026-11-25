@@ -98,9 +98,8 @@
 (defn- map-members [ctx ty]
   (filter #(= :map (:t %)) (t/members (:env ctx) ty)))
 
-(defn- map-of-entry [env ty k]
-  (when-not (= :mismatch (:status (t/sub-result env (t/lit k) (:k ty))))
-    (:v ty)))
+(defn- indexed-map-entry [env index k]
+  (if-let [value (t/map-of-entry env index k)] [:opt value] [:absent nil]))
 
 (defn- lookup-key [ctx ty k & [path?]]
   (let [env (:env ctx)
@@ -111,12 +110,13 @@
               (case (:t m)
                 :map (cond (contains? (:req m) k) [:req (get (:req m) k)]
                            (contains? (:opt m) k) [:opt (get (:opt m) k)]
+                           (:map-index m) (indexed-map-entry env (:map-index m) k)
                            (:complete-keys? m) [:absent nil]
                            spec [:opt spec]
                            ;; a map whose type was inferred (a literal, a pattern) may hold more keys than we saw
                            (:inferred m) loose
                            :else [:missing nil])
-                :map-of (if-let [value (map-of-entry env m k)] [:opt value] [:absent nil])
+                :map-of (indexed-map-entry env m k)
                 :coll (cond (and path? (= :set (:kind m))) [:opt (t/lit k)]
                             (and path? (nil? (:kind m))) loose
                             :else [:not-map nil])
@@ -894,23 +894,26 @@
                            (selector-literal-key (t/resolve-t (:env ctx) key)))]
                 (assoc-map-key shape k value)
                 (t/prim :map)))
-      :map (let [unspecified (if (:complete-keys? tail) t/never t/unknown)
+      :map (let [index (:map-index tail)
+                 unspecified (fn [k]
+                               (cond index (or (t/map-of-entry (:env ctx) index k) t/never)
+                                     (:complete-keys? tail) t/never
+                                     :else t/unknown))
                  required (reduce-kv (fn [required k value]
                                        (if (contains? required k)
                                          required
-                                         (assoc required k (t/union value (get (:opt tail) k unspecified)))))
+                                         (let [override (or (get (:opt tail) k) (unspecified k))]
+                                           (assoc required k (t/union value override)))))
                                      (:req tail) (:req shape))]
-             (assoc shape :req required
-                          :opt (apply dissoc (:opt tail) (keys required))
-                          :complete-keys? (boolean (:complete-keys? tail))))
+             (cond-> (assoc shape :req required
+                                  :opt (apply dissoc (:opt tail) (keys required))
+                                  :complete-keys? (boolean (:complete-keys? tail)))
+               index (assoc :map-index index)))
       :map-of (let [env (:env ctx)
                     keys (mapv selector-literal-key (t/members env (:k tail)))]
                 (if (and (<= (count keys) map-path-budget) (every? some? keys))
                   (recur ctx shape (assoc empty-map-shape :opt (zipmap keys (repeat (:v tail)))))
-                  (let [required (reduce-kv (fn [required k value]
-                                              (assoc required k (t/union value (or (map-of-entry env tail k) t/never))))
-                                            {} (:req shape))]
-                    (assoc shape :req required :complete-keys? false))))
+                  (recur ctx shape (assoc empty-map-shape :complete-keys? false :map-index tail))))
       (t/prim :map))))
 
 (defn- invalid-destructuring-tail? [member]
@@ -2944,14 +2947,27 @@
 (defn- read-map-of [ctx source key-type not-found]
   (let [env (:env ctx)
         members (t/members env source)
-        key-members (t/members env key-type)]
-    (if (every? #(#{:map-of :nil :never} (:t %)) members)
+        key-members (t/members env key-type)
+        overlaps? (fn [keys domain] (not-every? #(disjoint-scalars? env % domain) keys))
+        plain-member? #(#{:map-of :nil :never} (:t %))
+        values (cond
+                 (every? plain-member? members)
+                 (for [{:keys [k v] :as member} members
+                       :when (and (= :map-of (:t member)) (overlaps? key-members k))]
+                   v)
+
+                 (and (some :map-index members)
+                      (every? #(or (plain-member? %) (:map-index %) (:complete-keys? %)) members))
+                 (mapcat (fn [member]
+                           (let [fields (merge (:opt member) (:req member))
+                                 index (if (= :map-of (:t member)) member (:map-index member))
+                                 unlisted (remove #(and (= :lit (:t %)) (contains? fields (:val %))) key-members)]
+                             (cond-> (for [[k value] fields :when (overlaps? key-members (t/lit k))] value)
+                               (and index (overlaps? unlisted (:k index))) (conj (:v index)))))
+                         members))]
+    (if values
       (t/with-assumption
-       (apply t/union not-found
-              (for [{:keys [k v] :as member} members
-                    :when (and (= :map-of (:t member))
-                               (not-every? #(disjoint-scalars? env % k) key-members))]
-                v))
+       (apply t/union not-found values)
        (or (t/assumption source) (t/assumption key-type)))
       t/unknown)))
 
@@ -3076,7 +3092,10 @@
                                      (t/members env (:of member)))
                              t/unknown (:of member))
                        t/never)
-               :map (if (:complete-keys? member) t/never t/unknown)
+               :map (if-let [index-type (:map-index member)]
+                      (or (get (:req member) index) (get (:opt member) index)
+                          (t/map-of-entry env index-type index) t/never)
+                      (if (:complete-keys? member) t/never t/unknown))
                :map-of (:v member)
                :lit (if (and (string? (:val member)) (<= 0 index (dec (count (:val member)))))
                       (t/class-type "java.lang.Character") t/never)
@@ -3109,7 +3128,10 @@
       (every? #(and (= :lit (:t %)) (literal-path-key? (:val %))) keys)
       (let [steps (mapv #(literal-path-step ctx source node (:val %)) keys)]
         {:type (apply t/union (map :type steps))
-         :optional? (boolean (some :optional? steps))}))))
+         :optional? (boolean (some :optional? steps))})
+
+      (some :map-index (t/members env source))
+      {:type (read-map-of ctx source key-type t/never) :optional? true})))
 
 (defn- path-value [ctx ty path steps not-found]
   (loop [ty ty, steps (seq steps), missing? false]
@@ -3197,7 +3219,7 @@
     (case (:t m)
       :map-of
       [(if (some? k)
-         (t/union (or (map-of-entry env m k) t/never) t/nil-t)
+         (t/union (or (t/map-of-entry env m k) t/never) t/nil-t)
          (read-map-of ctx m key-type t/nil-t))
        (fn [value]
          (cond-> (update m :v t/union value)
@@ -3208,6 +3230,7 @@
         [(cond
            (contains? (:req m) k) (get (:req m) k)
            (contains? (:opt m) k) (t/union (get (:opt m) k) t/nil-t)
+           (:map-index m) (t/union (or (t/map-of-entry env (:map-index m) k) t/never) t/nil-t)
            (:complete-keys? m) t/nil-t
            (get-in env [:specs k]) (t/union (t/ref-t k) t/nil-t)
            :else t/unknown)
@@ -3340,7 +3363,8 @@
                  (reduce (fn [shape node]
                            (let [k (:val node)]
                              (cond-> (-> shape (update :req dissoc k) (update :opt dissoc k))
-                               (and (string? k) (not (:complete-keys? shape))) (assoc-in [:opt k] t/never))))
+                               (or (:map-index shape) (and (string? k) (not (:complete-keys? shape))))
+                               (assoc-in [:opt k] t/never))))
                          (dissoc member :fresh) ks)
                  member)))
       (do (run! #(infer ctx %) ks) (forget-map-keys ctx mty)))))
@@ -3360,16 +3384,18 @@
   (let [tys (map #(infer ctx %) (args-of node))
         ms (map #(single-map ctx %) tys)]
     (if (and (seq ms) (every? some? ms))
-      (reduce (fn [a b]
-                (let [req (merge (reduce-kv (fn [r k v]
-                                             (if (contains? r k)
-                                               (update r k t/union v)
-                                               r))
-                                           (:req a) (:opt b))
-                                 (:req b))
-                      opt (merge-with t/union (:opt a) (:opt b))]
-                  {:t :map :req req :opt (apply dissoc opt (keys req))}))
-              ms)
+      (if (and (next ms) (some :map-index ms))
+        (t/prim :map)
+        (reduce (fn [a b]
+                  (let [req (merge (reduce-kv (fn [r k v]
+                                               (if (contains? r k)
+                                                 (update r k t/union v)
+                                                 r))
+                                             (:req a) (:opt b))
+                                   (:req b))
+                        opt (merge-with t/union (:opt a) (:opt b))]
+                    {:t :map :req req :opt (apply dissoc opt (keys req))}))
+                ms))
       t/unknown)))
 
 (defn- project-map-keys [ctx source keys]
@@ -5247,6 +5273,7 @@
       (nil? c) (length/with-bounds (t/tuple []) 0 0)
       (= t/never cty) t/never
       (empty? xs) cty
+      (some :map-index members) (t/prim :map)
       (every? vector-member? members)
       (let [items (vec xts)]
         (if (some #{t/never} items)
@@ -5448,7 +5475,7 @@
                 (every? vector-member? members) (append-to-vectors ctx target members source)
                 (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector (elem-type ctx source))
                 (and (= :set (:op to)) (empty? (:children to))) (coll-of :set (elem-type ctx source))
-                (some #(or (:items %) (length/constrained? %)) members)
+                (some #(or (:items %) (length/constrained? %) (:map-index %)) members)
                 (into-transformed ctx target (elem-type ctx source))
                 :else (dissoc target :fresh)))
       3 (let [target (infer ctx to)

@@ -187,7 +187,7 @@
 
 ;; ---- subtyping ----
 
-(declare sub?)
+(declare sub? sub-result)
 (def ^:dynamic *depth* 0)
 (def ^:dynamic *inconclusive* nil)
 (def ^:dynamic *strict-shapes*
@@ -206,10 +206,33 @@
       (contains? (get {:int #{:number} :double #{:number} :vector #{:coll} :set #{:coll}
                        :seq #{:coll} :map #{:coll} :keyword #{:fn}} a) b)))
 
+(defn map-of-entry [env ty k]
+  (when-not (= :mismatch (:status (sub-result env (lit k) (:k ty))))
+    (:v ty)))
+
+(defn- map-fields-fit? [env fields target]
+  (every? (fn [[k v]]
+            (or (= :never (:t v))
+                (and (sub? env (lit k) (:k target)) (sub? env v (:v target)))))
+          fields))
+
+(defn- map-index-sub? [env source target]
+  (if-let [index (:map-index target)]
+    (and (map-fields-fit? env (remove (fn [[k]] (or (contains? (:req target) k)
+                                                     (contains? (:opt target) k)))
+                                     (concat (:req source) (:opt source)))
+                          index)
+         (if-let [source-index (:map-index source)]
+           (sub? env source-index index)
+           (or (:complete-keys? source) (inconclusive! :unsupported))))
+    true))
+
 (defn- map-sub? [env s t]
   (let [required (fn [[k tv]] (when-let [sv (get (:req s) k)] (sub? env sv tv)))
         optional (fn [[k tv]]
-                   (if-let [sv (or (get (:req s) k) (get (:opt s) k))]
+                   (if-let [sv (or (get (:req s) k) (get (:opt s) k)
+                                   (when-let [index (:map-index s)]
+                                     (or (map-of-entry env index k) never)))]
                      (sub? env sv tv)
                      (or (not *contract-subtyping*) (sub? env any tv))))]
     (if *contract-subtyping*
@@ -223,8 +246,8 @@
         (when (every? some? results)
           (let [reasons (into #{} cat results)]
             (run! inconclusive! reasons)
-            (empty? reasons))))
-      (and (every? required (:req t)) (every? optional (:opt t))))))
+            (and (empty? reasons) (map-index-sub? env s t)))))
+      (and (every? required (:req t)) (every? optional (:opt t)) (map-index-sub? env s t)))))
 
 (defn arity-minimum [arity]
   (+ (count (:params arity)) (get arity :rest-min 0)))
@@ -378,19 +401,19 @@
       (= :map st) (case tt
                     :map (map-sub? env s t)
                     :prim (contains? #{:map :coll} (:name t))
-                    :map-of (and (every? (fn [[k v]]
-                                           (or (= :never (:t v))
-                                               (and (sub? env (lit k) (:k t))
-                                                    (sub? env v (:v t)))))
-                                         (concat (:req s) (:opt s)))
-                                 (or (not *strict-shapes*) (:complete-keys? s)
-                                     (inconclusive! :unsupported)))
+                    :map-of (and (map-fields-fit? env (concat (:req s) (:opt s)) t)
+                                 (if-let [index (:map-index s)]
+                                   (sub? env index t)
+                                   (or (not *strict-shapes*) (:complete-keys? s)
+                                       (inconclusive! :unsupported))))
                     :class (prim-is-class? :map (:name t))
                     false)
       (= :map-of st) (case tt
                        :map-of (and (sub? env (:k s) (:k t)) (sub? env (:v s) (:v t)))
                        :prim (contains? #{:map :coll} (:name t))
-                       :map (empty? (:req t))
+                       :map (if (:map-index t)
+                              (map-sub? env {:map-index s} t)
+                              (empty? (:req t)))
                        :class (prim-is-class? :map (:name t))
                        false)
       (= :atom st) (and (= :class tt) (class-sub? "clojure.lang.Atom" (:name t)))

@@ -513,6 +513,52 @@
     (is (= [[5 "TSP2345"]] (locations issues))
         (pr-str issues))))
 
+(deftest odd-sequence-tails-retain-broad-map-of-values-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef counts :args (s/cat) :ret (s/map-of string? int?))
+(defn counts [] {\"amount\" 4})
+(s/fdef texts :args (s/cat) :ret (s/map-of string? string?))
+(defn texts [] {\"amount\" \"bad\"})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef amount :args (s/cat :key string?) :ret int?)
+(defn amount [key]
+  (let [{:strs [amount] :or {amount 0} :as all} (list :tag :count (seq (options/counts)))]
+    (+ amount (get all \"amount\" 0) (get all key 0) (get-in all [key] 0))))
+(let [{:strs [amount] :or {amount 0}} (list :tag :count (options/texts))] (inc amount))
+(let [{:strs [amount]} (list :tag :count (options/counts))] (inc amount))
+(let [{:as all} (list :tag :count (seq (options/texts)))] (inc (get all \"amount\" 0)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2531"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest map-of-tails-check-additional-entries-at-contract-boundaries
+  (let [issues (diagnostics "(s/def ::amount int?)
+(s/fdef accept-keys :args (s/cat :values (s/keys :opt-un [::amount])) :ret any?)
+(defn accept-keys [values] values)
+(s/fdef accept-counts :args (s/cat :values (s/map-of keyword? int?)) :ret any?)
+(defn accept-counts [values] values)
+(s/fdef counts :args (s/cat) :ret (s/map-of keyword? int?))
+(defn counts [] {:amount 4})
+(s/fdef texts :args (s/cat) :ret (s/map-of keyword? string?))
+(defn texts [] {:amount \"bad\"})
+(let [{:as all} (list :seed 2 (counts))]
+  (accept-counts all)
+  (accept-keys all))
+(let [{:as all} (list :seed 2 (texts))]
+  (accept-counts all)
+  (accept-keys all)
+  (accept-keys (assoc all :amount 4))
+  (accept-keys (dissoc all :amount))
+  (inc (get (dissoc all :amount) :amount 0))
+  (inc (get (into all [[:amount 4]]) :amount 0)))")]
+    (is (= [[15 "TSP2345"] [16 "TSP2345"] [20 "TSP210-01"]] (locations issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

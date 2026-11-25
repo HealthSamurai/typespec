@@ -539,6 +539,40 @@
     (is (= (t/prim :map) (infer-type "(assoc {} first-key 1 second-key 2)"
                                     {'first-key keys 'second-key keys})))))
 
+(deftest computed-contains-narrows-keys-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::key #{:n \"missing\"})
+(s/def ::indexed-key #{\"n\" :missing})
+(s/def ::numbers (s/map-of string? int?))
+(s/fdef present :args (s/cat :key #{:n} :value int?) :ret int?)
+(defn present [key value] value)
+(s/fdef missing :args (s/cat :key #{\"missing\"}) :ret int?)
+(defn missing [key] 0)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef guarded :args (s/cat :key ::api/key) :ret int?)
+(defn guarded [key]
+  (let [m {:n 4}]
+    (if (contains? m key) (api/present key (get m key)) (api/missing key))))
+(s/fdef indexed :args (s/cat :numbers ::api/numbers :key ::api/indexed-key) :ret int?)
+(defn indexed [numbers key]
+  (let [{:strs [n] :as all} (list :tag :count numbers)]
+    (if (contains? all key) (inc n) 0)))
+(s/fdef stored-nil :args (s/cat :key ::api/key) :ret int?)
+(defn stored-nil [key]
+  (let [m {:n nil}]
+    (if (contains? m key) (inc (get m key 0)) 0)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 13 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest computed-contains-retains-all-reachable-key-choices
+  (let [bindings {'k (t/union (t/lit :a) (t/lit :b) (t/lit :c))}]
+    (is (= #{(t/lit :a) (t/lit :b) (t/lit :absent)}
+           (alternatives (infer-type "(let [m {:a 1 :b 2}] (if (contains? m k) k :absent))" bindings))))
+    (is (= #{(t/lit :present) (t/lit :c)}
+           (alternatives (infer-type "(let [m {:a 1 :b 2}] (if (contains? m k) :present k))" bindings))))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

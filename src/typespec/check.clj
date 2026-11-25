@@ -25,8 +25,11 @@
 (def ^:dynamic *trust* nil)
 (def ^:dynamic *rets* nil)
 
+(def ^:private map-path-budget 256)
+
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
-         assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type)
+         assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
+         finite-map-keys)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -667,6 +670,22 @@
                    (assoc base :locals locals :origins (apply merge-with t/union (map :origins paths)))
                    (:projections base))))))
 
+(defn- computed-presence-contexts [ctx source key-node]
+  (when-let [local (when-not (env/tag-node key-node) (plain-local ctx key-node))]
+    (let [env (:env ctx)
+          keys (finite-map-keys env (eff ctx (get-in ctx [:locals local])))
+          subject (when keys (stable-path ctx source))
+          source-type (when subject (projected-type ctx (:type subject) (:path subject)))
+          maps (when source-type (vec (take (inc map-path-budget) (t/members env source-type))))]
+      (when (and (seq maps) (every? #(#{:map :nil} (:t %)) maps)
+                 (<= (* (count keys) (+ (count keys) (count maps))) map-path-budget))
+        (let [branches (mapv (fn [key]
+                               (when-let [candidate (first (equality-contexts ctx key-node key))]
+                                 (or (refine-path candidate source #(presence-parts env key %))
+                                     [candidate candidate])))
+                             keys)]
+          [(join-contexts ctx (map first branches)) (join-contexts ctx (map second branches))])))))
+
 (defn- logical-contexts [ctx args and?]
   (let [proceed (if and? first second)
         stop (if and? second first)
@@ -760,8 +779,9 @@
       (or (count-order-contexts ctx h a b) [ctx ctx])
 
       (and (= 'contains? h) (= 2 (count args)))
-      (or (when-let [key (stable-map-key b)]
-            (refine-path ctx a #(presence-parts env key %)))
+      (or (if-let [key (stable-map-key b)]
+            (refine-path ctx a #(presence-parts env key %))
+            (computed-presence-contexts ctx a b))
           [ctx ctx])
 
       (and (= 'instance? h) (= 2 (count args)) (= :sym (:op a)))
@@ -793,8 +813,6 @@
 ;; ---- destructuring ----
 
 (def ^:private empty-map-shape {:t :map :req {} :opt {} :inferred true :complete-keys? true})
-
-(def ^:private map-path-budget 256)
 
 (defn- bounded-combinations [paths]
   (let [variants (fn [steps]

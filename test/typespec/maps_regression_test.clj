@@ -503,6 +503,42 @@
     (is (= (t/prim :map) (infer-type "(dissoc {:keep 1} first-key second-key)"
                                     {'first-key keys 'second-key keys})))))
 
+(deftest computed-assoc-checks-spec-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::keep int?)
+(s/def ::limit int?)
+(s/def ::options (s/keys :req-un [::keep]))
+(s/def ::new-key #{:a :b})
+(s/def ::maybe-required #{:keep :extra})
+(s/def ::maybe-limited #{::limit :extra})
+(s/fdef accept :args (s/cat :m ::options) :ret int?)
+(defn accept [m] (:keep m))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef good :args (s/cat :key ::api/new-key) :ret int?)
+(defn good [key] (api/accept (assoc {:keep 4} key 2)))
+(s/fdef bad :args (s/cat :key ::api/maybe-required) :ret int?)
+(defn bad [key] (api/accept (assoc {:keep 4} key \"bad\")))
+(s/fdef limits :args (s/cat :key ::api/maybe-limited) :ret map?)
+(defn limits [key] (assoc {} key \"bad\"))
+(s/fdef read-existing :args (s/cat :key ::api/new-key) :ret int?)
+(defn read-existing [key] (inc (get (assoc {\"keep\" 4} key 1) \"keep\")))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest computed-assoc-preserves-key-variants-and-write-order
+  (let [result (infer-type "(assoc {:a 1 :b 2 \"keep\" :ok} k 3 :a \"final\")"
+                           {'k (t/union (t/lit :a) (t/lit :b))})]
+    (is (= #{{:a (t/prim :string) :b (t/lit 2) "keep" (t/lit :ok)}
+             {:a (t/prim :string) :b (t/prim :int) "keep" (t/lit :ok)}}
+           (set (map :req (alternatives result))))))
+  (let [result (infer-type "(assoc nil k 4)" {'k (t/union (t/lit 'n) (t/lit "n"))})]
+    (is (= #{{'n (t/prim :int)} {"n" (t/prim :int)}} (set (map :req (alternatives result))))))
+  (let [keys (apply t/union (map #(t/lit (str %)) (range 17)))]
+    (is (= (t/prim :map) (infer-type "(assoc {} first-key 1 second-key 2)"
+                                    {'first-key keys 'second-key keys})))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

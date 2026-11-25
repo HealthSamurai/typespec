@@ -3363,6 +3363,8 @@
             (let [literal-key (if (= :kw (:op k)) (:val k) (stable-map-key k))
                   env (:env ctx)
                   members (t/members env ty)
+                  keys (when (and (nil? literal-key) (every? #(#{:map :nil} (:t %)) members))
+                         (finite-map-keys env (eff ctx kt)))
                   add (fn [base shape]
                         (cond
                           (= :map-of (:t shape))
@@ -3384,10 +3386,20 @@
                           (assoc-key-type ctx base literal-key (key-type ctx literal-key vt))
                           (= :nil (:t shape)) (t/prim :map)
                           :else (forget-map-keys ctx base)))]
-              (if (and (next members)
-                       (some #(or (= :map-of (:t %)) (= :vector (:kind %)) (= (t/prim :vector) %)) members))
+              (cond
+                keys
+                (do (doseq [key keys] (check-key-value! ctx key v vt))
+                    (if (<= (* (count keys) (count members)) map-path-budget)
+                      (t/with-assumption
+                       (apply t/union (map #(assoc-key-type ctx ty % (key-type ctx % vt)) keys))
+                       (or (t/assumption ty) (t/assumption kt)))
+                      (forget-map-keys ctx ty)))
+
+                (and (next members)
+                     (some #(or (= :map-of (:t %)) (= :vector (:kind %)) (= (t/prim :vector) %)) members))
                 (apply t/union (map #(add % %) members))
-                (add ty (first members)))))
+
+                :else (add ty (first members)))))
           base entries))
 
 (defmethod special 'assoc [ctx node _]

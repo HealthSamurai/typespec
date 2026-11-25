@@ -502,6 +502,7 @@
 
                                      (get-in m [:req key]) (required m (get-in m [:req key]))
                                      (and presence? (= :map (:t m))) (optional m)
+                                     (and presence? (= :map-of (:t m))) (optional (indexed-map-shape m))
                                      (and presence? (= :nil (:t m))) [[t/nil-t (constantly m)]]))]
                        (when (every? some? paths)
                          (mapcat identity paths)))

@@ -614,6 +614,38 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest dictionary-value-guards-narrow-spec-contracts-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? (s/nilable int?)))
+(s/def ::words (s/map-of string? string?))
+(s/def ::nested (s/map-of string? (s/map-of symbol? int?)))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef count-at :args (s/cat :m ::api/counts) :ret int?)
+(defn count-at [m] (if (some? (get m \"n\")) (inc (get m \"n\")) 0))
+(s/fdef by-alias :args (s/cat :m ::api/counts) :ret int?)
+(defn by-alias [{:strs [n] :as all}] (if (some? n) (inc (get all \"n\")) 0))
+(s/fdef nested :args (s/cat :m ::api/nested) :ret int?)
+(defn nested [m]
+  (if (some? (get-in m [\"outer\" 'fixture/n]))
+    (api/accept (get-in m [\"outer\" 'fixture/n]))
+    0))
+(s/fdef absent :args (s/cat :m ::api/words) :ret int?)
+(defn absent [m] (if (nil? (get m \"n\")) (inc (get m \"n\" 0)) 0))
+(s/fdef stored-nil :args (s/cat :m ::api/counts) :ret int?)
+(defn stored-nil [m] (if (nil? (get m \"n\")) (inc (get m \"n\" 0)) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 14 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest dictionary-some-guard-keeps-false-as-a-present-value
+  (let [bindings {'m {:t :map-of :k (t/prim :string) :v (t/lit false)}}]
+    (is (= #{(t/lit false) (t/lit :absent)}
+           (alternatives
+            (infer-type "(if (some? (get m \"flag\")) (get m \"flag\" :missing) :absent)" bindings))))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

@@ -2532,16 +2532,30 @@
         (report! ctx tags "TSP2345" (str "Parameter tags " (parse/unparse tags)
                                         " must identify one overload of " label))))))
 
+(defn- possible-java-argument? [ctx ty pclass]
+  (or (nil? ty)
+      ;; The other arguments can rule out overloads before callback inference.
+      ;; A callback's Clojure arity does not select a JVM descriptor.
+      (some #(or (= :fn (:t %)) (java-arg-ok? ctx % pclass))
+            (t/members (:env ctx) ty))))
+
+(defn- java-callback-context [fits i]
+  (let [methods (mapv #(java/functional-method (nth (:params %) i)) fits)]
+    (when (and (seq methods) (every? some? methods) (apply = (map :params methods)))
+      {:t :fn :arities [{:params (mapv functional-input-type (:params (first methods)))
+                         :ret t/unknown}]})))
+
 (defn- infer-java-arguments [ctx args candidates]
-  (let [fits (filterv #(= (count args) (count (:params %))) candidates)]
-    (mapv (fn [i arg]
-            (let [expected (when (and (seq fits) (callback-node? ctx arg))
-                             (let [methods (mapv #(java/functional-method (nth (:params %) i)) fits)]
-                               (when (and (every? some? methods) (apply = (map :params methods)))
-                                 {:t :fn :arities [{:params (mapv functional-input-type (:params (first methods)))
-                                                    :ret t/unknown}]})))]
-              (infer ctx arg expected)))
-          (range) args)))
+  (let [fits (filterv #(= (count args) (count (:params %))) candidates)
+        pending (mapv (fn [i arg]
+                        (and (seq fits) (callback-node? ctx arg)
+                             (some #(java/functional-method (nth (:params %) i)) fits)))
+                      (range) args)]
+    (if (some identity pending)
+      (let [types (mapv #(when-not %2 (infer ctx %1)) args pending)
+            possible (filterv #(every? identity (map (partial possible-java-argument? ctx) types (:params %))) fits)]
+        (mapv (fn [i arg ty] (or ty (infer ctx arg (java-callback-context possible i)))) (range) args types))
+      (mapv #(infer ctx %) args))))
 
 (defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [tags]]
   (let [ms (map #(assoc % :name mname) (java/methods-named cname mname static?))

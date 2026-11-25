@@ -97,6 +97,18 @@
         (pr-str ds))
     (is (re-find #"passes int\? to callback parameter 1 .* expects double\?" (:message (first ds))))))
 
+(deftest other-java-arguments-select-the-callback-context-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef integers :args (s/cat) :ret #(instance? int/1 %))
+(defn integers [] (int-array [1 2 3]))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(java.util.Arrays/parallelPrefix (api/integers) (fn [a x] (+ a x)))
+(java.util.Arrays/parallelPrefix (double-array 2) (fn [a x] (+ a x)))
+(java.util.Arrays/parallelPrefix (api/integers) (fn [a x] (str a x)))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"]] (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest java-overloads-check-the-whole-argument-list
   (let [source "(ns example.overloads)
 (java.util.Arrays/equals (byte-array [1]) (byte-array [1]))

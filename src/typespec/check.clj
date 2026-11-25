@@ -441,6 +441,11 @@
                  (assoc-in ctx [:origins origin] ty) (:projections ctx))
       (assoc-in ctx [:locals local] ty))))
 
+(defn- optional-map-value [env shape key]
+  (or (get-in shape [:opt key])
+      (when-let [index (:map-index shape)] (or (t/map-of-entry env index key) t/never))
+      (when (:complete-keys? shape) t/never)))
+
 (defn- path-alternatives
   "Pairs of [leaf type, rebuild]. Each rebuild retains its enclosing map or tuple."
   ([ctx ty path] (path-alternatives ctx ty path false))
@@ -455,6 +460,13 @@
                                       (when-let [children (walk field more)]
                                         (for [[leaf rebuild] children]
                                           [leaf #(assoc-in m [:req key] (rebuild %))])))
+                           optional (fn [m]
+                                      (when-let [field (optional-map-value env m key)]
+                                        (if (= t/never field)
+                                          [[t/nil-t (constantly m)]]
+                                          (when-let [present (required (update m :opt dissoc key) field)]
+                                            (cons [t/nil-t (constantly (assoc-in m [:opt key] t/never))]
+                                                  present)))))
                            paths (for [m members]
                                    (cond
                                      (integer? key)
@@ -466,11 +478,7 @@
                                                      (assoc m :items items :of (apply t/union items))))])))
 
                                      (get-in m [:req key]) (required m (get-in m [:req key]))
-                                     (and presence? (get-in m [:opt key]))
-                                     (let [field (get-in m [:opt key])
-                                           absent [t/nil-t (constantly (assoc-in m [:opt key] t/never))]
-                                           present (required (update m :opt dissoc key) field)]
-                                       (when present (cons absent present)))
+                                     (and presence? (= :map (:t m))) (optional m)
                                      (and presence? (= :nil (:t m))) [[t/nil-t (constantly m)]]))]
                        (when (every? some? paths)
                          (mapcat identity paths)))
@@ -599,13 +607,11 @@
     :never [nil nil]
     :map (if (contains? (:req leaf) key)
            [leaf nil]
-           (let [index (:map-index leaf)
-                 field (or (get-in leaf [:opt key]) (when index (t/map-of-entry env index key)))]
-             (cond
-               field [(when-not (= :never (:t field)) (assoc-map-key leaf key field))
-                      (assoc-in leaf [:opt key] t/never)]
-               (or index (:complete-keys? leaf)) [nil leaf]
-               :else [leaf leaf])))
+           (if-let [field (optional-map-value env leaf key)]
+             (if (= t/never field)
+               [nil leaf]
+               [(assoc-map-key leaf key field) (assoc-in leaf [:opt key] t/never)])
+             [leaf leaf]))
     [leaf leaf]))
 
 (def ^:private scalar-primitives #{:int :double :number :string :keyword :boolean :symbol})

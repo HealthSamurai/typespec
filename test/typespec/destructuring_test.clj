@@ -598,6 +598,44 @@
   (when-not (contains? all \"n\") (inc n)))")]
     (is (= [[7 "TSP2531"]] (locations issues)) (pr-str issues))))
 
+(deftest some-refines-fields-from-map-of-tails-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef nullable :args (s/cat) :ret (s/map-of string? (s/nilable int?)))
+(defn nullable [] {\"n\" nil})
+(s/def ::n int?)
+(s/fdef nested :args (s/cat) :ret (s/map-of string? (s/keys :req-un [::n])))
+(defn nested [] {\"value\" {:n 4}})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef total :args (s/cat) :ret int?)
+(defn total []
+  (let [{:strs [n] :as all} (list :tag :count (seq (options/nullable)))]
+    (if (some? (get all \"n\")) (+ n (get all \"n\")) 0)))
+(let [{:strs [n] :as all} (list :tag :count (options/nullable))]
+  (if (some? n) (inc (get all \"n\")) 0))
+(let [{{:keys [n]} \"value\" :as all} (list :tag :count (seq (options/nested)))]
+  (if (some? (get-in all [\"value\" :n])) (+ n (get-in all [\"value\" :n])) 0))
+(let [{:as all} (list :tag :count (options/nullable))]
+  (if (nil? (get all \"n\")) (inc (get all \"n\" 0)) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 11 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest map-of-tail-value-guards-distinguish-absence-and-false
+  (let [issues (diagnostics "(s/fdef counts :args (s/cat) :ret (s/map-of string? int?))
+(defn counts [] {})
+(let [{:as all} (list :tag :count (seq (counts)))]
+  (if (nil? (get all \"n\")) (inc (get all \"n\" 0)) (inc (get all \"n\"))))
+(s/fdef flags :args (s/cat) :ret (s/map-of string? #{false}))
+(defn flags [] {\"enabled\" false})
+(let [{:as all} (list :tag :flags (flags))]
+  (if (some? (get all \"enabled\")) (inc (get all \"enabled\")) 0))")]
+    (is (= [[9 "TSP2345"]] (locations issues)) (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

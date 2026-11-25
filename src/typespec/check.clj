@@ -2638,7 +2638,7 @@
 
 (defn- binding-test-contexts [ctx init some?]
   (or (emptiness-contexts ctx init some?)
-      (when some? (some-contexts ctx init))
+      (if some? (some-contexts ctx init) (truth-contexts ctx init))
       [ctx ctx]))
 
 (defn- if-let-form [ctx node some?]

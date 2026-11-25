@@ -672,6 +672,40 @@
   (if-some [n (get all \"n\" 0)] (inc (get all \"n\")) (inc \"unreachable\")))")]
     (is (= [[5 "TSP2531"]] (locations issues)) (pr-str issues))))
 
+(deftest truth-bindings-refine-map-of-tails-across-namespaces
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef counts :args (s/cat) :ret (s/map-of string? (s/or :count int? :disabled #{false})))
+(defn counts [] {\"n\" 4})
+(s/fdef nullable :args (s/cat) :ret (s/map-of string? (s/nilable int?)))
+(defn nullable [] {\"n\" nil})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/fdef total :args (s/cat) :ret int?)
+(defn total []
+  (let [{:strs [n] :as all} (list :tag :count (seq (options/counts)))]
+    (if-let [value (get all \"n\")] (+ value n (get all \"n\")) 0)))
+(let [{:strs [n] :as all} (list :tag :count (options/counts))]
+  (when-let [value n] (+ value (get all \"n\"))))
+(let [{:as all} (list :tag :count (options/counts))]
+  (if-let [value (get all \"n\")] (inc value) (inc (get all \"n\" 0))))
+(let [{:as all} (list :tag :count (options/nullable))]
+  (if-let [value (get all \"n\")] (inc value) (inc (get all \"n\" 0))))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2345"] ["client.clj" 11 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (str/includes? (:message (first issues)) "false"))))
+
+(deftest truth-binding-with-a-default-does-not-prove-key-presence
+  (let [issues (diagnostics "(s/fdef counts :args (s/cat) :ret (s/map-of string? int?))
+(defn counts [] {})
+(let [{:as all} (list :tag :count (counts))]
+  (when-let [n (get all \"n\" 0)] (inc (get all \"n\"))))")]
+    (is (= [[5 "TSP2531"]] (locations issues)) (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

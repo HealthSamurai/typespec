@@ -2399,13 +2399,30 @@
     (t/primitives ret) (t/union (t/prim :number) (t/class-type "java.lang.Character"))
     :else (t/union (t/class-type ret) t/nil-t)))
 
+(defn- functional-input-type [cname]
+  (if (= "java.lang.Object" cname) t/unknown (t/class-type cname)))
+
+(defn- functional-parameter-problem [ctx params arity name]
+  (let [env (:env ctx)
+        expected (concat (:params arity) (repeat (:rest arity)))
+        numeric? #(t/sub? env % (t/prim :number))]
+    (some (fn [[i cname target]]
+            (let [actual (functional-input-type cname)]
+              (when (and target
+                         (= :mismatch (:status (t/sub-result env actual target)))
+                         (not (and (t/primitives cname) (numeric? actual) (numeric? target))))
+                ["TSP2345" (str "passes " (t/show actual) " to callback parameter " i
+                               " for " name ", which expects " (t/show target))])))
+          (map vector (iterate inc 1) params expected))))
+
 (defn- functional-argument-problem [ctx fn-type {:keys [params ret name]}]
   (let [n (count params)]
     (if-let [arity (t/dispatch-arity (:arities fn-type) n)]
-      (when-let [expected (functional-return-type ctx ret)]
-        (let [actual (eff ctx (:ret arity))]
-          (when (= :mismatch (:status (t/sub-result (:env ctx) actual expected)))
-            ["TSP2345" (str "expects a callback returning " (t/show expected) " for " name ", got " (t/show actual))])))
+      (or (functional-parameter-problem ctx params arity name)
+          (when-let [expected (functional-return-type ctx ret)]
+            (let [actual (eff ctx (:ret arity))]
+              (when (= :mismatch (:status (t/sub-result (:env ctx) actual expected)))
+                ["TSP2345" (str "expects a callback returning " (t/show expected) " for " name ", got " (t/show actual))]))))
       ["TSP2554" (str "expects a callback accepting " n " argument(s) for " name)])))
 
 (defn- functional-argument-ok? [ctx ty pclass]
@@ -2516,16 +2533,29 @@
         (report! ctx tags "TSP2345" (str "Parameter tags " (parse/unparse tags)
                                         " must identify one overload of " label))))))
 
+(defn- infer-java-arguments [ctx args candidates]
+  (let [fits (filterv #(= (count args) (count (:params %))) candidates)]
+    (mapv (fn [i arg]
+            (let [expected (when (and (seq fits) (callback-node? ctx arg))
+                             (let [methods (mapv #(java/functional-method (nth (:params %) i)) fits)]
+                               (when (and (every? some? methods) (apply = (map :params methods)))
+                                 {:t :fn :arities [{:params (mapv functional-input-type (:params (first methods)))
+                                                    :ret t/unknown}]})))]
+              (infer ctx arg expected)))
+          (range) args)))
+
 (defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [tags]]
-  (let [arg-types (mapv #(infer ctx %) arg-nodes)
-        ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
+  (let [ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
         field-class (when (and (empty? arg-nodes)
                                (case field-fallback
                                  :no-methods (empty? ms)
                                  :no-zero-arg-method (not-any? #(empty? (:params %)) ms)
                                  false))
                       (java/field-class cname mname static?))
-        shown (java/short-name cname)]
+        shown (java/short-name cname)
+        label (str shown "." mname)
+        methods (when (and (not field-class) (seq ms)) (if tags (tagged-java-overload ctx tags label ms) ms))
+        arg-types (infer-java-arguments ctx arg-nodes methods)]
     (cond
       (not (java/has-class? cname)) t/unknown
       field-class (java-field-type field-class)
@@ -2534,31 +2564,31 @@
                                     (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
                       t/unknown)
       :else
-      (let [label (str shown "." mname)
-            methods (if tags (tagged-java-overload ctx tags label ms) ms)
-            candidates (when (seq methods)
+      (let [candidates (when (seq methods)
                          (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
                                                  node label arg-nodes arg-types methods))
             rets (distinct (map #(java-ret cname %) candidates))]
         (if (= 1 (count rets)) (first rets) t/unknown)))))
 
 (defn- constructor-call [ctx node cname arg-nodes]
-  (let [arg-types (mapv #(infer ctx %) arg-nodes)]
+  (let [^Class cls (when cname (t/load-class cname))
+        constructors (when cls (java/constructors cls))
+        abstract? (and cls (Modifier/isAbstract (.getModifiers cls)))
+        arg-types (infer-java-arguments ctx arg-nodes (when-not abstract? constructors))]
     (if cname
       (do
-        (when-let [^Class cls (t/load-class cname)]
-          (when-some [constructors (java/constructors cls)]
-            (let [shown (java/short-name cname)]
-              (cond
-                (empty? constructors)
-                (report! ctx node "TSP2339" (str shown " has no public constructor"))
+        (when (some? constructors)
+          (let [shown (java/short-name cname)]
+            (cond
+              (empty? constructors)
+              (report! ctx node "TSP2339" (str shown " has no public constructor"))
 
-                (Modifier/isAbstract (.getModifiers cls))
-                (report! ctx node "TSP2345" (str shown " is abstract and cannot be constructed"))
+              abstract?
+              (report! ctx node "TSP2345" (str shown " is abstract and cannot be constructed"))
 
-                :else
-                (checked-java-overloads (assoc ctx :java-direct? true)
-                                        node (str "the " shown " constructor") arg-nodes arg-types constructors)))))
+              :else
+              (checked-java-overloads (assoc ctx :java-direct? true)
+                                      node (str "the " shown " constructor") arg-nodes arg-types constructors))))
         ;; Direct instantiation of Object produces a concrete value.
         (if (= cname "java.lang.Object") {:t :class :name cname} (t/class-type cname)))
       t/unknown)))

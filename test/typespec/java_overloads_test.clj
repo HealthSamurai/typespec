@@ -41,6 +41,23 @@
   (let [^java.util.stream.IntStream stream (java.util.stream.IntStream/range 0 3)]
     (is (thrown? ClassCastException (.count (.filter stream (fn [_] "truthy")))))))
 
+(deftest java-functional-interface-inputs-contextualize-and-check-callbacks
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn add-one [^long x] (inc x))
+(defn string-size [^String x] (count x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api])
+  (:import [java.util.concurrent.atomic AtomicInteger]))
+(.updateAndGet (AtomicInteger. 3) #(inc %))
+(.updateAndGet (AtomicInteger. 3) api/add-one)
+(.updateAndGet (AtomicInteger. 3) api/string-size)
+(java.util.Arrays/setAll (int-array 2) (fn [i] (inc i)))")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= "java.util.concurrent.atomic.AtomicInteger.updateAndGet passes int? to callback parameter 1 for applyAsInt, which expects String"
+           (:message (first ds))))))
+
 (deftest java-overloads-check-the-whole-argument-list
   (let [source "(ns example.overloads)
 (java.util.Arrays/equals (byte-array [1]) (byte-array [1]))

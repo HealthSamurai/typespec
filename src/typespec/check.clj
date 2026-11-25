@@ -419,14 +419,16 @@
   (when (= :lit (:t member))
     (or (selector-literal-key member) (vector-lookup-step (:val member)))))
 
+(defn- stable-lookup-step [ctx node]
+  (or (stable-map-key node)
+      (if (literal-node? node)
+        (vector-lookup-step (:val node))
+        (selector-path-step (stable-local-member ctx node)))))
+
 (defn- stable-lookup-path [ctx node]
   (when (and (empty? (:directives node)) (not (env/tag-node node)))
     (case (:op node)
-      :vector (mapv #(or (stable-map-key %)
-                         (if (literal-node? %)
-                           (vector-lookup-step (:val %))
-                           (selector-path-step (stable-local-member ctx %))))
-                    (:children node))
+      :vector (mapv #(stable-lookup-step ctx %) (:children node))
       :nil []
       (when-let [member (stable-local-member ctx node)]
         (if (= :nil (:t member))
@@ -471,12 +473,12 @@
       (when (= :list (:op node))
         (let [[head a b default & extra] (:children node)
               h (builtin-head ctx node)
-              map-key (when (and (= 'get h) (empty? extra) (nil-lookup-default? ctx default))
-                        (stable-lookup-key ctx b))
+              lookup-step (when (and (= 'get h) (empty? extra) (nil-lookup-default? ctx default))
+                            (stable-lookup-step ctx b))
               map-path (when (and (= 'get-in h) (empty? extra)) (stable-lookup-path ctx b))
               [base path] (cond
                             (and (= :kw (:op head)) a (nil? default) (nil-lookup-default? ctx b)) [a [(:val head)]]
-                            map-key [a [map-key]]
+                            lookup-step [a [lookup-step]]
                             (and (some? map-path)
                                  (or (empty? map-path)
                                      (and (nil-lookup-default? ctx default) (every? some? map-path)))) [a map-path]

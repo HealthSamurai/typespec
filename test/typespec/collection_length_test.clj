@@ -57,6 +57,24 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest get-guards-refine-vector-positions-across-namespaces
+  (let [issues (vector-guard-diagnostics
+                 "(s/fdef from-get :args (s/cat :v ::api/nums :i #{2}) :ret int?)
+(defn from-get [v i]
+  (if (some? (get v i nil)) (+ (api/long-enough v) (api/integer (get v 2))) 0))
+(s/fdef tuple-lookup :args (s/cat :v (s/tuple (s/nilable int?))) :ret int?)
+(defn tuple-lookup [v]
+  (if (some? (get v 4294967296)) (api/integer (nth v 0)) 0))
+(s/fdef incorrect-default :args (s/cat :v ::api/nums) :ret int?)
+(defn incorrect-default [v]
+  (if (some? (get v 2 0)) (api/integer (get v 2)) 0))
+(s/fdef map-keys :args (s/cat :m (s/map-of int? int?)) :ret int?)
+(defn map-keys [m]
+  (if (some? (get m 4294967296)) (api/integer (get m 0)) 0))")]
+    (is (= [["client.clj" 10 "TSP2531"] ["client.clj" 13 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest range-checks-start-stop-and-step
   (let [r (checked "(range)
 (range 4.5)

@@ -94,14 +94,14 @@
     clojure.core/str         [& any? :-> string?]
     clojure.core/inc         ([int? :-> int?] [number? :-> number?])
     clojure.core/random-uuid [:-> uuid?]
-    clojure.core/namespace   [(t/or keyword? symbol?) :-> (s/nilable string?)]
+    clojure.core/namespace   [clojure.lang.Named :-> (s/nilable string?)]
     clojure.string/blank?    [(s/nilable java.lang.CharSequence) :-> boolean?]
     clojure.string/split     ([java.lang.CharSequence java.util.regex.Pattern :-> (s/coll-of string? :kind vector?)]
                               [java.lang.CharSequence java.util.regex.Pattern int? :-> (s/coll-of string? :kind vector?)])
-    clojure.string/replace   ([java.lang.CharSequence java.lang.Character java.lang.Character :-> string?]
-                              [java.lang.CharSequence java.lang.CharSequence java.lang.CharSequence :-> string?]
-                              [java.lang.CharSequence java.util.regex.Pattern java.lang.CharSequence :-> string?]
-                              [java.lang.CharSequence java.util.regex.Pattern
+    clojure.string/replace   ([some? java.lang.Character java.lang.Character :-> string?]
+                              [some? java.lang.CharSequence java.lang.CharSequence :-> string?]
+                              [some? java.util.regex.Pattern java.lang.CharSequence :-> string?]
+                              [some? java.util.regex.Pattern
                                [(t/or string? (s/coll-of (s/nilable string?) :kind vector?)) :-> string?]
                                :-> string?]))
   (let [arities #(mapv (fn [a] [(count (:params a)) (boolean (:rest a))]) (:arities (core/table %)))]

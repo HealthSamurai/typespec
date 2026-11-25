@@ -124,7 +124,7 @@
 (deftest replace-reports-arguments-from-the-closest-overload
   (is (= [["TSP2345" "\"_\" is not assignable to java.lang.Character"]]
          (mapv (juxt :code :message) (diagnostics "(replace 42 \\x \"_\")"))))
-  (is (= [["TSP2345" "nil is not assignable to some?"]
+  (is (= [["TSP2345" "nil? is not assignable to some?"]
           ["TSP2345" "\"_\" is not assignable to java.lang.Character"]]
          (mapv (juxt :code :message) (diagnostics "(replace nil \\x \"_\")")))))
 

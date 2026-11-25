@@ -88,16 +88,16 @@
    {:row 103, :col 32, :end-row 103, :end-col 35}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
+   "compatibility not checked: t/unknown to some? (unknown)"
    #{:unknown}
-   "c61e5c2a3d0e5e55e9435766a46f7dae"]
+   "55143515d77ecba5fb69cab949b0a773"]
   ["src/http.clj"
    {:row 141, :col 41, :end-row 141, :end-col 45}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
+   "compatibility not checked: t/unknown to some? (unknown)"
    #{:unknown}
-   "e635e760c59d075243d5f36a656c1570"]
+   "06c64fc8842b797b20079f07c0aee99b"]
   ["src/http.clj"
    {:row 172, :col 37, :end-row 172, :end-col 45}
    :warning
@@ -144,9 +144,9 @@
    {:row 351, :col 31, :end-row 351, :end-col 35}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "cd98a63f7c788c7f91a41f76b093b06d"]
+   "a5fcb8524eae7f03c021bb27248adc13"]
   ["src/http.clj"
    {:row 50, :col 33, :end-row 50, :end-col 36}
    :warning
@@ -158,30 +158,30 @@
    {:row 53, :col 33, :end-row 53, :end-col 37}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "e19f19c70b6280c7233b5329e31fe075"]
+   "e6b0001140dcce2eb51b60b505b23f87"]
   ["src/http.clj"
    {:row 56, :col 37, :end-row 56, :end-col 41}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "15d075e81838b13aaebaa36b6249fc83"]
+   "13cb0e86152fdff0bf31aab5b0f1f492"]
   ["src/http.clj"
    {:row 57, :col 37, :end-row 57, :end-col 41}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "38afe66b4807ab25fefb3a66f98b2126"]
+   "a2b668100f1811436e6f03950a6e2006"]
   ["src/http.clj"
    {:row 60, :col 35, :end-row 60, :end-col 39}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "9497fa3e143cba4bf1155411993e1c54"]
+   "c7adbe44e0174a67caba3a2774825f40"]
   ["src/http.clj"
    {:row 73, :col 73, :end-row 73, :end-col 74}
    :warning
@@ -249,9 +249,9 @@
    {:row 74, :col 67, :end-row 74, :end-col 75}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
+   "compatibility not checked: t/unknown to some? (unknown)"
    #{:unknown}
-   "6bb153d00241586bab1419a68b406de1"]
+   "d1b85d427b27e63e0c40772114038047"]
   ["src/http/routing.clj"
    {:row 126, :col 46, :end-row 126, :end-col 55}
    :warning
@@ -312,9 +312,9 @@
    {:row 7, :col 42, :end-row 7, :end-col 43}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "897ee7b9f8ecbf4fe963b76e5d1b093c"]
+   "616013205f0672707738d943643dd47a"]
   ["src/http/routing.clj"
    {:row 74, :col 104, :end-row 74, :end-col 107}
    :warning
@@ -333,23 +333,23 @@
    {:row 86, :col 42, :end-row 86, :end-col 46}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "84d4e9addbd86e42fe01357db3bbdee1"]
+   "241f4605dbe649b2e7a0f26a736fab0b"]
   ["src/uui.clj"
    {:row 136, :col 9, :end-row 136, :end-col 60}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
+   "compatibility not checked: t/unknown to some? (unknown)"
    #{:unknown}
-   "82c899e023a6d01e81368d9f3bce2bb4"]
+   "1792afde10e6bfb427ef27ab238d8800"]
   ["src/uui.clj"
    {:row 147, :col 9, :end-row 147, :end-col 45}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
+   "compatibility not checked: t/unknown to some? (unknown)"
    #{:unknown}
-   "60d9f7065850dd5443d619fa58b1e688"]
+   "22c080d19e797177d6343ed2f6888104"]
   ["src/uui.clj"
    {:row 29, :col 39, :end-row 29, :end-col 45}
    :warning
@@ -368,6 +368,6 @@
    {:row 98, :col 36, :end-row 98, :end-col 44}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
-   "6cc6574010a0b1ca6a7d2042ea0bbff5"]]}
+   "60b3ed239efc4ace127a613d63d96b0b"]]}

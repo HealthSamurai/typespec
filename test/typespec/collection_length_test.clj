@@ -18,6 +18,45 @@
 (defn- codes [r] (mapv :code (:diagnostics r)))
 (defn- at [r row] (main/type-at r "length.clj" row 1))
 
+(def ^:private vector-guard-api
+  (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::nums (s/coll-of int? :kind vector? :max-count 5))
+(s/def ::nullable (s/coll-of (s/nilable int?) :kind vector? :max-count 5))
+(s/def ::long (s/coll-of int? :kind vector? :min-count 3 :max-count 5))
+(s/def ::long-nullable (s/coll-of (s/nilable int?) :kind vector? :min-count 3 :max-count 5))
+(s/def ::short (s/coll-of int? :kind vector? :max-count 2))
+(s/def ::short-nullable (s/coll-of (s/nilable int?) :kind vector? :max-count 2))
+(s/fdef long-enough :args (s/cat :v ::long) :ret int?)
+(defn long-enough [v] (count v))
+(s/fdef nullable-long-enough :args (s/cat :v ::long-nullable) :ret int?)
+(defn nullable-long-enough [v] (count v))
+(s/fdef short-enough :args (s/cat :v ::short) :ret int?)
+(defn short-enough [v] (count v))
+(s/fdef nullable-short-enough :args (s/cat :v ::short-nullable) :ret int?)
+(defn nullable-short-enough [v] (count v))
+(s/fdef integer :args (s/cat :n int?) :ret int?)
+(defn integer [n] n)"))
+
+(defn- vector-guard-diagnostics [source]
+  (let [client (parse/parse-string "client.clj"
+                                 (str "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))\n" source))]
+    (:diagnostics (check/check-files [vector-guard-api client] {}))))
+
+(deftest get-in-guards-refine-vector-length-across-namespaces
+  (let [issues (vector-guard-diagnostics
+                 "(s/fdef present :args (s/cat :v ::api/nums) :ret int?)
+(defn present [v]
+  (if (some? (get-in v [2])) (+ (api/long-enough v) (api/integer (get-in v [2]))) 0))
+(s/fdef absent :args (s/cat :v ::api/nums) :ret int?)
+(defn absent [v] (if (nil? (get-in v [2])) (api/short-enough v) 0))
+(s/fdef nullable-value :args (s/cat :v ::api/nullable) :ret int?)
+(defn nullable-value [v] (if (some? (get-in v [2])) (api/nullable-long-enough v) 0))
+(s/fdef unsafe-short :args (s/cat :v ::api/nullable) :ret int?)
+(defn unsafe-short [v] (if (nil? (get-in v [2])) (api/nullable-short-enough v) 0))")]
+    (is (= [["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest range-checks-start-stop-and-step
   (let [r (checked "(range)
 (range 4.5)

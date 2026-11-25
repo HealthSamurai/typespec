@@ -3285,7 +3285,7 @@
                       (or (get (:req member) key) (get (:opt member) key)
                           (t/map-of-entry env index-type key) t/never)
                       (if (:complete-keys? member) t/never t/unknown))
-               :map-of (:v member)
+               :map-of (read-map-of ctx member (t/lit key) t/never)
                :lit (if (string-index-present? (:val member) index)
                       (t/class-type "java.lang.Character") t/never)
                :prim (case (:name member)

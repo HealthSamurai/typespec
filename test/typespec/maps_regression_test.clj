@@ -326,6 +326,36 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest get-in-checks-numeric-map-key-domains-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::by-name (s/map-of string? int?))
+(s/def ::by-code (s/map-of int? (s/nilable int?)))
+(s/def ::path (s/tuple #{0}))
+(s/fdef text :args (s/cat :s string?) :ret string?)
+(defn text [s] s)
+(s/fdef integer :args (s/cat :n int?) :ret int?)
+(defn integer [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [api :as api]))
+(s/fdef fallback :args (s/cat :m ::api/by-name) :ret string?)
+(defn fallback [m] (api/text (get-in m [0] \"missing\")))
+(s/fdef same-with-tuple :args (s/cat :m ::api/by-name :path ::api/path) :ret string?)
+(defn same-with-tuple [m path] (api/text (get-in m path \"missing\")))
+(s/fdef invalid-fallback :args (s/cat :m ::api/by-name) :ret int?)
+(defn invalid-fallback [m] (api/integer (get-in m [0] false)))
+(s/fdef stored-nil :args (s/cat :m ::api/by-code) :ret int?)
+(defn stored-nil [m] (api/integer (get-in m [0] 0)))
+(s/fdef valid-code :args (s/cat :m (s/map-of int? int?)) :ret int?)
+(defn valid-code [m] (api/integer (get-in m [0] 0)))
+(s/fdef finite-domain :args (s/cat :m (s/map-of #{1 2} int?)) :ret string?)
+(defn finite-domain [m] (api/text (get-in m [0] \"missing\")))
+(s/fdef map-or-vector :args (s/cat :v (s/or :map (s/map-of string? string?) :vec (s/tuple int?))) :ret int?)
+(defn map-or-vector [v] (api/integer (get-in v [0] 0)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "false is not assignable to int?" (:message (first issues))))))
+
 (deftest literal-key-path-writes-rebuild-the-map
   (is (= (t/lit "text")
          (infer-type "(get-in (assoc-in nil [:a :b] \"text\") [:a :b])")))

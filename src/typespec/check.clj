@@ -3095,15 +3095,19 @@
       (let [source (eff ctx mty)
             key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
             not-found (if default (infer ctx default) t/nil-t)
-            members (t/members (:env ctx) source)
+            env (:env ctx)
+            members (t/members env source)
+            keys (when (some #(= :map (:t %)) members)
+                   (mapv selector-literal-key (take (inc map-path-budget) (t/members env key-type))))
             assumption (or (t/assumption source) (t/assumption key-type))]
         (cond
           (some #{t/never} [source key-type not-found])
           t/never
 
-          (and (= :lit (:t key-type)) (or (string? (:val key-type)) (symbol? (:val key-type)))
-               (some #(= :map (:t %)) members))
-          (t/with-assumption (read-literal-map-key ctx source (:val key-type) not-found) assumption)
+          (and (<= 1 (count keys) map-path-budget) (every? some? keys))
+          (t/with-assumption
+           (apply t/union (map #(read-literal-map-key ctx source % not-found) keys))
+           assumption)
 
           (and (some vector-member? members) (every? #(or (vector-member? %) (#{:nil :never} (:t %))) members))
           (t/with-assumption (read-vector-index ctx members key-type not-found) assumption)

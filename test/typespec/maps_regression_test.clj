@@ -438,6 +438,36 @@
          (infer-type "(update {} key identity)"
                      {'key (apply t/union (map #(t/lit (str %)) (range 257)))}))))
 
+(deftest computed-get-checks-spec-contracts-after-update-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::key #{:n \"m\"})
+(s/def ::maybe-key #{\"n\" \"absent\"})
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s]))
+(s/fdef bump :args (s/cat :key ::api/key) :ret int?)
+(defn bump [key] (api/accept (get (update {:n 1 \"m\" 2} key inc) key \"unused\")))
+(s/fdef wrong :args (s/cat :key ::api/key) :ret number?)
+(defn wrong [key] (inc (get {:n 1 \"m\" \"bad\"} key)))
+(s/fdef defaulted :args (s/cat :key ::api/maybe-key) :ret int?)
+(defn defaulted [key] (inc (get {\"n\" 4} key 0)))
+(s/fdef stored-nil :args (s/cat :key ::api/maybe-key) :ret int?)
+(defn stored-nil [key] (inc (get {\"n\" nil} key 0)))
+(let [key :n] (inc (get {:n 2} key)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 9 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest computed-get-applies-its-default-only-to-absent-keys
+  (let [bindings {'k (t/union (t/lit 'fixture/n) (t/lit "n"))}]
+    (is (= #{(t/lit 1) (t/lit 2)}
+           (alternatives (infer-type "(get {'fixture/n 1 \"n\" 2} k :missing)" bindings))))
+    (is (= #{t/nil-t (t/lit :missing)}
+           (alternatives (infer-type "(get {'fixture/n nil} k :missing)" bindings)))))
+  (is (= t/unknown
+         (infer-type "(get {:a 1} k)" {'k (apply t/union (map #(t/lit (str %)) (range 257)))}))))
+
 (deftest string-map-operations-preserve-contract-checks-across-namespaces
   (let [api (parse/parse-string "api.clj"
                                "(ns api (:require [clojure.spec.alpha :as s]))

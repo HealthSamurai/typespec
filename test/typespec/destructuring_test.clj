@@ -169,6 +169,40 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest map-destructuring-normalizes-known-sequences
+  (let [issues (diagnostics "(let [{:keys [n]} (list :n \"first\" :n 2)] (inc n))
+(let [{:keys [n]} (list :n \"first\" {:n 2})] (inc n))
+(let [{:strs [n]} (list \"n\" 2)] (inc n))
+(let [{:keys [n]} (list {:n 2})] (inc n))
+(let [{:keys [n] :or {n 0}} (list)] (inc n))
+(let [{:keys [n] :or {n 0}} (list nil)] (inc n))
+(let [[{:keys [n]}] [(seq [:n 2])]] (inc n))
+(let [{:keys [n]} (list :n 2 :n \"bad\")] (inc n))
+(let [{:keys [n] :or {n 0}} (list :n 2 {:n nil})] (inc n))
+(s/fdef vector-as :args (s/cat) :ret (s/tuple #{:n} int?))
+(defn vector-as [] (let [{:as raw} [:n 2]] raw))")]
+    (is (= [[9 "TSP2345"] [10 "TSP2531"]] (locations issues)) (pr-str issues))))
+
+(deftest map-destructuring-normalizes-a-tuple-contract-from-another-namespace
+  (let [api (parse/parse-string
+             "options.clj"
+             "(ns options (:require [clojure.spec.alpha :as s]))
+(s/fdef good :args (s/cat) :ret (s/tuple #{:n} int?))
+(defn good [] [:n 2])
+(s/fdef bad :args (s/cat) :ret (s/tuple #{:n} string?))
+(defn bad [] [:n \"bad\"])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [options :as options] [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/fdef read-options :args (s/cat) :ret (s/keys :req-un [::n]))
+(defn read-options [] (let [{:keys [n] :as m} (seq (options/good))] (inc n) m))
+(let [{:keys [n]} (seq (options/bad))] (inc n))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest clojure-1-12-destructuring-runtime-cases
   (is (= [7 nil 3 1 3 4]
          (let [{absent :count :or {absent 7}} nil

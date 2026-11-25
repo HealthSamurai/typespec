@@ -481,7 +481,7 @@
             "nil?"
             "(s/coll-of vector? :kind vector? :max-count 1)"
             "(s/coll-of t/unknown :kind vector? :max-count 1)"
-            "(s/coll-of t/unknown :kind vector? :max-count 1)"
+            "(s/coll-of int? :kind vector? :max-count 1)"
             "(s/coll-of t/unknown :kind vector? :max-count 1)"]
            (mapv #(main/type-at r "callbacks.clj" % 1) (concat (range 5 13) [18 19 20]))))))
 

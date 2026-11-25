@@ -26,7 +26,7 @@
 (def ^:dynamic *rets* nil)
 
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback
-         assoc-map-key specialize-map-return dynamic-definition? read-map-of)
+         assoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -769,6 +769,8 @@
 
 ;; ---- destructuring ----
 
+(def ^:private empty-map-shape {:t :map :req {} :opt {} :inferred true :complete-keys? true})
+
 (defn- keys-directive [node]
   (when (= :kw (:op node))
     (let [key (:val node)
@@ -836,8 +838,59 @@
           (bind-map-entry ctx pattern selector (str "value selected by " (parse/unparse selector))
                           source why nil defaults selected))))))
 
+(defn- append-destructuring-map [shape tail]
+  (case (:t tail)
+    :nil shape
+    :map (if (:complete-keys? tail)
+           (let [required (merge (merge-with t/union (:req shape)
+                                             (select-keys (:opt tail) (keys (:req shape))))
+                                 (:req tail))]
+             (assoc shape :req required :opt (apply dissoc (:opt tail) (keys required))))
+           (t/prim :map))
+    (t/prim :map)))
+
+(defn- destructuring-sequence-map [ctx member]
+  (let [env (:env ctx)
+        items (:items member)
+        count-items (count items)]
+    (cond
+      (= 0 (second (length/bounds member))) empty-map-shape
+
+      (nil? items) t/unknown
+
+      (= 1 count-items)
+      (let [item (first items)]
+        (if (every? #(or (#{:map :map-of :nil} (:t %))
+                         (and (= :prim (:t %)) (= :map (:name %))))
+                    (t/members env item))
+          item
+          t/unknown))
+
+      :else
+      (let [pairs (partition 2 items)
+            keys (mapv #(selector-literal-key (t/resolve-t env (first %))) pairs)]
+        (if (every? some? keys)
+          (let [shape (assoc empty-map-shape :req (into (array-map) (map vector keys (map second pairs))))]
+            (if (odd? count-items)
+              (apply t/union (map #(append-destructuring-map shape %) (t/members env (peek items))))
+              shape))
+          (t/prim :map))))))
+
+(defn- destructuring-map-input [ctx ty]
+  (let [members (t/members (:env ctx) ty)
+        seq-type? #(or (= :seq (:kind %)) (and (= :prim (:t %)) (= :seq (:name %))))]
+    (if (some seq-type? members)
+      (t/with-assumption
+       (apply t/union (map #(if (seq-type? %) (destructuring-sequence-map ctx %) %) members))
+       (t/assumption ty))
+      ty)))
+
 (defn- destructure-map [ctx pattern ty outer-why projection]
   (let [env (:env ctx)
+        source (destructuring-map-input ctx ty)
+        ;; A sequence and the map constructed from it have different identities.
+        projection (when (= source ty) projection)
+        ty source
         pairs (partition 2 (:children pattern))
         special (into {} (for [[k v] pairs :when (and (= :kw (:op k)) (nil? (namespace (:val k))))] [(:val k) v]))
         defaults (into {} (for [[k v] (partition 2 (:children (:or special)))] [(:val k) v]))
@@ -2896,8 +2949,6 @@
 (defn- assoc-map-key [m k ty]
   (-> m (dissoc :fresh) (assoc-in [:req k] ty) (update :opt dissoc k)))
 
-(def ^:private empty-map-shape {:t :map :req {} :opt {} :inferred true :complete-keys? true})
-
 (defn- assoc-key-type [ctx ty k value]
   (let [members (t/members (:env ctx) ty)]
     (if (every? #(#{:map :nil} (:t %)) members)
@@ -4220,6 +4271,14 @@
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
   (defmethod special h [ctx node _]
     (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))
+
+(defmethod special 'list [ctx node _]
+  (let [items (mapv #(dissoc (infer ctx %) :fresh) (args-of node))]
+    (if (some #{t/never} items)
+      t/never
+      (assoc (t/tuple items (literal-element-type ctx items))
+             :kind :seq
+             :jvm-class (if (seq items) "clojure.lang.PersistentList" "clojure.lang.PersistentList$EmptyList")))))
 
 (doseq [h '[distinct shuffle set]]
   (defmethod special h [ctx node _]

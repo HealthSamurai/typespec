@@ -2448,8 +2448,10 @@
           :else
           (assoc shape :arities
                  (mapv (fn [[arity _]]
-                         (let [remaining (max 0 (- (t/arity-minimum arity) (max n (count (:params arity)))))]
-                           (cond-> (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min))
+                         (let [remaining (max 0 (- (t/arity-minimum arity) (max n (count (:params arity)))))
+                               residual (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min :map-edits))]
+                           (cond-> residual
+                             (:map-edits arity) (assoc :ret (specialize-map-return ctx arity (first inputs)))
                              (pos? remaining) (assoc :rest-min remaining))))
                        valid))))
       (do (run! #(infer ctx %) args)

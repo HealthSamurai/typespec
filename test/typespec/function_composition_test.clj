@@ -67,6 +67,25 @@
                           (let [f (partial consume #(str/upper-case %))] (f \"name\"))")]
     (is (empty? (codes result)) (pr-str (:diagnostics result)))))
 
+(deftest partial-preserves-the-shape-of-a-captured-map-across-namespaces
+  (let [api (parse/parse-string
+             "records.clj"
+             "(ns records (:require [clojure.spec.alpha :as s]))
+(s/fdef touch :args (s/cat :m map?) :ret map?)
+(defn touch [m] (assoc m :seen true))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [records :as r] [clojure.spec.alpha :as s]))
+(s/fdef original :args (s/cat) :ret string?)
+(defn original [] (subs (:name ((partial r/touch {:name \"Ada\"}))) 1))
+(let [f (partial r/touch {:name \"Ada\"})] (:seen (f)))
+(inc (:name ((partial r/touch {:name \"Ada\"}))))")
+        r (check/check-files [api client] {:strict true})]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "boolean?" (main/type-at r "client.clj" 4 1)))))
+
 (deftest opaque-or-shadowed-functions-stay-conservative
   (let [result (checked "(defn no-proof [f x] (comp inc f) (partial subs x))
                          (let [comp (fn [x] x) partial (fn [x] x)]

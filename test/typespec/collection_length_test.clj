@@ -781,6 +781,79 @@
     (is (= ["nil?" "nil?" "(s/coll-of t/never :kind seq? :max-count 0)" "t/never"]
            (mapv #(at r %) [6 7 8 9])))))
 
+(deftest literal-strings-preserve-bounds-under-sequence-operations
+  (let [r (checked "(first \"ab\")
+(first \"\")
+(second \"😀\")
+(second \"x\")
+(seq \"\")
+(next \"x\")
+(rest \"ab\")
+(rest \"\")
+(int (first (seq \"ab\")))
+(int (second \"x\"))
+(int (first (next \"x\")))")]
+    (is (= [[11 "TSP2531"] [12 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["java.lang.Character" "nil?" "java.lang.Character" "nil?" "nil?" "nil?"
+            "(s/coll-of java.lang.Character :kind seq? :min-count 1 :max-count 1)"
+            "(s/coll-of t/never :kind seq? :max-count 0)" "int?"]
+           (mapv #(at r %) (range 2 11))))))
+
+(deftest array-sequences-preserve-length-and-component-across-namespaces
+  (let [api (parse/parse-string
+             "arrays.clj"
+             "(ns arrays)
+(defn numbers [] (int-array [1 2]))
+(defn words [] (into-array String [\"text\"]))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [arrays :as a]))
+(inc (first (a/numbers)))
+(mapv inc (seq (a/numbers)))
+(first (int-array 0))
+(first (a/words))
+(second (a/words))
+(first (char-array [\\a]))
+(next (a/numbers))
+(rest (boolean-array 0))
+(inc (first (a/words)))
+(inc (first (aclone (int-array 0))))")
+        r (check/check-files [api client] {:strict-nil true})]
+    (is (= [[10 "TSP2345"] [11 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?" "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "nil?" "(s/nilable string?)" "nil?" "java.lang.Character"
+            "(s/coll-of int? :kind seq? :min-count 1 :max-count 1)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"]
+           (mapv #(main/type-at r "client.clj" % 1) (range 2 10))))))
+
+(deftest sequence-positions-preserve-typed-map-entries
+  (let [api (parse/parse-string
+             "people.clj"
+             "(ns people)
+(defn person [] {:name \"Ada\"})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [people :as p] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(key (first (p/person)))
+(val (first (seq (p/person))))
+(first {})
+(second (p/person))
+(str/upper-case (val (first (next {:a \"one\" :b \"two\"}))))
+(val (first (mapv first [(p/person)])))
+(inc (val (first (p/person))))
+(s/fdef value :args (s/cat :m (s/map-of keyword? string?)) :ret (s/nilable string?))
+(defn value [m] (when-let [entry (first m)] (val entry)))")
+        r (check/check-files [api client] {:strict-nil true})]
+    (is (= [[8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= [":name" "\"Ada\"" "nil?" "nil?" "string?" "\"Ada\""]
+           (mapv #(main/type-at r "client.clj" % 1) (range 2 8))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

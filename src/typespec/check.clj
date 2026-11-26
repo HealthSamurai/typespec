@@ -31,7 +31,7 @@
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
-         unsupported-sequence-member specialize-call-return run-composition)
+         unsupported-sequence-member specialize-call-return run-composition map-entry-sequence)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -1328,41 +1328,67 @@
              ctx (map-binding-order pairs))]
     ctx))
 
+(defn- array-sequence-element [member]
+  (let [element (array-read-type member)]
+    (if (and (:platform member) (t/nilable? {} element))
+      (assoc (t/remove-nil {} element) :platform true)
+      element)))
+
+(defn- member-element [member]
+  (case (:t member)
+    :coll (:of member)
+    :nil t/never
+    :map-of (t/prim :vector)
+    :map (if (:map-index member) (t/prim :vector) t/unknown)
+    :class (if (str/starts-with? (:name member) "[") (array-sequence-element member) t/unknown)
+    (:prim :lit) (if (or (= :string (:name member)) (string? (:val member)))
+                   (t/class-type "java.lang.Character") t/unknown)
+    t/unknown))
+
 (defn- elem-type [ctx ty]
-  (t/with-assumption
-   (apply t/union
-         (for [m (t/members (:env ctx) ty)]
-           (case (:t m)
-             :coll (:of m)
-             :nil t/never
-             :map-of (t/prim :vector)
-             :map (if (:map-index m) (t/prim :vector) t/unknown)
-             (:prim :lit) (if (or (= :string (:name m)) (string? (:val m)))
-                            (t/class-type "java.lang.Character") t/unknown)
-             t/unknown)))
-   (t/assumption ty)))
+  (t/with-assumption (apply t/union (map member-element (t/members (:env ctx) ty)))
+                     (t/assumption ty)))
+
+(defn- literal-string-size [member]
+  (when (and (= :lit (:t member)) (string? (:val member)))
+    (count (:val member))))
+
+(defn- sequence-member-bounds [member]
+  (if-some [size (or (:array-length member)
+                     (if (= :nil (:t member)) 0 (literal-string-size member)))]
+    [size size]
+    (length/bounds member)))
+
+(defn- positional-bounds? [member]
+  (or (:items member) (length/constrained? member) (= :nil (:t member))
+      (some? (:array-length member)) (some? (literal-string-size member))))
 
 (defn- indexed
   "Element access is not checked for emptiness (as in TypeScript by default); :strict-nil makes it T | nil."
   [el]
   (if (#{:unknown :any :never :nil} (:t el)) el (assoc el :platform true)))
 
-(defn- positional-type [ctx ty i]
-  (let [members (t/members (:env ctx) ty)]
-    (if (some #(or (:items %) (length/constrained? %) (= :nil (:t %))) members)
-      (t/with-assumption
-       (apply t/union (for [m members]
-                        (cond
-                          (:items m) (get (:items m) i t/nil-t)
-                          (= :nil (:t m)) t/nil-t
-                          (length/constrained? m)
-                          (case (length/position m i)
-                            :present (:of m)
-                            :absent t/nil-t
-                            :possible (t/union (:of m) t/nil-t))
-                          :else (eff ctx (indexed (elem-type ctx m))))))
-       (t/assumption ty))
-      (indexed (elem-type ctx ty)))))
+(defn- positional-type
+  ([ctx ty i] (positional-type ctx ty i (t/members (:env ctx) ty)))
+  ([ctx ty i members]
+   (t/with-assumption
+    (if (some positional-bounds? members)
+      (apply t/union (for [m members]
+                       (cond
+                         (:items m) (get (:items m) i t/nil-t)
+                         (= :nil (:t m)) t/nil-t
+                         (positional-bounds? m)
+                         (let [[lo hi] (sequence-member-bounds m)]
+                           (cond
+                             (or (neg? i) (and hi (>= i hi))) t/nil-t
+                             (< i lo) (member-element m)
+                             :else (t/union (member-element m) t/nil-t)))
+                         :else (eff ctx (indexed (member-element m))))))
+      (indexed (apply t/union (map member-element members))))
+    (t/assumption ty))))
+
+(defn- sequence-position-type [ctx ty i]
+  (positional-type ctx ty i (map #(or (map-entry-sequence %) %) (t/members (:env ctx) ty))))
 
 (defn- sequence-tail [ctx ty skip nullable?]
   (t/with-assumption
@@ -1375,18 +1401,21 @@
                     entry-map (if (or map-source? (= :map-of (:t member)))
                                 (dissoc member :fresh)
                                 (:entry-map member))
-                    [min-count max-count] (cond
-                                           (= :nil (:t member)) [0 0]
-                                           map-source? (let [required (count (:req member))]
-                                                         [required (when (:complete-keys? member)
-                                                                     (+ required (count (:opt member))))])
-                                           :else (length/bounds member))
+                    [min-count max-count] (if map-source?
+                                            (let [required (count (:req member))]
+                                              [required (when (:complete-keys? member)
+                                                          (+ required (count (:opt member))))])
+                                            (sequence-member-bounds member))
                     lo (max 0 (- min-count skip))
                     hi (when max-count (max 0 (- max-count skip)))
                     tail (cond
                            (and nullable? (= 0 hi)) t/nil-t
                            items (assoc (t/tuple (subvec items (min skip (count items)))) :kind :seq)
-                           :else (cond-> (length/with-bounds {:t :coll :kind :seq :of (elem-type ctx member)}
+                           :else (cond-> (length/with-bounds {:t :coll :kind :seq
+                                                            :of (if (= 0 hi)
+                                                                  t/never
+                                                                  (or (:of (map-entry-sequence member))
+                                                                      (member-element member)))}
                                                            (if nullable? (max lo 1) lo) hi)
                                    (and entry-map (zero? skip)) (assoc :entry-map entry-map)))]
                 (if (and nullable? (zero? lo)) (t/union tail t/nil-t) tail)))))
@@ -2362,7 +2391,7 @@
   (let [input (eff ctx input)]
     (if-let [bad (unsupported-sequence-member ctx input)]
       (report! ctx node "TSP2345" (str label " cannot read a position from " (t/show bad)))
-      (if (= t/never input) t/never (positional-type ctx input index)))))
+      (if (= t/never input) t/never (sequence-position-type ctx input index)))))
 
 (defn- noncallable-scalar? [ty]
   (case (:t ty)
@@ -3052,10 +3081,15 @@
         cname (if (and hinted (not= hinted inferred) (not (t/primitives hinted))
                        (empty? (java/methods-named inferred mname false))
                        (seq (java/methods-named hinted mname false)))
-                hinted inferred)]
+                hinted inferred)
+        unclassified (when-not cname (t/resolve-t env tty))]
     (cond
       (nil? target) t/unknown
-      (and (nil? cname) (#{:unknown :any} (:t (t/resolve-t env tty))))
+      (= :nil (:t unclassified))
+      (do (run! #(infer ctx %) arg-nodes)
+          (check-nil-receiver! ctx target unclassified)
+          t/never)
+      (#{:unknown :any} (:t unclassified))
       (do (run! #(infer ctx %) arg-nodes)
           (when-not (compiler-knows? ctx target)
             (report! ctx node "TSP7020" (str "reflective call: the type of " (parse/unparse target) " is unknown")
@@ -4258,13 +4292,6 @@
       (do (run! #(infer ctx %) args)
           (report! ctx node "TSP2554" (str head " expects one argument"))))))
 
-(defn- spread-member-bounds [member]
-  (if-some [size (or (:array-length member)
-                     (when (and (= :lit (:t member)) (string? (:val member)))
-                       (count (:val member))))]
-    [size size]
-    (length/bounds member)))
-
 (defn- spread-element-type [ctx member]
   (if (array-component member)
     (array-read-type member)
@@ -4278,7 +4305,7 @@
               (cond
                 (= :nil (:t member)) []
                 (:items member) (:items member)
-                :else (let [[lo hi] (spread-member-bounds member)]
+                :else (let [[lo hi] (sequence-member-bounds member)]
                         (when (and (= lo hi) (<= lo 64))
                           (vec (repeat lo (spread-element-type ctx member)))))))
             members))))
@@ -4337,7 +4364,7 @@
                                (if items
                                  [{:items items :exact? true}]
                                  (let [element (spread-element-type ctx member)
-                                       [lo hi] (if (= t/never element) [0 0] (spread-member-bounds member))
+                                       [lo hi] (if (= t/never element) [0 0] (sequence-member-bounds member))
                                        low (min lo limit)
                                        high (min (or hi limit) limit)]
                                    (map (fn [n] {:items (vec (repeat n element))})
@@ -4427,7 +4454,7 @@
 (doseq [[h i] {'first 0 'second 1}]
   (defmethod special h [ctx node _]
     (if-let [source (unary-sequence-source ctx node h)]
-      (if (= t/never source) t/never (positional-type ctx source i))
+      (if (= t/never source) t/never (sequence-position-type ctx source i))
       t/unknown)))
 
 (doseq [[h i] {'key 0 'val 1}]
@@ -5467,13 +5494,6 @@
                             output (interposed-element element separator-type hi)]]
                   (length/with-bounds (coll-of :seq output) (interposed-length lo) (interposed-length hi))))
          (t/assumption source))))))
-
-(defn- sequence-member-bounds [member]
-  (cond
-    (= :nil (:t member)) [0 0]
-    (and (= :lit (:t member)) (string? (:val member)))
-    (let [size (count (:val member))] [size size])
-    :else (length/bounds member)))
 
 (defn- last-position-type [ctx member unbounded-result]
   (let [[lo hi] (sequence-member-bounds member)

@@ -28,6 +28,29 @@
 (defn- issue [diagnostic]
   ((juxt :file (comp :row :pos) :code :type-path) diagnostic))
 
+(deftest sequence-elements-of-platform-arrays-respect-strict-nil
+  (let [source "(let [dir (java.io.File. \".\")]
+  (mapv #(.getName ^java.io.File %) (.listFiles dir)))"
+        strict (:diagnostics (run-project source {:strict-nil true}))]
+    (is (empty? (:diagnostics (run-project source {}))))
+    (is (= [["client.clj" 3 "TSP2531" nil]] (mapv issue strict))
+        (pr-str strict))))
+
+(deftest java-methods-report-receivers-proved-to-be-nil
+  (let [source "(.length \"ok\")
+(.length nil)
+(.charValue (second \"x\"))
+(.charValue (first (next \"x\")))
+(let [target nil] (.toString target))"]
+    (doseq [opts [{} {:strict-nil true}]]
+      (let [ds (:diagnostics (run-project source opts))]
+        (is (= [[3 "TSP2531" "Receiver is nil"]
+                [4 "TSP2531" "(second \"x\") is nil"]
+                [5 "TSP2531" "(first (next \"x\")) is nil"]
+                [6 "TSP2531" "target is nil"]]
+               (mapv (juxt (comp :row :pos) :code :message) ds))
+            (pr-str ds))))))
+
 (deftest platform-values-in-maps-and-tuples-are-checked-across-namespaces
   (let [client "(api/consume {:parent (.getParentFile (java.io.File. \"file\"))})
 (api/consume-pair [1 (.getParentFile (java.io.File. \"file\"))])

@@ -247,6 +247,21 @@
             "(s/coll-of (s/nilable keyword?) :kind vector? :min-count 1 :max-count 1)"]
            (mapv #(main/type-at r "client.clj" % 1) [2 3 5 6 8 9 10])))))
 
+(deftest composition-checks-known-stage-arities-before-the-first-call
+  (let [r (checked "(defn fixed {:t/sig '(t/all [a] [string? a :-> a])} [_ x] x)
+(comp subs first)
+(comp fixed :value)
+(comp subs #{:json})
+(comp (fn [] 0) first)
+((comp (partial subs \"abc\") first) [1])
+((comp (partial fixed \"label\") :value) {:value 42})
+((comp subs) \"abc\" 1)")]
+    (is (= [[3 7 "TSP2554"] [4 7 "TSP2554"] [5 7 "TSP2554"] [6 7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["string?" "42" "string?"]
+           (mapv #(main/type-at r "composition.clj" % 1) [7 8 9])))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

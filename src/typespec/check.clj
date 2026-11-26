@@ -2423,6 +2423,9 @@
                    (cond-> returns (not (disjoint-scalars? env input expected)) (conj (:ret a)))
                    (into unchecked (:reasons result)))))))))
 
+(defn- report-comp-arity! [ctx stage]
+  (report! ctx stage "TSP2554" "comp: every function except the rightmost must accept one argument"))
+
 (defn- comp-link [ctx stage ftype input]
   (if-let [fits (seq (matching-arities ftype 1))]
     (let [input (eff ctx input)
@@ -2434,7 +2437,7 @@
             (report! ctx stage "TSP2345"
                      (str "comp: " (show-ref ctx input) " is not accepted by " (t/show ftype)))))
         (apply t/union (map :type parts))))
-    (report! ctx stage "TSP2554" "comp: every function except the rightmost must accept one argument")))
+    (report-comp-arity! ctx stage)))
 
 (defn- literal-set-members [node]
   (when (and (= :set (:op node)) (empty? (:directives node)) (not (env/tag-node node))
@@ -2521,21 +2524,30 @@
                      nil)]
     {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown :composition [projection]) params)}))
 
+(defn- unary-composition-stage? [{:keys [kind type]}]
+  (case kind
+    :function (seq (matching-arities type 1))
+    :generic (seq (matching-arities (:body type) 1))
+    true))
+
 (defn- compose-shape [ctx inner stage]
   (let [arities (:arities inner)
-        expected (when (and inner (not-any? :composition arities) (callback-node? ctx stage))
+        deferred? (some :composition arities)
+        expected (when (and inner (not deferred?) (callback-node? ctx stage))
                    {:t :fn :arities [{:params [(apply t/union (map (comp #(eff ctx %) :ret) arities))]
                                       :ret t/unknown}]})
         ty (if expected (infer ctx stage expected) (infer ctx stage))]
     (when inner
       (when-let [step (composition-stage ctx stage ty)]
-        (let [arities (mapv (fn [arity]
-                              (if (:composition arity)
-                                (update arity :composition conj step)
-                                (when-let [ret (composition-step ctx stage step (:ret arity) nil)]
-                                  (assoc (dissoc arity :map-edits) :ret ret))))
-                            arities)]
-          (when (every? some? arities) (assoc inner :arities arities)))))))
+        (if (and deferred? (not (unary-composition-stage? step)))
+          (report-comp-arity! ctx stage)
+          (let [arities (mapv (fn [arity]
+                                (if (:composition arity)
+                                  (update arity :composition conj step)
+                                  (when-let [ret (composition-step ctx stage step (:ret arity) nil)]
+                                    (assoc (dissoc arity :map-edits) :ret ret))))
+                              arities)]
+            (when (every? some? arities) (assoc inner :arities arities))))))))
 
 (defn- compose-functions [ctx nodes]
   (let [[right & stages] (rseq nodes)

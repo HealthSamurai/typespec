@@ -6,7 +6,7 @@
 
 (defn- checked [source]
   (check/check-files [(parse/parse-string "composition.clj"
-                                         (str "(ns sample (:require [clojure.string :as str]))\n" source))]
+                                         (str "(ns sample (:require [clojure.string :as str] [clojure.spec.alpha :as s]))\n" source))]
                      {:strict-nil true}))
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
@@ -70,6 +70,26 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))
     (is (= ":records/seen" (main/type-at r "client.clj" 4 1)))))
+
+(deftest composition-projects-known-keys-and-tuple-positions
+  (let [r (checked "(s/def ::name string?)
+(s/def ::age int?)
+(s/fdef person :args (s/cat) :ret (s/keys :req-un [::name] :opt-un [::age]))
+(defn person [] {:name \"Ada\"})
+(s/fdef pair :args (s/cat) :ret (s/tuple string? int?))
+(defn pair [] [\"Ada\" 42])
+((comp str/upper-case :name person))
+((comp inc :name person))
+((comp inc :nickname person))
+((comp :age person))
+((comp inc clojure.core/second pair))
+((comp inc first pair))
+(comp first number?)
+(let [first (fn [x] 42)] ((comp inc first pair)))")]
+    (is (= [[9 "TSP2345"] [10 "TSP2339"] [13 "TSP2345"] [14 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= "(s/nilable ::age)" (main/type-at r "composition.clj" 11 1)))))
 
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")

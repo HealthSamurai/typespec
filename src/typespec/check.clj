@@ -30,7 +30,8 @@
 
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
-         finite-map-keys array-component array-read-type append-to-vectors checked-vector-into)
+         finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
+         unsupported-sequence-member)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -180,13 +181,17 @@
                             (str k " is not a key of " (t/show (t/remove-nil env ty))
                                  (hint-suffix k (concat (mapcat #(concat (keys (:req %)) (keys (:opt %))) (map-members ctx ty))
                                                         (when (qualified-keyword? k) spec-keys)))))
-                   {:type t/unknown :optional? false :declared? false})
+                   {:type t/unknown :optional? false :declared? false :invalid? true})
       :not-map (do (report! ctx node "TSP2339" (str "cannot read " k " from " (t/show ty)))
-                   {:type t/unknown :optional? false :declared? false}))))
+                   {:type t/unknown :optional? false :declared? false :invalid? true}))))
 
-(defn- read-key [ctx ty k node]
-  (let [{:keys [type optional?]} (key-info ctx ty k node)]
-    (if optional? (t/union type t/nil-t) type)))
+(defn- read-key
+  ([ctx ty k node] (read-key ctx ty k node t/unknown))
+  ([ctx ty k node invalid-result]
+   (let [{:keys [type optional? invalid?]} (key-info ctx ty k node)]
+     (cond invalid? invalid-result
+           optional? (t/union type t/nil-t)
+           :else type))))
 
 (defn- read-key-default [ctx ty k node default-type]
   (let [{:keys [type optional?]} (key-info ctx ty k node)]
@@ -2315,8 +2320,8 @@
       (do (report! ctx at "TSP2554" (str label " is called with " (count arg-types) " argument(s)")) t/unknown)
       t/unknown))))
 
-(defn- positional-callback-index [ctx node arg-types]
-  (when (and (= 1 (count arg-types)) (= :sym (:op node))
+(defn- positional-callback-index [ctx node]
+  (when (and (= :sym (:op node))
              (empty? (:directives node)) (not (env/tag-node node))
              (not (:guards-disabled? ctx)))
     (let [core-var (get '{first clojure.core/first second clojure.core/second}
@@ -2341,7 +2346,7 @@
                (infer ctx fnode))
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)
           ty (contextual-call-target ctx ty arg-types)
-          index (positional-callback-index ctx fnode arg-types)]
+          index (when (= 1 (count arg-types)) (positional-callback-index ctx fnode))]
       (cond
         (some? index)
         (positional-type ctx (first arg-types) index)
@@ -2418,6 +2423,26 @@
         (apply t/union (map :type parts))))
     (report! ctx stage "TSP2554" "comp: every function except the rightmost must accept one argument")))
 
+(defn- composition-stage [ctx node ty]
+  (let [ty (t/resolve-t (:env ctx) (eff ctx ty))
+        index (positional-callback-index ctx node)]
+    (cond
+      (and (= :lit (:t ty)) (keyword? (:val ty)))
+      (fn [input]
+        (read-key ctx (eff ctx input) (:val ty) node nil))
+
+      (some? index)
+      (fn [input]
+        (let [input (eff ctx input)]
+          (if-let [bad (unsupported-sequence-member ctx input)]
+            (report! ctx node "TSP2345" (str "comp: " (parse/unparse node) " cannot read a position from " (t/show bad)))
+            (if (= t/never input) t/never (positional-type ctx input index)))))
+
+      :else
+      (if-let [shape (function-shape ctx ty)]
+        (fn [input] (comp-link ctx node shape input))
+        (check-composable! ctx node ty "comp")))))
+
 (defn- compose-functions [ctx nodes]
   (let [[right & stages] (rseq nodes)
         ty (infer ctx right)
@@ -2428,13 +2453,12 @@
                                                   :ret t/unknown}]})
                     ty (if expected (infer ctx stage expected) (infer ctx stage))]
                 (when inner
-                  (if-let [outer (function-shape ctx ty)]
+                  (when-let [link (composition-stage ctx stage ty)]
                     (let [arities (mapv (fn [arity]
-                                          (when-let [ret (comp-link ctx stage outer (:ret arity))]
+                                          (when-let [ret (link (:ret arity))]
                                             (assoc (dissoc arity :map-edits) :ret ret)))
                                         (:arities inner))]
-                      (when (every? some? arities) (assoc inner :arities arities)))
-                    (check-composable! ctx stage ty "comp")))))
+                      (when (every? some? arities) (assoc inner :arities arities)))))))
             shape stages)))
 
 (defn- partial-generic [ctx node ty args]

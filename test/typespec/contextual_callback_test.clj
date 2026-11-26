@@ -1051,6 +1051,32 @@
     (is (= ["(s/coll-of t/never :kind vector?)" "string?"]
            (mapv #(main/type-at r "client.clj" % 1) [4 5])))))
 
+(deftest reduce-conj-accumulates-sets-lists-and-maps
+  (let [api (parse/parse-string
+             "rows.clj"
+             "(ns rows (:require [clojure.spec.alpha :as s]))
+(s/fdef entries :args (s/cat) :ret (s/coll-of (s/tuple keyword? int?) :kind vector?))
+(defn entries [] [[:a 1] [:b 2]])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [rows :as r] [clojure.spec.alpha :as s]))
+(s/fdef gather :args (s/cat) :ret (s/map-of keyword? int?))
+(defn gather [] (reduce conj {:old 0} (r/entries)))
+(s/fdef unique-letters :args (s/cat) :ret (s/coll-of string? :kind set?))
+(defn unique-letters [] (reduce conj #{} [\"a\" \"b\" \"a\"]))
+(reduce conj nil [1 2])
+(reduce conj {} [[:a 1 2]])
+(reduce conj {} [nil {:a 1} [:b 2]])
+(reduce conj {} [42])")
+        r (check/check-files [api client] {:strict true})
+        ds (:diagnostics r)]
+    (is (= [[7 "TSP2345"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of int? :kind seq? :min-count 1)"
+            "(s/map-of #{:a :b} #{1 2})"]
+           (mapv #(main/type-at r "client.clj" % 1) [6 8])))))
+
 (deftest reduce-kv-checks-reducer-spec-across-namespaces
   (let [api (parse/parse-string "fold/api.clj"
                                "(ns fold.api (:require [clojure.spec.alpha :as s]))

@@ -5752,33 +5752,88 @@
 
       :else (assoc (t/class-type "clojure.lang.Reduced") :reduced-value (dissoc (first types) :fresh)))))
 
-(def ^:private vector-conj-reducer
-  (with-meta {:t :fn :arities [{:params [] :rest t/unknown :ret t/unknown}]}
-    {::vector-conj-reducer true}))
+(defn- reducer-var [ctx f]
+  (when (and (empty? (:directives f)) (not (env/tag-node f)))
+    (guard-symbol ctx f)))
+
+(def ^:private collection-reducer-type
+  {:t :fn :arities [{:params [] :rest t/unknown :ret t/unknown}]})
 
 (defn- reduction-function [ctx f calls]
   (let [expected {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown) calls)}
         ty (if (callback-node? ctx f) (infer ctx f expected) (infer ctx f))]
     (cond
       (= :ref (:t ty)) (t/resolve-t (:env ctx) ty)
-      (and (= :unknown (:t ty)) (empty? (:directives f)) (not (env/tag-node f))
-           (= 'clojure.core/conj (guard-symbol ctx f))) vector-conj-reducer
+      (and (= :unknown (:t ty)) (= 'clojure.core/conj (reducer-var ctx f)))
+      (with-meta collection-reducer-type {::collection-reducer 'conj})
       :else ty)))
 
-(defn- vector-conj-step [ctx f [target & items]]
-  (let [members (t/members (:env ctx) (eff ctx target))]
+(defn- map-conj-domain [ty]
+  (case (:t ty)
+    :map-of (select-keys ty [:t :k :v])
+    :map (or (map-index-domain ty)
+             (if (:complete-keys? ty)
+               (let [entries (remove (comp #{t/never} val) (concat (:req ty) (:opt ty)))]
+                 {:t :map-of :k (apply t/union (map (comp t/lit key) entries))
+                  :v (apply t/union (map val entries))})
+               {:t :map-of :k t/unknown :v t/unknown}))
+    :prim (when (= :map (:name ty)) {:t :map-of :k t/unknown :v t/unknown})
+    nil))
+
+(defn- conj-map-input [ctx f ty]
+  (let [[lo hi] (length/bounds ty)
+        vector? (vector-member? ty)]
+    (or (map-conj-domain ty)
+        (cond
+          (or (= :nil (:t ty)) (= (t/lit "") ty))
+          {:t :map-of :k t/never :v t/never}
+          (and vector? (= lo hi 2))
+          (let [[k v] (or (:items ty) (repeat 2 (:of ty)))] {:t :map-of :k k :v v})
+          (or (= :lit (:t ty)) (contains? scalar-primitives (:name ty))
+              (and vector? (or (> lo 2) (and hi (< hi 2)))))
+          (do (report! ctx f "TSP2345" (str "conj cannot add " (t/show ty) " to a map")) t/never)
+          :else nil))))
+
+(defn- conj-map-step [ctx f target items]
+  (let [branches (mapv #(mapv (partial conj-map-input ctx f) (t/members (:env ctx) %)) items)
+        domains (cons target (remove #{t/never} (mapcat identity branches)))]
     (cond
-      (nil? target) (t/tuple [])
-      (empty? items) target
-      (every? vector-member? members)
-      (append-to-vectors ctx target members (t/tuple (mapv #(dissoc % :fresh) items)))
-      (some #(or (= :lit (:t %)) (contains? scalar-primitives (:name %))) members)
+      (some #(every? #{t/never} %) branches) t/never
+      (some nil? domains) t/unknown
+      :else {:t :map-of :k (apply t/union (map :k domains)) :v (apply t/union (map :v domains))})))
+
+(defn- conj-reducer-member [ctx f target items]
+  (let [kind (or (:kind target) (:name target))
+        domain (map-conj-domain target)]
+    (cond
+      (= t/never target) t/never
+      (vector-member? target) (append-to-vectors ctx target [target] (t/tuple items))
+      (= :nil (:t target)) (length/with-bounds (coll-of :seq (apply t/union items)) 1 nil)
+      (#{:set :seq} kind)
+      (length/with-bounds (coll-of kind (apply t/union (elem-type ctx target) items)) 1 nil)
+      domain (conj-map-step ctx f domain items)
+      (or (= :lit (:t target)) (contains? scalar-primitives (:name target)))
       (do (report! ctx f "TSP2345" (str "conj cannot add elements to " (t/show target))) t/never)
       :else t/unknown)))
 
+(defn- conj-reducer-step [ctx f [target & items]]
+  (cond
+    (nil? target) (t/tuple [])
+    (empty? items) target
+    :else (let [items (mapv #(dissoc % :fresh) items)]
+            (t/with-assumption
+             (apply t/union (map #(conj-reducer-member ctx f % items)
+                                 (t/members (:env ctx) (eff ctx target))))
+             (or (t/assumption target) (some t/assumption items))))))
+
+(defn- reduction-start [ctx f seed]
+  (if (= 'clojure.core/conj (reducer-var ctx f))
+    (t/with-assumption (or (map-conj-domain seed) seed) (t/assumption seed))
+    seed))
+
 (defn- reduction-result [ctx f ty args]
   (cond
-    (::vector-conj-reducer (meta ty)) (vector-conj-step ctx f args)
+    (= 'conj (::collection-reducer (meta ty))) (conj-reducer-step ctx f args)
     (or (= :all (:t ty)) (seq (:arities ty))) (eff ctx (apply-type ctx ty args f (parse/unparse f)))
     :else t/unknown))
 
@@ -5900,7 +5955,7 @@
         may-be-singleton? (and (<= lower 1) (not= 0 upper))
         step? (or (nil? maximum-steps) (pos? maximum-steps))
         repeat? (or (nil? maximum-steps) (> maximum-steps 1))
-        start (if initial (widen (dissoc initial :fresh)) element)
+        start (reduction-start ctx f (if initial (widen (dissoc initial :fresh)) element))
         empty-call? (and (not initial) may-be-empty?)
         invariant (if repeat? (reduction-accumulator ctx f start [element] empty-call?) start)
         step-args [(or invariant start) element]
@@ -6003,7 +6058,7 @@
                 inputs (mapv (fn [part]
                                (t/with-assumption (apply t/union (map part active)) (t/assumption ct)))
                              [:key :value])
-                start (widen (dissoc initial :fresh))
+                start (reduction-start ctx f (widen (dissoc initial :fresh)))
                 invariant (if repeat? (reduction-accumulator ctx f start inputs false) start)
                 step-args (into [(or invariant start)] inputs)
                 ty (reduction-function ctx f [step-args])

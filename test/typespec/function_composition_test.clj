@@ -44,6 +44,33 @@
                          (let [f (comp select-ret numbers)] (str/trim (f 1.5)))")]
     (is (= ["TSP2345"] (codes result)) (pr-str (:diagnostics result)))))
 
+(deftest composition-keeps-only-map-shapes-that-reach-the-result
+  (let [api (parse/parse-string
+             "records.clj"
+             "(ns records (:require [clojure.spec.alpha :as s]))
+(s/def ::name string?)
+(s/def ::person (s/keys :req-un [::name]))
+(s/def ::seen boolean?)
+(s/def ::marker (s/keys :req-un [::seen]))
+(s/fdef person :args (s/cat) :ret ::person)
+(defn person [] {:name \"Ada\"})
+(s/fdef touch :args (s/cat :m map?) :ret map?)
+(defn touch [m] (assoc m :seen true))
+(s/fdef marker :args (s/cat :m map?) :ret ::marker)
+(defn marker [_] {:seen true})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [records :as r] [clojure.string :as str]))
+(str/upper-case (:name ((comp r/touch r/person))))
+(inc (:name ((comp r/touch r/person))))
+(:seen ((comp r/marker r/touch) {:name \"Ada\"}))
+(:name ((comp r/marker r/touch) {:name \"Ada\"}))")
+        r (check/check-files [api client] {})]
+    (is (= [[3 "TSP2345"] [5 "TSP2339"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ":records/seen" (main/type-at r "client.clj" 4 1)))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

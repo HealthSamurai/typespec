@@ -2399,7 +2399,9 @@
         (let [expected (param a)
               result (t/sub-result env input expected)]
           (if (= :proved (:status result))
-            {:type (apply t/union (if (= :any (:t input)) (map :ret fits) (conj returns (:ret a))))}
+            {:type (apply t/union (if (= :any (:t input))
+                                   (map :ret fits)
+                                   (conj returns (specialize-map-return ctx a input))))}
             (recur more
                    (cond-> returns (not (disjoint-scalars? env input expected)) (conj (:ret a)))
                    (into unchecked (:reasons result)))))))))
@@ -2429,7 +2431,7 @@
                   (if-let [outer (function-shape ctx ty)]
                     (let [arities (mapv (fn [arity]
                                           (when-let [ret (comp-link ctx stage outer (:ret arity))]
-                                            (assoc arity :ret ret)))
+                                            (assoc (dissoc arity :map-edits) :ret ret)))
                                         (:arities inner))]
                       (when (every? some? arities) (assoc inner :arities arities)))
                     (check-composable! ctx stage ty "comp")))))

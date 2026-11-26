@@ -781,6 +781,27 @@
     (is (= ["nil?" "nil?" "(s/coll-of t/never :kind seq? :max-count 0)" "t/never"]
            (mapv #(at r %) [6 7 8 9])))))
 
+(deftest first-and-second-check-direct-and-callback-invocations
+  (let [r (checked "(first [1])
+(second [:head \"tail\"])
+(first nil)
+(second [1])
+(first (throw (Exception.)))
+(mapv first [[1] [2]])
+(first 42)
+(clojure.core/second :wrong)
+(first [42] :extra)
+(second)
+(mapv first [42])
+(mapv second [[1] [2]] [[3] [4]])
+(let [first (fn [x y] x)] (mapv first [1] [2]))")]
+    (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"] [11 "TSP2554"] [12 "TSP2345"] [13 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["1" "\"tail\"" "nil?" "nil?" "t/never"
+            "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"]
+           (mapv #(at r %) (range 2 8))))))
+
 (deftest conj-grows-vectors-with-known-lengths-and-positions
   (let [r (checked "(conj)
 (conj [1] \"word\")

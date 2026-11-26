@@ -2358,6 +2358,12 @@
       (when (and core-var (= core-var (guard-symbol ctx node)))
         (if (= 'clojure.core/first core-var) 0 1)))))
 
+(defn- checked-sequence-position [ctx node label input index]
+  (let [input (eff ctx input)]
+    (if-let [bad (unsupported-sequence-member ctx input)]
+      (report! ctx node "TSP2345" (str label " cannot read a position from " (t/show bad)))
+      (if (= t/never input) t/never (positional-type ctx input index)))))
+
 (defn- noncallable-scalar? [ty]
   (case (:t ty)
     :nil true
@@ -2375,10 +2381,13 @@
                (infer ctx fnode))
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)
           ty (contextual-call-target ctx ty arg-types)
-          index (when (= 1 (count arg-types)) (positional-callback-index ctx fnode))]
+          index (positional-callback-index ctx fnode)]
       (cond
         (some? index)
-        (positional-type ctx (first arg-types) index)
+        (let [label (:val fnode)]
+          (if (= 1 (count arg-types))
+            (or (checked-sequence-position ctx fnode label (first arg-types) index) t/unknown)
+            (do (report! ctx fnode "TSP2554" (str label " expects one argument")) t/unknown)))
 
         (and (noncallable-scalar? ty) (not-any? #{t/never} arg-types))
         (do (report! ctx fnode "TSP2345" (str "callback expects a callable value, got " (t/show ty)))
@@ -2512,10 +2521,7 @@
     :set (set-call-result ctx values input)
     :typed-set (typed-set-call-result ctx type input)
     :key (read-key ctx (eff ctx input) key node (or default t/nil-t) nil)
-    :position (let [input (eff ctx input)]
-                (if-let [bad (unsupported-sequence-member ctx input)]
-                  (report! ctx node "TSP2345" (str "comp: " label " cannot read a position from " (t/show bad)))
-                  (if (= t/never input) t/never (positional-type ctx input index))))
+    :position (checked-sequence-position ctx node (str "comp: " label) input index)
     :generic (if (= t/never input)
                t/never
                (let [ret (call-generic ctx node (str "comp: " label) type nil [input])]
@@ -4420,7 +4426,9 @@
 
 (doseq [[h i] {'first 0 'second 1}]
   (defmethod special h [ctx node _]
-    (positional-type ctx (infer ctx (first (args-of node))) i)))
+    (if-let [source (unary-sequence-source ctx node h)]
+      (if (= t/never source) t/never (positional-type ctx source i))
+      t/unknown)))
 
 (doseq [[h i] {'key 0 'val 1}]
   (defmethod special h [ctx node _]

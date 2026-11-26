@@ -5853,6 +5853,54 @@
         (= iterations 7) nil
         :else (recur (join-accumulator ctx acc (widen (dissoc step :fresh))) (inc iterations))))))
 
+(defn- map-entry-sequence [member]
+  (let [source (or (:entry-map member) member)
+        closed? (and (= :map (:t source)) (:complete-keys? source))]
+    (when (or closed? (= :map-of (:t source)))
+      (let [entries (when closed? (remove (comp #{t/never} val) (concat (:req source) (:opt source))))
+            [lo hi] (if (and closed? (= :map (:t member)))
+                      [(count (:req source)) (count entries)]
+                      (length/bounds member))
+            element (if closed?
+                      (apply t/union (map #(found-map-entry (t/lit (key %)) (val %) false) entries))
+                      (found-map-entry (:k source) (:v source) false))]
+        (length/with-bounds {:t :coll :kind :seq :of element} lo hi)))))
+
+(defn- reduce-over-sequence [ctx f initial collection source]
+  (let [members (t/members (:env ctx) source)
+        seq-source (t/with-assumption (apply t/union (map #(or (map-entry-sequence %) %) members))
+                                      (t/assumption source))
+        {:keys [lower upper element]} (sequence-summary ctx seq-source)
+        [lower upper] (if-some [n (literal-collection-count collection)] [n n] [lower upper])
+        maximum-steps (when upper (- upper (if initial 0 1)))
+        may-be-empty? (zero? lower)
+        may-be-singleton? (and (<= lower 1) (not= 0 upper))
+        step? (or (nil? maximum-steps) (pos? maximum-steps))
+        repeat? (or (nil? maximum-steps) (> maximum-steps 1))
+        start (if initial (widen (dissoc initial :fresh)) element)
+        empty-call? (and (not initial) may-be-empty?)
+        invariant (if repeat? (reduction-accumulator ctx f start [element] empty-call?) start)
+        step-args [(or invariant start) element]
+        calls (cond-> [] empty-call? (conj []) step? (conj step-args))
+        ty (if (seq calls) (reduction-function ctx f calls) (infer ctx f))
+        [step stopped] (when step? (reduction-step ctx f ty step-args))
+        base (if initial
+               (if may-be-empty? initial t/never)
+               (t/union (if empty-call? (reduction-result ctx f ty []) t/never)
+                        (if may-be-singleton? element t/never)))]
+    (when (or (and step? (or (nil? invariant) (= :unknown (:t step)))
+                   (or (empty? (:arities ty)) (seq (matching-arities ty 2))))
+              (and empty-call? (not (or (= :all (:t ty)) (seq (:arities ty))))))
+      (report! ctx f "TSP210-01" "reduce accumulator is not checked"
+               :severity (if (:strict (:opts ctx)) :error :warning)
+               :reasons #{:accumulator}))
+    (t/with-assumption
+     (cond
+       (not step?) base
+       (nil? invariant) t/unknown
+       :else (t/union base step stopped))
+     (t/assumption source))))
+
 (defmethod special 'reduce [ctx node _]
   (let [[f a b & more :as args] (args-of node)]
     (if (or (< (count args) 2) (seq more))
@@ -5861,37 +5909,11 @@
           t/unknown)
       (let [[init c] (if b [a b] [nil a])
             initial (when init (infer ctx init))
-            ct (eff ctx (infer ctx c))
-            {:keys [lower upper element]} (sequence-summary ctx ct)
-            [lower upper] (if-some [n (literal-collection-count c)] [n n] [lower upper])
-            maximum-steps (when upper (- upper (if init 0 1)))
-            may-be-empty? (zero? lower)
-            may-be-singleton? (and (<= lower 1) (not= 0 upper))
-            step? (or (nil? maximum-steps) (pos? maximum-steps))
-            repeat? (or (nil? maximum-steps) (> maximum-steps 1))
-            start (if init (widen (dissoc initial :fresh)) element)
-            empty-call? (and (not init) may-be-empty?)
-            invariant (if repeat? (reduction-accumulator ctx f start [element] empty-call?) start)
-            step-args [(or invariant start) element]
-            calls (cond-> [] empty-call? (conj []) step? (conj step-args))
-            ty (if (seq calls) (reduction-function ctx f calls) (infer ctx f))
-            [step stopped] (when step? (reduction-step ctx f ty step-args))
-            base (if init
-                   (if may-be-empty? initial t/never)
-                   (t/union (if empty-call? (reduction-result ctx f ty []) t/never)
-                            (if may-be-singleton? element t/never)))]
-        (when (or (and step? (or (nil? invariant) (= :unknown (:t step)))
-                       (or (empty? (:arities ty)) (seq (matching-arities ty 2))))
-                  (and empty-call? (not (or (= :all (:t ty)) (seq (:arities ty))))))
-          (report! ctx f "TSP210-01" "reduce accumulator is not checked"
-                   :severity (if (:strict (:opts ctx)) :error :warning)
-                   :reasons #{:accumulator}))
-        (t/with-assumption
-         (cond
-           (not step?) base
-           (nil? invariant) t/unknown
-           :else (t/union base step stopped))
-         (t/assumption ct))))))
+            source (eff ctx (infer ctx c))]
+        (cond
+          (some #{t/never} [initial source]) (do (infer ctx f) t/never)
+          (report-invalid-sequence-args! ctx 'reduce [c] [source]) (do (infer ctx f) t/unknown)
+          :else (reduce-over-sequence ctx f initial c source))))))
 
 (defn- kv-reduction-input [member]
   (let [opaque {:bounds [0 nil] :key t/unknown :value t/unknown}]

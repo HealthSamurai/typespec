@@ -1005,6 +1005,30 @@
   (is (reduced? (reduce (fn [] (reduced 7)) [])))
   (is (= 7 @(reduce (fn [_ _] (reduced (reduced 7))) 0 [1]))))
 
+(deftest reduce-reads-map-entries-and-counts-known-keys
+  (let [api (parse/parse-string
+             "scores.clj"
+             "(ns scores (:require [clojure.spec.alpha :as s]))
+(s/def ::scores (s/map-of keyword? int?))
+(s/fdef scores :args (s/cat) :ret ::scores)
+(defn scores [] {:a 2 :b 3})")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [scores :as n] [clojure.spec.alpha :as s]))
+(s/fdef sum :args (s/cat) :ret int?)
+(defn sum [] (reduce (fn [acc [_ v]] (+ acc v)) 0 (n/scores)))
+(defn- bad [] (reduce (fn [acc [k _]] (+ acc k)) 0 (n/scores)))
+(defn- seq-sum [] (reduce (fn [acc entry] (+ acc (val entry))) 0 (seq (n/scores))))
+(reduce + 0 42)
+(val (reduce (fn [a b] :unused) {:score 2}))")
+        r (check/check-files [api client] {:strict true})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(t/or 0 int?)" "(t/or 0 int?)" "2"]
+           (mapv #(apply main/type-at r "client.clj" %) [[3 14] [5 19] [7 1]])))))
+
 (deftest reduce-kv-checks-reducer-spec-across-namespaces
   (let [api (parse/parse-string "fold/api.clj"
                                "(ns fold.api (:require [clojure.spec.alpha :as s]))

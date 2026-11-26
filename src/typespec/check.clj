@@ -2455,11 +2455,24 @@
                        (remove #(disjoint-scalars? env member %) (vals by-value))))))
      (t/assumption input))))
 
+(defn- typed-set-call-result [ctx ty input]
+  (if (= t/never input)
+    t/never
+    (let [env (:env ctx)
+          inputs (t/members env (eff ctx input))]
+      (t/with-assumption
+       (apply t/union t/nil-t
+              (remove (fn [stored] (every? #(disjoint-scalars? env % stored) inputs))
+                      (t/members env (or (:of ty) t/unknown))))
+       (or (t/assumption ty) (t/assumption input))))))
+
 (defn- composition-projection [ctx node ty]
   (let [index (positional-callback-index ctx node)
         values (literal-set-members node)]
     (cond
       values {:kind :set :values values}
+      (or (and (= :coll (:t ty)) (= :set (:kind ty))) (= (t/prim :set) (t/strip ty)))
+      {:kind :typed-set :type ty}
       (and (= :lit (:t ty)) (keyword? (:val ty))) {:kind :key :key (:val ty)}
       (some? index) {:kind :position :index index :label (parse/unparse node)})))
 
@@ -2475,6 +2488,7 @@
 (defn- composition-step [ctx node {:keys [kind values key index label type]} input default]
   (case kind
     :set (set-call-result ctx values input)
+    :typed-set (typed-set-call-result ctx type input)
     :key (read-key ctx (eff ctx input) key node (or default t/nil-t) nil)
     :position (let [input (eff ctx input)]
                 (if-let [bad (unsupported-sequence-member ctx input)]
@@ -2503,6 +2517,7 @@
   (when-let [params (case (:kind projection)
                      :position [[positional-composition-input]]
                      :key [[t/any] [t/any t/any]]
+                     (:set :typed-set) [[t/any]]
                      nil)]
     {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown :composition [projection]) params)}))
 

@@ -220,6 +220,33 @@
     (is (= ["int?" "int?" "int?" "int?" "int?" "\"default\"" "nil?"]
            (mapv #(main/type-at r "client.clj" % 1) [2 3 7 9 10 11 12])))))
 
+(deftest composition-uses-callable-sets-at-entry-and-through-local-bindings
+  (let [api (parse/parse-string
+             "formats.clj"
+             "(ns formats (:require [clojure.spec.alpha :as s]))
+(s/fdef formats :args (s/cat) :ret (s/coll-of keyword? :kind set?))
+(defn formats [] #{:json :charset})
+(defn allowed [] (let [allowed (formats)] (comp allowed first)))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [formats :as f]))
+((comp #{:json :charset}) :json)
+((comp #{:json :charset}) :xml)
+((comp #{:json :charset}) :json :extra)
+((f/allowed) [:json \"a\"])
+((f/allowed) [42 \"a\"])
+(inc ((f/allowed) [:json \"a\"]))
+(let [allowed (f/formats)] ((comp allowed) :json))
+(let [allowed (f/formats)] ((comp allowed) true))
+(let [allowed (f/formats)] (mapv (comp allowed) [:json]))")
+        r (check/check-files [api client] {})]
+    (is (= [[4 "TSP2554"] [7 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= [":json" "nil?" "(s/nilable keyword?)" "nil?" "(s/nilable keyword?)" "nil?"
+            "(s/coll-of (s/nilable keyword?) :kind vector? :min-count 1 :max-count 1)"]
+           (mapv #(main/type-at r "client.clj" % 1) [2 3 5 6 8 9 10])))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

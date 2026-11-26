@@ -1447,11 +1447,6 @@
 (defn- call-shape [ftype]
   (or (::recursive-callback-shape (meta ftype)) ftype))
 
-(defn- contextual-call-target [ctx ftype arg-types]
-  (if-let [target (::contextual-self-call (meta ftype))]
-    (or (target ctx arg-types) ftype)
-    ftype))
-
 (defn- matching-arities [ftype n]
   (let [arities (:arities ftype)
         fits (if (::t/dispatch (meta ftype))
@@ -1461,6 +1456,22 @@
       (when-let [implemented (seq (matching-arities shape n))]
         (or (seq fits) implemented))
       fits)))
+
+(defn- contextual-call-target [ctx ftype arg-types]
+  (or (when-let [target (::contextual-self-call (meta ftype))]
+        (target ctx arg-types))
+      (when-let [shape (when (::actual-call (meta ftype))
+                        (::recursive-callback-shape (meta ftype)))]
+        (let [covers? (fn [{:keys [params rest kwargs]}]
+                        (or kwargs
+                            (every? true?
+                                    (map #(t/sub? (:env ctx) (eff ctx %1) %2)
+                                         arg-types (concat params (repeat rest))))))]
+          ;; Entry arguments describe one caller, not an invariant of recursion.
+          ;; A different call still has to satisfy the implementation's hints.
+          (when-not (some covers? (matching-arities ftype (count arg-types)))
+            shape)))
+      ftype))
 
 (defn- keyword-parameter [m k]
   (some (fn [[declared ty]] (when (= (name declared) (name k)) ty))
@@ -1877,8 +1888,12 @@
             ty)
     (:platform ty) (assoc :platform true)))
 
-(defn- direct-callback-context [types]
-  {:t :fn :arities [{:params (mapv #(widen (dissoc % :fresh)) types) :ret t/unknown}]})
+(defn- direct-callback-context
+  ([types] (direct-callback-context types true))
+  ([types widen?]
+   (with-meta {:t :fn :arities [{:params (if widen? (mapv #(widen (dissoc % :fresh)) types) types)
+                                 :ret t/unknown}]}
+     {::actual-call true})))
 
 (defn- vector-member? [member]
   (or (= :vector (:kind member))
@@ -2246,7 +2261,7 @@
                      [(count (:params (first targets))) (count (:params (first shapes)))]))))))
 
 (defn- infer-fn [ctx node arg-types]
-  (infer-callback ctx node (when arg-types {:t :fn :arities [{:params (vec arg-types) :ret t/unknown}]})))
+  (infer-callback ctx node (when arg-types (direct-callback-context (vec arg-types) false))))
 
 (defn- same-type-metadata? [a b]
   ;; Structural equality of the types has already been established by the lookup.
@@ -2356,7 +2371,7 @@
     :kw (read-key ctx (first arg-types) (:val fnode) fnode)
     :set (t/union (first arg-types) t/nil-t)
     (let [ty (if (callback-node? ctx fnode)
-               (infer ctx fnode {:t :fn :arities [{:params arg-types :ret t/unknown}]})
+               (infer ctx fnode (direct-callback-context arg-types false))
                (infer ctx fnode))
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)
           ty (contextual-call-target ctx ty arg-types)
@@ -4332,7 +4347,7 @@
             known-spreads (finite-spreads spreads tail-members)
             exact? (some? known-spreads)
             callback? (and exact? (callback-node? ctx f))
-            spread-context (fn [items] {:t :fn :arities [{:params (into prefix-types items) :ret t/unknown}]})
+            spread-context (fn [items] (direct-callback-context (into prefix-types items) false))
             ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
             shape (call-shape ftype)
             candidates (when-not exact? (spread-call-candidates ctx shape (count prefix) tail-members spreads))

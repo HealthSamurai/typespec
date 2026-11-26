@@ -861,6 +861,28 @@
     (is (= ["string?" "(s/coll-of string? :kind vector? :min-count 1 :max-count 1)"]
            (mapv #(apply main/type-at r "callbacks.clj" %) [[10 3] [14 3]])))))
 
+(deftest recursive-calls-can-change-the-shape-of-entry-arguments
+  (let [api (parse/parse-string
+             "walk.clj"
+             "(ns walk (:require [clojure.spec.alpha :as s]))
+(s/fdef start :args (s/cat :xs (s/coll-of string? :kind vector?)) :ret any?)
+(defn start [xs]
+  (letfn [(copy [remaining out]
+            (if (empty? remaining) out
+                (copy (next remaining) (conj out (first remaining)))))]
+    (copy xs [])))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [walk :as w]))
+(w/start [\"a\" \"b\"])
+((fn grow [acc] (if (empty? acc) (apply grow [(conj acc :one)]) acc)) [])
+((fn step [^String value] (if (empty? value) (step 42) value)) \"a\")
+((fn step [^String value] (if (empty? value) (apply step [42]) value)) \"a\")")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest letfn-checks-forward-references-and-outer-context
   (let [api (parse/parse-string
              "visitors.clj"

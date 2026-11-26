@@ -91,6 +91,30 @@
         (pr-str (:diagnostics r)))
     (is (= "(s/nilable ::age)" (main/type-at r "composition.clj" 11 1)))))
 
+(deftest composition-instantiates-intermediate-generic-contracts
+  (let [api (parse/parse-string
+             "generic.clj"
+             "(ns generic)
+(defn wrap {:t/sig '(t/all [a] [a :-> (s/tuple a)])} [x] [x])
+(defn bounded {:t/sig '(t/all [(a :< number?)] [a :-> a])} [x] x)
+(defn with-prefix {:t/sig '(t/all [a] [string? a :-> (s/tuple a)])} [_ x] [x])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [generic :as g] [clojure.string :as str]))
+(defn value [] 42)
+(mapv (comp g/wrap inc) [1 2])
+((comp first (partial g/with-prefix \"prefix\") value))
+(str/upper-case ((comp first g/wrap value)))
+(comp inc g/bounded str)
+(comp g/with-prefix value)")
+        r (check/check-files [api client] {})]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of (s/tuple int?) :kind vector? :min-count 2 :max-count 2)"
+            "int?"]
+           (mapv #(main/type-at r "client.clj" % 1) [3 4])))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

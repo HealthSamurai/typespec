@@ -2438,6 +2438,13 @@
             (report! ctx node "TSP2345" (str "comp: " (parse/unparse node) " cannot read a position from " (t/show bad)))
             (if (= t/never input) t/never (positional-type ctx input index)))))
 
+      (= :all (:t ty))
+      (fn [input]
+        (if (= t/never input)
+          t/never
+          (let [ret (call-generic ctx node (str "comp: " (parse/unparse node)) ty nil [input])]
+            (when-not (:generic-failure ret) ret))))
+
       :else
       (if-let [shape (function-shape ctx ty)]
         (fn [input] (comp-link ctx node shape input))

@@ -1678,8 +1678,12 @@
       (let [entries (concat (map #(hash-map :type %) captured)
                             (if typed-args (map #(hash-map :type %) typed-args)
                                 (map #(hash-map :node %) arg-nodes)))
-            [state] (constrain-generic-arguments ctx state ar entries)]
-        (generic-result ctx node label state)))))
+            [state] (constrain-generic-arguments ctx state ar entries)
+            ret (generic-result ctx node label state)
+            steps (get-in ftype [:body :arities 0 :composition])]
+        (if (and steps (not (:generic-failure ret)))
+          (or (run-composition ctx node steps ret) (assoc t/unknown :generic-failure true))
+          ret)))))
 
 (defn- closest-arity-index [arg-nodes problems]
   (let [positions (zipmap arg-nodes (range))
@@ -2488,6 +2492,22 @@
          (map t/class-type ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"
                             "[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])))
 
+(defn- compose-shape [ctx inner stage]
+  (let [arities (:arities inner)
+        expected (when (and inner (not-any? :composition arities) (callback-node? ctx stage))
+                   {:t :fn :arities [{:params [(apply t/union (map (comp #(eff ctx %) :ret) arities))]
+                                      :ret t/unknown}]})
+        ty (if expected (infer ctx stage expected) (infer ctx stage))]
+    (when inner
+      (when-let [step (composition-stage ctx stage ty)]
+        (let [arities (mapv (fn [arity]
+                              (if (:composition arity)
+                                (update arity :composition conj step)
+                                (when-let [ret (composition-step ctx stage step (:ret arity))]
+                                  (assoc (dissoc arity :map-edits) :ret ret))))
+                            arities)]
+          (when (every? some? arities) (assoc inner :arities arities)))))))
+
 (defn- compose-functions [ctx nodes]
   (let [[right & stages] (rseq nodes)
         ty (infer ctx right)
@@ -2498,23 +2518,19 @@
                                    :composition [{:kind :position :index index :label (parse/unparse right)}]}]})]
     (if-not (seq stages)
       (or entry ty)
-      (let [shape (or entry (function-shape ctx ty) (check-composable! ctx right ty "comp"))]
-        (reduce (fn [inner stage]
-                  (let [arities (:arities inner)
-                        expected (when (and inner (not-any? :composition arities) (callback-node? ctx stage))
-                                   {:t :fn :arities [{:params [(apply t/union (map (comp #(eff ctx %) :ret) arities))]
-                                                      :ret t/unknown}]})
-                        ty (if expected (infer ctx stage expected) (infer ctx stage))]
-                    (when inner
-                      (when-let [step (composition-stage ctx stage ty)]
-                        (let [arities (mapv (fn [arity]
-                                              (if (:composition arity)
-                                                (update arity :composition conj step)
-                                                (when-let [ret (composition-step ctx stage step (:ret arity))]
-                                                  (assoc (dissoc arity :map-edits) :ret ret))))
-                                            arities)]
-                          (when (every? some? arities) (assoc inner :arities arities)))))))
-                shape stages)))))
+      (let [resolved (t/resolve-t (:env ctx) (eff ctx ty))
+            generic? (= :all (:t resolved))
+            shape (cond
+                    entry entry
+                    generic? (update-in (:body resolved) [:arities 0]
+                                        #(assoc % :ret t/unknown :composition (or (:composition %) [])))
+                    :else (or (function-shape ctx resolved) (check-composable! ctx right resolved "comp")))
+            composed (reduce (partial compose-shape ctx) shape stages)]
+        (if (and generic? composed)
+          ;; Instantiation checks the original parameters and result first.
+          ;; The public shape carries the later stages and any partial captures.
+          (assoc resolved :body composed :partial-target (or (:partial-target resolved) resolved))
+          composed)))))
 
 (defn- partial-generic [ctx node ty args]
   (let [target (or (:partial-target ty) ty)

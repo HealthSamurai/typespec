@@ -164,6 +164,34 @@
             "int?" "int?" "int?" ":json" "nil?" "nil?"]
            (mapv #(main/type-at r "client.clj" % 1) [3 7 8 9 11 12 13 14])))))
 
+(deftest composition-instantiates-a-rightmost-generic-with-the-actual-arguments
+  (let [api (parse/parse-string
+             "items.clj"
+             "(ns items)
+(defn pack {:t/sig '(t/all [a] [a :-> (s/tuple a)])} [x] [x])
+(defn prefixed {:t/sig '(t/all [a] [string? a :-> (s/tuple a)])} [_ x] [x])
+(defn next-item [] (comp inc first pack))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [items :as i]))
+((i/next-item) 42)
+((i/next-item) \"abc\")
+(mapv (i/next-item) [1 2])
+(apply (i/next-item) [3])
+((comp inc (comp first i/pack)) 42)
+((partial (comp inc first i/prefixed) \"label\") 1)
+((partial (comp inc first i/prefixed) \"label\") \"abc\")
+((comp first (partial i/prefixed \"label\")) :item)
+((comp inc first i/prefixed) false 1)
+((comp inc first i/prefixed) \"label\")")
+        r (check/check-files [api client] {})]
+    (is (= [[3 "TSP2345"] [8 "TSP2345"] [10 "TSP2345"] [11 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?" "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "int?" "int?" "int?" ":item"]
+           (mapv #(main/type-at r "client.clj" % 1) [2 4 5 6 7 9])))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

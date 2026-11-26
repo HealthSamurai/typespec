@@ -31,7 +31,7 @@
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
-         unsupported-sequence-member)
+         unsupported-sequence-member specialize-call-return run-composition)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -1747,7 +1747,7 @@
                                   (some #(#{:unknown :any} (:t (t/resolve-t (:env ctx) %))) arg-types))]
                   (if (and vague? (next (distinct (map #(:ret (nth fits %)) passing))))
                     t/unknown
-                    (specialize-map-return ctx (nth fits (if vague? (last passing) i)) (first arg-types))))
+                    (or (specialize-call-return ctx node (nth fits (if vague? (last passing) i)) arg-types) t/unknown)))
                 (failed-call-result ctx node fits arg-nodes arg-types problems)))))))
 
 ;; ---- inference ----
@@ -1932,6 +1932,11 @@
                                       (dissoc m :fresh) map-edits)))]
           (if (t/sub? (:env ctx) result ret) (t/with-assumption result (t/assumption arg)) ret))
         ret))))
+
+(defn- specialize-call-return [ctx node arity arg-types]
+  (if-let [steps (:composition arity)]
+    (run-composition ctx node steps (first arg-types))
+    (specialize-map-return ctx arity (first arg-types))))
 
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
@@ -2313,7 +2318,7 @@
                 (apply report! ctx at code msg (mapcat identity extra)))
               (report! ctx at "TSP2345" (str label " takes " (show-ref ctx p) ", but gets " (show-ref ctx a)))))))
       (cond (and vague? (next (distinct (map :ret ok)))) t/unknown
-            (seq ok) (specialize-map-return ctx ar (first arg-types))
+            (seq ok) (or (specialize-call-return ctx at ar arg-types) t/unknown)
             require-match? t/unknown
             :else (:ret ar)))
     (if (seq (:arities ftype))
@@ -2391,7 +2396,7 @@
                          (not (and (numeric left) (numeric right)))))))
             (t/members env b))))
 
-(defn- comp-member [ctx fits input]
+(defn- comp-member [ctx stage fits input]
   ;; Earlier overloads may apply to part of a broad input. Keep their results
   ;; until an overload covers the entire input, without assuming disjoint maps.
   (let [env (:env ctx)
@@ -2404,9 +2409,11 @@
         (let [expected (param a)
               result (t/sub-result env input expected)]
           (if (= :proved (:status result))
-            {:type (apply t/union (if (= :any (:t input))
-                                   (map :ret fits)
-                                   (conj returns (specialize-map-return ctx a input))))}
+            (if (= :any (:t input))
+              {:type (apply t/union (map :ret fits))}
+              (if-let [ret (specialize-call-return ctx stage a [input])]
+                {:type (apply t/union (conj returns ret))}
+                {:reported? true}))
             (recur more
                    (cond-> returns (not (disjoint-scalars? env input expected)) (conj (:ret a)))
                    (into unchecked (:reasons result)))))))))
@@ -2414,12 +2421,13 @@
 (defn- comp-link [ctx stage ftype input]
   (if-let [fits (seq (matching-arities ftype 1))]
     (let [input (eff ctx input)
-          parts (mapv #(comp-member ctx fits %) (t/members (:env ctx) input))]
+          parts (mapv #(comp-member ctx stage fits %) (t/members (:env ctx) input))]
       (if-let [failure (first (remove :type parts))]
-        (if-let [reason (first (sort (:reasons failure)))]
-          (unchecked-hof! ctx stage "comp: input compatibility not checked" reason)
-          (report! ctx stage "TSP2345"
-                   (str "comp: " (show-ref ctx input) " is not accepted by " (t/show ftype))))
+        (when-not (:reported? failure)
+          (if-let [reason (first (sort (:reasons failure)))]
+            (unchecked-hof! ctx stage "comp: input compatibility not checked" reason)
+            (report! ctx stage "TSP2345"
+                     (str "comp: " (show-ref ctx input) " is not accepted by " (t/show ftype)))))
         (apply t/union (map :type parts))))
     (report! ctx stage "TSP2554" "comp: every function except the rightmost must accept one argument")))
 
@@ -2447,49 +2455,66 @@
         index (positional-callback-index ctx node)
         values (literal-set-members node)]
     (cond
-      values
-      (fn [input] (set-call-result ctx values input))
-
-      (and (= :lit (:t ty)) (keyword? (:val ty)))
-      (fn [input]
-        (read-key ctx (eff ctx input) (:val ty) node nil))
-
-      (some? index)
-      (fn [input]
-        (let [input (eff ctx input)]
-          (if-let [bad (unsupported-sequence-member ctx input)]
-            (report! ctx node "TSP2345" (str "comp: " (parse/unparse node) " cannot read a position from " (t/show bad)))
-            (if (= t/never input) t/never (positional-type ctx input index)))))
-
-      (= :all (:t ty))
-      (fn [input]
-        (if (= t/never input)
-          t/never
-          (let [ret (call-generic ctx node (str "comp: " (parse/unparse node)) ty nil [input])]
-            (when-not (:generic-failure ret) ret))))
-
+      values {:kind :set :values values}
+      (and (= :lit (:t ty)) (keyword? (:val ty))) {:kind :key :key (:val ty)}
+      (some? index) {:kind :position :index index :label (parse/unparse node)}
+      (= :all (:t ty)) {:kind :generic :type ty :label (parse/unparse node)}
       :else
       (if-let [shape (function-shape ctx ty)]
-        (fn [input] (comp-link ctx node shape input))
+        {:kind :function :type shape}
         (check-composable! ctx node ty "comp")))))
+
+(defn- composition-step [ctx node {:keys [kind values key index label type]} input]
+  (case kind
+    :set (set-call-result ctx values input)
+    :key (read-key ctx (eff ctx input) key node nil)
+    :position (let [input (eff ctx input)]
+                (if-let [bad (unsupported-sequence-member ctx input)]
+                  (report! ctx node "TSP2345" (str "comp: " label " cannot read a position from " (t/show bad)))
+                  (if (= t/never input) t/never (positional-type ctx input index))))
+    :generic (if (= t/never input)
+               t/never
+               (let [ret (call-generic ctx node (str "comp: " label) type nil [input])]
+                 (when-not (:generic-failure ret) ret)))
+    :function (comp-link ctx node type input)))
+
+(defn- run-composition [ctx node steps input]
+  (reduce (fn [ty step]
+            (or (composition-step ctx node step ty) (reduced nil)))
+          input steps))
+
+(def ^:private positional-composition-input
+  (apply t/union t/nil-t (t/prim :coll)
+         (map t/class-type ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"
+                            "[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])))
 
 (defn- compose-functions [ctx nodes]
   (let [[right & stages] (rseq nodes)
         ty (infer ctx right)
-        shape (or (function-shape ctx ty) (check-composable! ctx right ty "comp"))]
-    (reduce (fn [inner stage]
-              (let [expected (when (and inner (callback-node? ctx stage))
-                               {:t :fn :arities [{:params [(apply t/union (map (comp #(eff ctx %) :ret) (:arities inner)))]
-                                                  :ret t/unknown}]})
-                    ty (if expected (infer ctx stage expected) (infer ctx stage))]
-                (when inner
-                  (when-let [link (composition-stage ctx stage ty)]
-                    (let [arities (mapv (fn [arity]
-                                          (when-let [ret (link (:ret arity))]
-                                            (assoc (dissoc arity :map-edits) :ret ret)))
-                                        (:arities inner))]
-                      (when (every? some? arities) (assoc inner :arities arities)))))))
-            shape stages)))
+        index (positional-callback-index ctx right)
+        entry (when (some? index)
+                {:t :fn :arities [{:params [positional-composition-input]
+                                   :ret t/unknown
+                                   :composition [{:kind :position :index index :label (parse/unparse right)}]}]})]
+    (if-not (seq stages)
+      (or entry ty)
+      (let [shape (or entry (function-shape ctx ty) (check-composable! ctx right ty "comp"))]
+        (reduce (fn [inner stage]
+                  (let [arities (:arities inner)
+                        expected (when (and inner (not-any? :composition arities) (callback-node? ctx stage))
+                                   {:t :fn :arities [{:params [(apply t/union (map (comp #(eff ctx %) :ret) arities))]
+                                                      :ret t/unknown}]})
+                        ty (if expected (infer ctx stage expected) (infer ctx stage))]
+                    (when inner
+                      (when-let [step (composition-stage ctx stage ty)]
+                        (let [arities (mapv (fn [arity]
+                                              (if (:composition arity)
+                                                (update arity :composition conj step)
+                                                (when-let [ret (composition-step ctx stage step (:ret arity))]
+                                                  (assoc (dissoc arity :map-edits) :ret ret))))
+                                            arities)]
+                          (when (every? some? arities) (assoc inner :arities arities)))))))
+                shape stages)))))
 
 (defn- partial-generic [ctx node ty args]
   (let [target (or (:partial-target ty) ty)
@@ -2554,9 +2579,10 @@
                      (let [minimum (t/arity-minimum arity)
                            minimum (if (and (:rest arity) (contains? blocked minimum)) (inc minimum) minimum)
                            remaining (max 0 (- minimum (max n (count (:params arity)))))
-                           residual (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min :map-edits))]
+                           residual (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min :map-edits :composition))]
                        (cond-> residual
-                         (:map-edits arity) (assoc :ret (specialize-map-return ctx arity (first inputs)))
+                         (or (:map-edits arity) (:composition arity))
+                         (assoc :ret (or (specialize-call-return ctx node arity inputs) t/unknown))
                          (pos? remaining) (assoc :rest-min remaining))))
                    valid)))))
 
@@ -5610,10 +5636,9 @@
 
 (defmethod special 'comp [ctx node _]
   (let [stages (args-of node)]
-    (case (count stages)
-      0 comp-identity
-      1 (infer ctx (first stages))
-      (or (compose-functions ctx stages) t/unknown))))
+    (if (seq stages)
+      (or (compose-functions ctx stages) t/unknown)
+      comp-identity)))
 
 (defmethod special 'partial [ctx node _]
   (let [[f & args] (args-of node)]

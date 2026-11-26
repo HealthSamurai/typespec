@@ -131,6 +131,39 @@
     (is (= ["string?" "nil?" "false" "nil?"]
            (mapv #(main/type-at r "composition.clj" % 1) [6 7 9 10])))))
 
+(deftest composition-specializes-a-rightmost-position-at-direct-and-callback-calls
+  (let [api (parse/parse-string
+             "formatter.clj"
+             "(ns formatter)
+(defn category [] (comp #{:json :charset} first))
+(defn next-first [] (comp inc first))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [formatter :as f]))
+(group-by (f/category) [[:json \"a\"] [:xml \"b\"] [:charset \"c\"]])
+(let [step (f/next-first)] (step [42 \"a\"]))
+(let [step (f/next-first)] (step [\"abc\" 42]))
+((f/next-first) 42)
+((f/next-first))
+(mapv (f/next-first) [[1] [2]])
+((comp inc (comp second)) [\"a\" 1])
+((partial (f/next-first) [42]))
+(partial (f/next-first) [\"abc\"])
+(let [first (fn [] 1)] ((comp inc first)))
+((f/category) [:json \"a\"])
+((f/category) [:xml \"b\"])
+((f/category) [])")
+        r (check/check-files [api client] {})
+        ds (:diagnostics r)]
+    (is (= [[4 "TSP2345"] [5 "TSP2345"] [6 "TSP2554"] [10 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (re-find #"^\(s/map-of \(s/nilable keyword\?\)" (main/type-at r "client.clj" 2 1)))
+    (is (= ["int?"
+            "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "int?" "int?" "int?" ":json" "nil?" "nil?"]
+           (mapv #(main/type-at r "client.clj" % 1) [3 7 8 9 11 12 13 14])))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

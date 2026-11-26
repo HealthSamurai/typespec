@@ -1029,6 +1029,28 @@
     (is (= ["(t/or 0 int?)" "(t/or 0 int?)" "2"]
            (mapv #(apply main/type-at r "client.clj" %) [[3 14] [5 19] [7 1]])))))
 
+(deftest reduce-uses-the-vector-conj-result
+  (let [api (parse/parse-string
+             "labels.clj"
+             "(ns labels (:require [clojure.spec.alpha :as s]))
+(s/fdef labels :args (s/cat) :ret (s/coll-of string?))
+(defn labels [] [\"a\" \"b\"])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [labels :as l] [clojure.spec.alpha :as s]))
+(s/fdef gather :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn gather [] (reduce clojure.core/conj [] (l/labels)))
+(reduce conj [])
+(let [conj (fn [x y] (str x y))] (reduce conj \"\" [1 2]))
+(reduce conj 42 [1])")
+        r (check/check-files [api client] {:strict true})
+        ds (:diagnostics r)]
+    (is (= [["client.clj" 6 "TSP2345" "conj cannot add elements to int?"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of t/never :kind vector?)" "string?"]
+           (mapv #(main/type-at r "client.clj" % 1) [4 5])))))
+
 (deftest reduce-kv-checks-reducer-spec-across-namespaces
   (let [api (parse/parse-string "fold/api.clj"
                                "(ns fold.api (:require [clojure.spec.alpha :as s]))

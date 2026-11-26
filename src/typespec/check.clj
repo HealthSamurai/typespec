@@ -30,7 +30,7 @@
 
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
-         finite-map-keys array-component array-read-type)
+         finite-map-keys array-component array-read-type append-to-vectors)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -5752,22 +5752,45 @@
 
       :else (assoc (t/class-type "clojure.lang.Reduced") :reduced-value (dissoc (first types) :fresh)))))
 
+(def ^:private vector-conj-reducer
+  (with-meta {:t :fn :arities [{:params [] :rest t/unknown :ret t/unknown}]}
+    {::vector-conj-reducer true}))
+
 (defn- reduction-function [ctx f calls]
   (let [expected {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown) calls)}
         ty (if (callback-node? ctx f) (infer ctx f expected) (infer ctx f))]
-    (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)))
+    (cond
+      (= :ref (:t ty)) (t/resolve-t (:env ctx) ty)
+      (and (= :unknown (:t ty)) (empty? (:directives f)) (not (env/tag-node f))
+           (= 'clojure.core/conj (guard-symbol ctx f))) vector-conj-reducer
+      :else ty)))
+
+(defn- vector-conj-step [ctx f [target & items]]
+  (let [members (t/members (:env ctx) (eff ctx target))]
+    (cond
+      (nil? target) (t/tuple [])
+      (empty? items) target
+      (every? vector-member? members)
+      (append-to-vectors ctx target members (t/tuple (mapv #(dissoc % :fresh) items)))
+      (some #(or (= :lit (:t %)) (contains? scalar-primitives (:name %))) members)
+      (do (report! ctx f "TSP2345" (str "conj cannot add elements to " (t/show target))) t/never)
+      :else t/unknown)))
 
 (defn- reduction-result [ctx f ty args]
-  (if (or (= :all (:t ty)) (seq (:arities ty)))
-    (eff ctx (apply-type ctx ty args f (parse/unparse f)))
-    t/unknown))
+  (cond
+    (::vector-conj-reducer (meta ty)) (vector-conj-step ctx f args)
+    (or (= :all (:t ty)) (seq (:arities ty))) (eff ctx (apply-type ctx ty args f (parse/unparse f)))
+    :else t/unknown))
 
 (defn- reduction-step [ctx f ty args]
   (let [ret (reduction-result ctx f ty args)
-        {stopped true continuing false} (group-by reduced-type? (t/members (:env ctx) ret))
-        assumed (t/assumption ret)]
-    [(t/with-assumption (apply t/union continuing) assumed)
-     (t/with-assumption (apply t/union (map reduced-payload stopped)) assumed)]))
+        members (t/members (:env ctx) ret)]
+    (if (some reduced-type? members)
+      (let [{stopped true continuing false} (group-by reduced-type? members)
+            assumed (t/assumption ret)]
+        [(t/with-assumption (apply t/union continuing) assumed)
+         (t/with-assumption (apply t/union (map reduced-payload stopped)) assumed)])
+      [ret t/never])))
 
 (defn- join-accumulator [ctx acc step]
   (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))

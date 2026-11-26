@@ -124,6 +124,23 @@
                               (case (:kind event) 1.0M \"matched\" (str/upper-case 42)))")]
       (is (= ["TSP2345"] (mapv :code ds)) (pr-str ds)))))
 
+(deftest case-reports-impossible-tags-including-non-text-domains
+  (testing "nil is a possible tag and the typo suggestion uses the textual alternative"
+    (let [ds (diagnostics "(s/def :text/kind (s/nilable #{:text})) (s/def ::event ::text)
+                            (defn render [event]
+                              (case (:kind event) nil \"none\" :tex \"text\" \"other\"))")]
+      (is (= ["TSP2678"] (mapv :code ds)) (pr-str ds))
+      (is (str/ends-with? (:message (first ds)) "Did you mean :text?"))))
+  (testing "invalid tags still get diagnostics for boolean and integer alternatives"
+    (doseq [[domain body] [["boolean?" "true \"yes\" false \"no\" :unknown \"other\""]
+                           ["#{0 1}" "0 \"off\" 1 \"on\" 2 \"other\""]]]
+      (let [ds (diagnostics (str "(s/def ::event " domain ") (defn render [event] (case event " body "))"))]
+        (is (= ["TSP2678"] (mapv :code ds)) (pr-str ds))
+        (is (not (str/includes? (:message (first ds)) "Did you mean"))))))
+  (testing "a valid nil tag still participates in exhaustiveness"
+    (is (empty? (diagnostics "(s/def :text/kind (s/nilable #{:text})) (s/def ::event ::text)
+                               (defn render [event] (case (:kind event) nil \"none\" :text \"text\"))")))))
+
 (deftest equality-refines-both-branches-and-cond-residue
   (doseq [body ["(if (= :count (:kind event))
                     (str (inc (:payload event)))

@@ -103,14 +103,18 @@
     (aget prev (count b))))
 
 (defn- similar [x candidates]
-  (let [norm #(str/replace (str/lower-case (str %)) #"[-_]" "")
-        sx (str x)]
-    (->> candidates
-         (remove #(= (str %) sx))
-         (map (fn [c] [(if (= (norm c) (norm sx)) 0 (edit-distance sx (str c))) c]))
-         (filter (fn [[d c]]
-                   (<= d (max 1 (min 2 (quot (count (if (string? c) c (name c))) 2))))))
-         (sort-by first) first second)))
+  (let [named? #(or (string? %) (instance? clojure.lang.Named %))]
+    (when (named? x)
+      (let [norm #(str/replace (str/lower-case (str %)) #"[-_]" "")
+            sx (str x)
+            nx (norm sx)]
+        (->> candidates
+             (filter named?)
+             (remove #(= (str %) sx))
+             (map (fn [c] [(if (= (norm c) nx) 0 (edit-distance sx (str c))) c]))
+             (filter (fn [[d c]]
+                       (<= d (max 1 (min 2 (quot (count (if (string? c) c (name c))) 2))))))
+             (sort-by first) first second)))))
 
 (defn- hint-suffix [x candidates]
   (if-let [c (similar x candidates)] (str ". Did you mean " c "?") ""))

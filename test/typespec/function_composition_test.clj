@@ -192,6 +192,34 @@
             "int?" "int?" "int?" ":item"]
            (mapv #(main/type-at r "client.clj" % 1) [2 4 5 6 7 9])))))
 
+(deftest composition-looks-up-a-rightmost-key-with-an-optional-default
+  (let [api (parse/parse-string
+             "values.clj"
+             "(ns values)
+(defn next-value [] (comp inc :value))
+(defn lookup [] (comp :value))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [values :as v]))
+((v/next-value) {:value 41})
+((v/next-value) {} 41)
+((v/next-value) {:value \"bad\"})
+((v/next-value) {:value nil} 41)
+((v/next-value) {} 41 :extra)
+(let [lookup (partial (v/next-value) {})] (lookup 41))
+(let [lookup (partial (v/next-value) {})] (lookup))
+((partial (partial (v/next-value) {}) 41))
+(apply (v/next-value) [{} 41])
+((v/lookup) nil \"default\")
+((v/lookup) {:value nil} \"default\")
+(mapv (v/lookup) [{:value :one} {:value :two}])")
+        r (check/check-files [api client] {})]
+    (is (= [[4 "TSP2345"] [5 "TSP2345"] [6 "TSP2554"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["int?" "int?" "int?" "int?" "int?" "\"default\"" "nil?"]
+           (mapv #(main/type-at r "client.clj" % 1) [2 3 7 9 10 11 12])))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

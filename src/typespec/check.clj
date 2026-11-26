@@ -188,15 +188,13 @@
 (defn- read-key
   ([ctx ty k node] (read-key ctx ty k node t/unknown))
   ([ctx ty k node invalid-result]
+   (read-key ctx ty k node t/nil-t invalid-result))
+  ([ctx ty k node default-type invalid-result]
    (let [{:keys [type optional? invalid?]} (key-info ctx ty k node)]
+     ;; A default replaces absence, never a nil value stored at the key.
      (cond invalid? invalid-result
-           optional? (t/union type t/nil-t)
+           optional? (t/union type default-type)
            :else type))))
-
-(defn- read-key-default [ctx ty k node default-type]
-  (let [{:keys [type optional?]} (key-info ctx ty k node)]
-    ;; A default replaces absence, never a nil value stored at the key.
-    (if optional? (t/union type default-type) type)))
 
 ;; ---- assignability ----
 
@@ -1939,7 +1937,10 @@
 
 (defn- specialize-call-return [ctx node arity arg-types]
   (if-let [steps (:composition arity)]
-    (run-composition ctx node steps (first arg-types))
+    (let [[input default] (if-let [captured (:captured-args arity)]
+                            (into captured arg-types)
+                            arg-types)]
+      (run-composition ctx node steps input default))
     (specialize-map-return ctx arity (first arg-types))))
 
 (defn var-type
@@ -2454,24 +2455,27 @@
                        (remove #(disjoint-scalars? env member %) (vals by-value))))))
      (t/assumption input))))
 
-(defn- composition-stage [ctx node ty]
-  (let [ty (t/resolve-t (:env ctx) (eff ctx ty))
-        index (positional-callback-index ctx node)
+(defn- composition-projection [ctx node ty]
+  (let [index (positional-callback-index ctx node)
         values (literal-set-members node)]
     (cond
       values {:kind :set :values values}
       (and (= :lit (:t ty)) (keyword? (:val ty))) {:kind :key :key (:val ty)}
-      (some? index) {:kind :position :index index :label (parse/unparse node)}
-      (= :all (:t ty)) {:kind :generic :type ty :label (parse/unparse node)}
-      :else
-      (if-let [shape (function-shape ctx ty)]
-        {:kind :function :type shape}
-        (check-composable! ctx node ty "comp")))))
+      (some? index) {:kind :position :index index :label (parse/unparse node)})))
 
-(defn- composition-step [ctx node {:keys [kind values key index label type]} input]
+(defn- composition-stage [ctx node ty]
+  (let [ty (t/resolve-t (:env ctx) (eff ctx ty))]
+    (or (composition-projection ctx node ty)
+        (if (= :all (:t ty))
+          {:kind :generic :type ty :label (parse/unparse node)}
+          (if-let [shape (function-shape ctx ty)]
+            {:kind :function :type shape}
+            (check-composable! ctx node ty "comp"))))))
+
+(defn- composition-step [ctx node {:keys [kind values key index label type]} input default]
   (case kind
     :set (set-call-result ctx values input)
-    :key (read-key ctx (eff ctx input) key node nil)
+    :key (read-key ctx (eff ctx input) key node (or default t/nil-t) nil)
     :position (let [input (eff ctx input)]
                 (if-let [bad (unsupported-sequence-member ctx input)]
                   (report! ctx node "TSP2345" (str "comp: " label " cannot read a position from " (t/show bad)))
@@ -2482,15 +2486,25 @@
                  (when-not (:generic-failure ret) ret)))
     :function (comp-link ctx node type input)))
 
-(defn- run-composition [ctx node steps input]
-  (reduce (fn [ty step]
-            (or (composition-step ctx node step ty) (reduced nil)))
-          input steps))
+(defn- run-composition
+  ([ctx node steps input] (run-composition ctx node steps input nil))
+  ([ctx node steps input default]
+   (loop [[step & more] steps, ty input, default default]
+     (if (and step ty)
+       (recur more (composition-step ctx node step ty default) nil)
+       ty))))
 
 (def ^:private positional-composition-input
   (apply t/union t/nil-t (t/prim :coll)
          (map t/class-type ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"
                             "[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])))
+
+(defn- composition-entry [projection]
+  (when-let [params (case (:kind projection)
+                     :position [[positional-composition-input]]
+                     :key [[t/any] [t/any t/any]]
+                     nil)]
+    {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown :composition [projection]) params)}))
 
 (defn- compose-shape [ctx inner stage]
   (let [arities (:arities inner)
@@ -2503,7 +2517,7 @@
         (let [arities (mapv (fn [arity]
                               (if (:composition arity)
                                 (update arity :composition conj step)
-                                (when-let [ret (composition-step ctx stage step (:ret arity))]
+                                (when-let [ret (composition-step ctx stage step (:ret arity) nil)]
                                   (assoc (dissoc arity :map-edits) :ret ret))))
                             arities)]
           (when (every? some? arities) (assoc inner :arities arities)))))))
@@ -2511,15 +2525,11 @@
 (defn- compose-functions [ctx nodes]
   (let [[right & stages] (rseq nodes)
         ty (infer ctx right)
-        index (positional-callback-index ctx right)
-        entry (when (some? index)
-                {:t :fn :arities [{:params [positional-composition-input]
-                                   :ret t/unknown
-                                   :composition [{:kind :position :index index :label (parse/unparse right)}]}]})]
+        resolved (t/resolve-t (:env ctx) (eff ctx ty))
+        entry (composition-entry (composition-projection ctx right resolved))]
     (if-not (seq stages)
       (or entry ty)
-      (let [resolved (t/resolve-t (:env ctx) (eff ctx ty))
-            generic? (= :all (:t resolved))
+      (let [generic? (= :all (:t resolved))
             shape (cond
                     entry entry
                     generic? (update-in (:body resolved) [:arities 0]
@@ -2595,9 +2605,14 @@
                      (let [minimum (t/arity-minimum arity)
                            minimum (if (and (:rest arity) (contains? blocked minimum)) (inc minimum) minimum)
                            remaining (max 0 (- minimum (max n (count (:params arity)))))
-                           residual (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min :map-edits :composition))]
+                           residual (-> arity
+                                        (update :params #(vec (drop n %)))
+                                        (dissoc :rest-min :map-edits :composition :captured-args))
+                           deferred? (and (:composition arity) (or (seq (:params residual)) (next valid)))]
                        (cond-> residual
-                         (or (:map-edits arity) (:composition arity))
+                         deferred? (assoc :composition (:composition arity)
+                                          :captured-args (into (or (:captured-args arity) []) inputs))
+                         (and (not deferred?) (or (:map-edits arity) (:composition arity)))
                          (assoc :ret (or (specialize-call-return ctx node arity inputs) t/unknown))
                          (pos? remaining) (assoc :rest-min remaining))))
                    valid)))))
@@ -3730,7 +3745,7 @@
         mty (infer ctx m)]
     (if (= :kw (:op k))
       (if default
-        (read-key-default ctx mty (:val k) k (infer ctx default))
+        (read-key ctx mty (:val k) k (infer ctx default) t/unknown)
         (read-key ctx mty (:val k) k))
       (let [source (eff ctx mty)
             key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
@@ -7159,7 +7174,7 @@
       (= :kw (:op h)) (let [[m default] args
                             ty (infer ctx m)]
                         (if default
-                          (read-key-default ctx ty (:val h) h (infer ctx default))
+                          (read-key ctx ty (:val h) h (infer ctx default) t/unknown)
                           (read-key ctx ty (:val h) h)))
       (not= :sym (:op h))
       (let [types (when (inline-callback? ctx h) (mapv #(infer ctx %) args))

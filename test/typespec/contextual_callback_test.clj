@@ -1077,6 +1077,31 @@
             "(s/map-of #{:a :b} #{1 2})"]
            (mapv #(main/type-at r "client.clj" % 1) [6 8])))))
 
+(deftest reduce-into-shares-vector-accumulation-with-ordinary-into
+  (let [api (parse/parse-string
+             "chunks.clj"
+             "(ns chunks (:require [clojure.spec.alpha :as s]))
+(s/fdef chunks :args (s/cat) :ret (s/coll-of (s/coll-of string? :kind vector?) :kind vector?))
+(defn chunks [] [[\"a\"] [\"b\"]])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [chunks :as c] [clojure.spec.alpha :as s]))
+(s/fdef flatten-chunks :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn flatten-chunks [] (reduce into [] (c/chunks)))
+(reduce into [])
+(reduce into [] [[1] 42])
+(into [] 42)
+(mapv (fn [entry] (inc (val entry))) (into [] {:n 1}))
+(let [into (fn [acc x] (str acc x))] (reduce into \"\" [1 2]))")
+        r (check/check-files [api client] {:strict true})]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of t/never :kind vector?)"
+            "(s/coll-of int? :kind vector? :min-count 1 :max-count 1)"
+            "string?"]
+           (mapv #(main/type-at r "client.clj" % 1) [4 7 8])))))
+
 (deftest reduce-kv-checks-reducer-spec-across-namespaces
   (let [api (parse/parse-string "fold/api.clj"
                                "(ns fold.api (:require [clojure.spec.alpha :as s]))

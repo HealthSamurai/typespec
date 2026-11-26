@@ -30,7 +30,7 @@
 
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
-         finite-map-keys array-component array-read-type append-to-vectors)
+         finite-map-keys array-component array-read-type append-to-vectors checked-vector-into)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -5761,11 +5761,12 @@
 
 (defn- reduction-function [ctx f calls]
   (let [expected {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown) calls)}
-        ty (if (callback-node? ctx f) (infer ctx f expected) (infer ctx f))]
+        ty (if (callback-node? ctx f) (infer ctx f expected) (infer ctx f))
+        reducer (when (= :unknown (:t ty))
+                  (get '{clojure.core/conj conj clojure.core/into into} (reducer-var ctx f)))]
     (cond
       (= :ref (:t ty)) (t/resolve-t (:env ctx) ty)
-      (and (= :unknown (:t ty)) (= 'clojure.core/conj (reducer-var ctx f)))
-      (with-meta collection-reducer-type {::collection-reducer 'conj})
+      reducer (with-meta collection-reducer-type {::collection-reducer reducer})
       :else ty)))
 
 (defn- map-conj-domain [ty]
@@ -5831,11 +5832,24 @@
     (t/with-assumption (or (map-conj-domain seed) seed) (t/assumption seed))
     seed))
 
+(defn- into-reducer-step [ctx f args]
+  (case (count args)
+    0 (coll-of :vector t/never)
+    1 (first args)
+    2 (let [[target source] (mapv #(eff ctx %) args)
+            members (t/members (:env ctx) target)]
+        (if (every? vector-member? members)
+          (checked-vector-into ctx f target members source)
+          t/unknown))
+    t/unknown))
+
 (defn- reduction-result [ctx f ty args]
-  (cond
-    (= 'conj (::collection-reducer (meta ty))) (conj-reducer-step ctx f args)
-    (or (= :all (:t ty)) (seq (:arities ty))) (eff ctx (apply-type ctx ty args f (parse/unparse f)))
-    :else t/unknown))
+  (case (::collection-reducer (meta ty))
+    conj (conj-reducer-step ctx f args)
+    into (into-reducer-step ctx f args)
+    (if (or (= :all (:t ty)) (seq (:arities ty)))
+      (eff ctx (apply-type ctx ty args f (parse/unparse f)))
+      t/unknown)))
 
 (defn- reduction-step [ctx f ty args]
   (let [ret (reduction-result ctx f ty args)
@@ -6089,6 +6103,17 @@
                   (assoc :items (into (:items vector-type) (:items source)))))))
      (or (t/assumption target) (t/assumption source)))))
 
+(defn- checked-vector-into [ctx at target vectors source]
+  (t/with-assumption
+   (apply t/union
+          (for [member (t/members (:env ctx) source)]
+            (cond
+              (= t/never member) t/never
+              (unsupported-sequence-member ctx member)
+              (do (report! ctx at "TSP2345" (str "into cannot sequence " (t/show member))) t/never)
+              :else (append-to-vectors ctx target vectors (or (map-entry-sequence member) member)))))
+   (or (t/assumption target) (t/assumption source))))
+
 (defmethod special 'conj [ctx node _]
   (let [[c & xs] (args-of node)
         cty (infer ctx c)
@@ -6298,7 +6323,7 @@
               source (eff ctx (infer ctx second-arg))
               members (t/members (:env ctx) target)]
           (cond (some #{t/never} [target source]) t/never
-                (every? vector-member? members) (append-to-vectors ctx target members source)
+                (every? vector-member? members) (checked-vector-into ctx second-arg target members source)
                 (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector (elem-type ctx source))
                 (and (= :set (:op to)) (empty? (:children to))) (coll-of :set (elem-type ctx source))
                 (some #(or (:items %) (length/constrained? %) (:map-index %)) members)

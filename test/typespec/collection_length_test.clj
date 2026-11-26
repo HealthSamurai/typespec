@@ -761,6 +761,26 @@
             "\"tail\"" "nil?" "t/never"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest sequence-tails-check-inputs-and-arity
+  (let [r (checked "(s/fdef needed :args (s/cat :xs (s/coll-of int? :kind seq? :min-count 1)) :ret int?)
+(defn needed [xs] (count xs))
+(needed (seq [1]))
+(needed (next [1 2]))
+(seq nil)
+(next [1])
+(rest nil)
+(next (throw (Exception.)))
+(seq 42)
+(next :wrong)
+(rest false)
+(seq)
+(clojure.core/rest [] :extra)")]
+    (is (= [[10 "TSP2345"] [11 "TSP2345"] [12 "TSP2345"] [13 "TSP2554"] [14 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["nil?" "nil?" "(s/coll-of t/never :kind seq? :max-count 0)" "t/never"]
+           (mapv #(at r %) [6 7 8 9])))))
+
 (deftest conj-grows-vectors-with-known-lengths-and-positions
   (let [r (checked "(conj)
 (conj [1] \"word\")

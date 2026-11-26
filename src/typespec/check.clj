@@ -4241,6 +4241,17 @@
       (report! ctx arg "TSP2345" (str head " cannot sequence " (t/show member))))
     (boolean (seq invalid))))
 
+(defn- unary-sequence-source [ctx node head]
+  (let [args (args-of node)]
+    (if (= 1 (count args))
+      (let [arg (first args)
+            source (infer ctx arg)]
+        (if-let [bad (unsupported-sequence-member ctx (eff ctx source))]
+          (report! ctx arg "TSP2345" (str head " cannot sequence " (t/show bad)))
+          source))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" (str head " expects one argument"))))))
+
 (defn- spread-member-bounds [member]
   (if-some [size (or (:array-length member)
                      (when (and (= :lit (:t member)) (string? (:val member)))
@@ -5345,7 +5356,9 @@
 
 (doseq [[h [offset nullable?]] {'seq [0 true] 'next [1 true] 'rest [1 false]}]
   (defmethod special h [ctx node _]
-    (sequence-tail ctx (infer ctx (first (args-of node))) offset nullable?)))
+    (if-let [source (unary-sequence-source ctx node h)]
+      (sequence-tail ctx source offset nullable?)
+      t/unknown)))
 
 (defmethod special 'list [ctx node _]
   (let [items (mapv #(dissoc (infer ctx %) :fresh) (args-of node))]

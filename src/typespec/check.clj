@@ -2423,10 +2423,33 @@
         (apply t/union (map :type parts))))
     (report! ctx stage "TSP2554" "comp: every function except the rightmost must accept one argument")))
 
+(defn- literal-set-members [node]
+  (when (and (= :set (:op node)) (empty? (:directives node)) (not (env/tag-node node))
+             (every? literal-node? (:children node)))
+    (mapv :val (:children node))))
+
+(defn- set-call-result [ctx values input]
+  (let [env (:env ctx)
+        by-value (zipmap values (map t/lit values))]
+    (t/with-assumption
+     (apply t/union
+            (for [member (t/members env (eff ctx input))]
+              (case (:t member)
+                :never t/never
+                :nil t/nil-t
+                :lit (get by-value (:val member) t/nil-t)
+                (apply t/union t/nil-t
+                       (remove #(disjoint-scalars? env member %) (vals by-value))))))
+     (t/assumption input))))
+
 (defn- composition-stage [ctx node ty]
   (let [ty (t/resolve-t (:env ctx) (eff ctx ty))
-        index (positional-callback-index ctx node)]
+        index (positional-callback-index ctx node)
+        values (literal-set-members node)]
     (cond
+      values
+      (fn [input] (set-call-result ctx values input))
+
       (and (= :lit (:t ty)) (keyword? (:val ty)))
       (fn [input]
         (read-key ctx (eff ctx input) (:val ty) node nil))

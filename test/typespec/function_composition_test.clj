@@ -115,6 +115,22 @@
             "int?"]
            (mapv #(main/type-at r "client.clj" % 1) [3 4])))))
 
+(deftest composition-uses-the-values-and-misses-of-a-literal-set
+  (let [r (checked "(s/fdef format-json :args (s/cat) :ret #{:json})
+(defn format-json [] :json)
+(s/fdef format-xml :args (s/cat) :ret #{:xml})
+(defn format-xml [] :xml)
+((comp name #{:json :charset} format-json))
+((comp #{:json :charset} format-xml))
+((comp name #{:json :charset} format-xml))
+((comp #{false} (fn [] false)))
+((comp #{} format-json))")]
+    (is (= [[8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["string?" "nil?" "false" "nil?"]
+           (mapv #(main/type-at r "composition.clj" % 1) [6 7 9 10])))))
+
 (deftest partial-checks-prefix-and-preserves-arities
   (let [result (checked "(partial subs \"abc\")
                          ((partial subs \"abc\") 1)

@@ -5736,6 +5736,22 @@
     (and (= :quote (:op node)) (= :list (:op (first (:children node)))))
     (count (:children (first (:children node))))))
 
+(defn- reduced-type? [ty]
+  (and (= :class (:t ty)) (= "clojure.lang.Reduced" (:name ty))))
+
+(defn- reduced-payload [ty]
+  (get ty :reduced-value t/unknown))
+
+(defmethod special 'reduced [ctx node _]
+  (let [types (mapv #(infer ctx %) (args-of node))]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "reduced expects one argument") t/unknown)
+
+      (= t/never (first types)) t/never
+
+      :else (assoc (t/class-type "clojure.lang.Reduced") :reduced-value (dissoc (first types) :fresh)))))
+
 (defn- reduction-function [ctx f calls]
   (let [expected {:t :fn :arities (mapv #(hash-map :params % :ret t/unknown) calls)}
         ty (if (callback-node? ctx f) (infer ctx f expected) (infer ctx f))]
@@ -5743,11 +5759,15 @@
 
 (defn- reduction-result [ctx f ty args]
   (if (or (= :all (:t ty)) (seq (:arities ty)))
-    (let [ret (eff ctx (apply-type ctx ty args f (parse/unparse f)))]
-      ;; reduce unwraps Reduced. Until its value is represented, the wrapper
-      ;; cannot serve as evidence of the final accumulator type.
-      (if (some #(= "clojure.lang.Reduced" (:name %)) (t/members (:env ctx) ret)) t/unknown ret))
+    (eff ctx (apply-type ctx ty args f (parse/unparse f)))
     t/unknown))
+
+(defn- reduction-step [ctx f ty args]
+  (let [ret (reduction-result ctx f ty args)
+        {stopped true continuing false} (group-by reduced-type? (t/members (:env ctx) ret))
+        assumed (t/assumption ret)]
+    [(t/with-assumption (apply t/union continuing) assumed)
+     (t/with-assumption (apply t/union (map reduced-payload stopped)) assumed)]))
 
 (defn- join-accumulator [ctx acc step]
   (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
@@ -5826,7 +5846,7 @@
   (loop [acc seed iterations 0]
     (let [args (into [acc] inputs)
           calls (cond-> [] empty-call? (conj []) true (conj args))
-          step (probe ctx #(reduction-result % f (reduction-function % f calls) args))]
+          step (probe ctx #(first (reduction-step % f (reduction-function % f calls) args)))]
       (cond
         (t/sub? (:env ctx) step acc) acc
         (= :unknown (:t step)) nil
@@ -5855,7 +5875,7 @@
             step-args [(or invariant start) element]
             calls (cond-> [] empty-call? (conj []) step? (conj step-args))
             ty (if (seq calls) (reduction-function ctx f calls) (infer ctx f))
-            step (when step? (reduction-result ctx f ty step-args))
+            [step stopped] (when step? (reduction-step ctx f ty step-args))
             base (if init
                    (if may-be-empty? initial t/never)
                    (t/union (if empty-call? (reduction-result ctx f ty []) t/never)
@@ -5870,7 +5890,7 @@
          (cond
            (not step?) base
            (nil? invariant) t/unknown
-           :else (t/union base step))
+           :else (t/union base step stopped))
          (t/assumption ct))))))
 
 (defn- kv-reduction-input [member]
@@ -5942,14 +5962,15 @@
                 invariant (if repeat? (reduction-accumulator ctx f start inputs false) start)
                 step-args (into [(or invariant start)] inputs)
                 ty (reduction-function ctx f [step-args])
-                step (reduction-result ctx f ty step-args)]
+                [step stopped] (reduction-step ctx f ty step-args)
+                result (t/union step stopped)]
             (when (and (or (nil? invariant) (= :unknown (:t step)))
                        (or (empty? (:arities ty)) (seq (matching-arities ty 3))))
               (unchecked-hof! ctx f "reduce-kv accumulator is not checked" :accumulator))
             (cond
               (nil? invariant) t/unknown
-              may-be-empty? (t/union initial step)
-              :else step)))))))
+              may-be-empty? (t/union initial result)
+              :else result)))))))
 
 (defn- append-to-vectors [ctx target vectors source]
   (let [{:keys [lower upper element]} (sequence-summary ctx source)]
@@ -6234,13 +6255,19 @@
 (defmethod special 'deref [ctx node _]
   (let [[target & options :as args] (args-of node)
         ty (when target (infer ctx target))
-        contents (when ty (atom-contents ctx target ty))]
+        contents (when ty (atom-contents ctx target ty))
+        members (when (and ty (not (seq contents))) (t/members (:env ctx) (eff ctx ty)))
+        reduced? (and (seq members) (every? reduced-type? members))]
     (run! #(infer ctx %) options)
     (cond
       (= t/never ty) t/never
       (and (seq contents) (empty? options)) (apply t/union contents)
-      (or (not (#{1 3} (count args))) (seq contents))
-      (do (report! ctx node "TSP2554" (if (seq contents) "deref of an atom expects one argument" "deref expects 1 or 3 arguments"))
+      (and reduced? (empty? options))
+      (t/with-assumption (apply t/union (map reduced-payload members)) (t/assumption ty))
+      (or (not (#{1 3} (count args))) (seq contents) reduced?)
+      (do (report! ctx node "TSP2554" (cond (seq contents) "deref of an atom expects one argument"
+                                           reduced? "deref of Reduced expects one argument"
+                                           :else "deref expects 1 or 3 arguments"))
           t/unknown)
       :else t/unknown)))
 

@@ -971,6 +971,40 @@
     (is (= ["TSP210-01"] (codes res)) (pr-str (:diagnostics res)))
     (is (= #{:accumulator} (get-in res [:diagnostics 0 :reasons])))))
 
+(deftest reducers-separate-reduced-payloads-from-the-next-accumulator
+  (let [api (parse/parse-string
+             "numbers.clj"
+             "(ns numbers (:require [clojure.spec.alpha :as s]))
+(s/fdef values :args (s/cat) :ret (s/coll-of int? :kind vector? :min-count 2))
+(defn values [] [1 2])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [numbers :as n] [clojure.spec.alpha :as s]))
+(s/fdef stop :args (s/cat) :ret string?)
+(defn stop [] (reduce (fn [acc x] (if (number? acc) (reduced (str x)) (inc acc))) (n/values)))
+(inc (reduce (fn [_ _] (reduced \"wrong\")) 0 (n/values)))
+(s/fdef stop-kv :args (s/cat) :ret string?)
+(defn stop-kv [] (reduce-kv (fn [_ k _] (reduced (name k))) \"\" {:a 1 :b 2}))")
+        r (check/check-files [api client] {:strict true})]
+    (is (= [["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
+(deftest reduced-unwrapping-follows-the-runtime-call
+  (let [r (check-source "(reduce (fn [] (reduced 7)) [])
+@(reduce (fn [] (reduced 7)) [])
+@(reduce (fn [_ _] (reduced (reduced 7))) 0 [1])
+(reduce (fn [acc x] (if (number? x) (+ acc x) (reduced \"done\"))) 0 [1 :stop])
+(reduced)
+(deref (reduced 7) 1 nil)")]
+    (is (= [[9 "TSP2554"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["clojure.lang.Reduced" "7" "7" "(t/or int? \"done\")"]
+           (mapv #(main/type-at r "callbacks.clj" % 1) [5 6 7 8]))))
+  (is (reduced? (reduce (fn [] (reduced 7)) [])))
+  (is (= 7 @(reduce (fn [_ _] (reduced (reduced 7))) 0 [1]))))
+
 (deftest reduce-kv-checks-reducer-spec-across-namespaces
   (let [api (parse/parse-string "fold/api.clj"
                                "(ns fold.api (:require [clojure.spec.alpha :as s]))

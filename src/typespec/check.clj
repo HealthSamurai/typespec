@@ -2469,43 +2469,47 @@
               (assoc :partial-target target :captured-args types)
               (update-in [:body :arities 0 :params] #(vec (drop (count args) %)))))))))
 
+(defn- partial-from-shape [ctx node shape args]
+  (let [n (count args)
+        fits (filterv #(or (:rest %) (<= n (count (:params %)))) (:arities shape))
+        inputs (infer-call-arguments ctx node args fits)
+        candidates (mapv (fn [arity] [arity (vec (arg-problems ctx arity args inputs node))]) fits)
+        valid (filterv (comp empty? second) candidates)
+        incomplete (some (fn [[_ ps]] (when (and (seq ps) (every? #(= "TSP210-01" (first (second %))) ps)) ps))
+                         candidates)
+        rest-minimum (when (::t/dispatch (meta shape))
+                       (some (fn [[a _]] (when (:rest a) (t/arity-minimum a))) valid))
+        blocked (when rest-minimum
+                  (into #{} (keep (fn [[a ps]]
+                                    (when (and (seq ps) (not (:rest a))) (count (:params a)))))
+                        candidates))]
+    (cond
+      (empty? fits) (report! ctx node "TSP2554" (str "partial: no arity accepts " n " captured argument(s)"))
+      (or incomplete (empty? valid))
+      (doseq [[at [code message extra]] (or incomplete (second (apply min-key (comp count second) candidates)))]
+        (apply report! ctx at code message (mapcat identity extra)))
+      (some #(> % rest-minimum) blocked)
+      (unchecked-hof! ctx node "partial: residual dispatch not checked" :unsupported-function)
+      :else
+      (assoc shape :arities
+             (mapv (fn [[arity _]]
+                     ;; A rejected fixed branch at the variadic minimum still
+                     ;; wins at runtime. The remaining rest arity starts above it.
+                     (let [minimum (t/arity-minimum arity)
+                           minimum (if (and (:rest arity) (contains? blocked minimum)) (inc minimum) minimum)
+                           remaining (max 0 (- minimum (max n (count (:params arity)))))
+                           residual (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min :map-edits))]
+                       (cond-> residual
+                         (:map-edits arity) (assoc :ret (specialize-map-return ctx arity (first inputs)))
+                         (pos? remaining) (assoc :rest-min remaining))))
+                   valid)))))
+
 (defn- partial-function [ctx node f args]
-  (let [ty (infer ctx f)
-        n (count args)]
+  (let [ty (t/resolve-t (:env ctx) (eff ctx (infer ctx f)))]
     (if (= :all (:t ty))
       (partial-generic ctx node ty args)
       (if-let [shape (function-shape ctx ty)]
-      (let [fits (filterv #(or (:rest %) (<= n (count (:params %)))) (:arities shape))
-            inputs (infer-call-arguments ctx node args fits)
-            candidates (mapv (fn [arity]
-                               [arity (vec (arg-problems ctx arity args inputs node))])
-                             fits)
-            valid (filterv (comp empty? second) candidates)
-            incomplete (some (fn [[_ ps]] (when (and (seq ps) (every? #(= "TSP210-01" (first (second %))) ps)) ps))
-                             candidates)
-            rest-minimum (when (::t/dispatch (meta shape))
-                           (some (fn [[a _]] (when (:rest a) (t/arity-minimum a))) valid))]
-        (cond
-          (empty? fits) (report! ctx node "TSP2554" (str "partial: no arity accepts " n " captured argument(s)"))
-          (or incomplete (empty? valid))
-          (doseq [[at [code message extra]] (or incomplete (second (apply min-key (comp count second) candidates)))]
-            (apply report! ctx at code message (mapcat identity extra)))
-          ;; Removing a fixed branch can expose a rest branch that runtime dispatch
-          ;; would never select at that original arity.
-          (and rest-minimum
-               (some (fn [[a ps]]
-                       (and (seq ps) (not (:rest a)) (<= rest-minimum (count (:params a)))))
-                     candidates))
-          (unchecked-hof! ctx node "partial: residual dispatch not checked" :unsupported-function)
-          :else
-          (assoc shape :arities
-                 (mapv (fn [[arity _]]
-                         (let [remaining (max 0 (- (t/arity-minimum arity) (max n (count (:params arity)))))
-                               residual (-> arity (update :params #(vec (drop n %))) (dissoc :rest-min :map-edits))]
-                           (cond-> residual
-                             (:map-edits arity) (assoc :ret (specialize-map-return ctx arity (first inputs)))
-                             (pos? remaining) (assoc :rest-min remaining))))
-                       valid))))
+        (partial-from-shape ctx node shape args)
         (do (run! #(infer ctx %) args)
             (check-composable! ctx f ty "partial"))))))
 

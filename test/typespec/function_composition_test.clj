@@ -124,12 +124,25 @@
 (deftest opaque-or-shadowed-functions-stay-conservative
   (let [result (checked "(defn no-proof [f x] (comp inc f) (partial subs x))
                          (let [comp (fn [x] x) partial (fn [x] x)]
-                           (comp 1) (partial 2))
-                         (let [f (fn ([^String x] x) ([^long x & xs] x))]
-                           (partial f 1))")]
-    (is (= ["TSP210-01" "TSP210-01" "TSP210-01"] (codes result)) (pr-str (:diagnostics result)))
-    (is (= #{:unsupported-function} (get-in result [:diagnostics 2 :reasons]))))
+                           (comp 1) (partial 2))")]
+    (is (= ["TSP210-01" "TSP210-01"] (codes result)) (pr-str (:diagnostics result))))
   (let [result (checked "(defn comp [x] x)
                          (comp 42)
                          (inc ((clojure.core/comp inc count) \"x\"))")]
     (is (empty? (codes result)) (pr-str (:diagnostics result)))))
+
+(deftest partial-respects-a-fixed-arity-that-shadows-the-variadic-minimum
+  (let [r (checked "(let [f (fn ([^String x] :fixed) ([^Long x & more] :rest))
+      p (partial f 42)]
+  (p :more))
+(let [f (fn ([^String x] :fixed) ([^Long x & more] :rest))
+      p (partial f 42)]
+  (p))")]
+    (is (= [[7 "TSP2554" "p expects 1+ argument(s), got 0"]]
+           (mapv (juxt (comp :row :pos) :code :message) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ":rest" (main/type-at r "composition.clj" 4 3))))
+  (let [f (fn ([^String x] (.length x)) ([^Long x & _] x))
+        p (partial f 42)]
+    (is (= 42 (p :more)))
+    (is (thrown? ClassCastException (p)))))

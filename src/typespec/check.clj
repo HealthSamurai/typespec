@@ -1621,43 +1621,59 @@
                      (infer ctx arg))))
           (range) arg-nodes types)))
 
+(defn- constrain-generic-arguments [ctx state arity arguments]
+  (let [entries (mapv (fn [i expected arg] (assoc arg :i i :expected expected))
+                      (range) (:params arity) arguments)
+        ordinary-types (mapv (fn [{:keys [node type]}]
+                               (or type (when-not (callback-node? ctx node)
+                                          (or (infer ctx node) t/unknown))))
+                             entries)
+        constrain (fn [st {:keys [i expected]} actual callback?]
+                    (solver/constrain st (eff ctx actual) expected
+                                      (cond-> {:argument i} callback? (assoc :callback true))))
+        ordinary-state (reduce (fn [st [entry actual]]
+                                 (if actual (constrain st entry actual false) st))
+                               state (map vector entries ordinary-types))
+        pending (keep (fn [[entry actual]] (when-not actual (:expected entry)))
+                      (map vector entries ordinary-types))
+        partial (when (seq pending)
+                  (callback-substitution (trusted-substitution (solver/solve (:env ctx) ordinary-state))
+                                         pending))
+        types (mapv (fn [{:keys [node expected]} actual]
+                      (or actual
+                          (if-let [params (callback-context expected partial)]
+                            (infer ctx node {:t :fn :arities [{:params params :ret t/unknown}]})
+                            (do (infer ctx node) t/unknown))))
+                    entries ordinary-types)
+        state (reduce (fn [st [entry ordinary? actual]]
+                        (if ordinary? st (constrain st entry actual true)))
+                      ordinary-state (map vector entries ordinary-types types))]
+    [state types]))
+
 (defn- call-generic
   "Rank-1, single fixed arity: infer ordinary arguments before contextual callbacks.
   Typed arguments are used by apply-type; node arguments are visited at most once."
   [ctx node label ftype arg-nodes typed-args]
-  (let [state (solver/instantiate ftype)
+  (let [captured (:captured-args ftype)
+        state (solver/instantiate (or (:partial-target ftype) ftype))
         ars (:arities (:type state)) ar (first ars)
         n (count (or typed-args arg-nodes))
-        inline? #(callback-node? ctx %)]
+        remaining (- (count (:params ar)) (count captured))]
     (cond
       (or (not= 1 (count ars)) (:rest ar) (:kwargs ar))
       (do (when-not typed-args (run! #(infer ctx %) arg-nodes))
           (report! ctx node "TSP210-01" "generic overloads and variadic contracts are unsupported"
                    :severity (if (:strict (:opts ctx)) :error :warning))
           (assoc t/unknown :generic-failure true))
-      (not= n (count (:params ar)))
+      (not= n remaining)
       (do (when-not typed-args (run! #(infer ctx %) arg-nodes))
-          (report! ctx node "TSP2554" (str label " expects " (count (:params ar)) " argument(s), got " n))
+          (report! ctx node "TSP2554" (str label " expects " remaining " argument(s), got " n))
           (assoc t/unknown :generic-failure true))
       :else
-      (let [entries (mapv (fn [i pt] {:i i :expected pt :node (nth arg-nodes i nil)})
-                          (range n) (:params ar))
-            callbacks (if typed-args [] (filter #(inline? (:node %)) entries))
-            ordinary (if typed-args entries (remove #(inline? (:node %)) entries))
-            state (reduce (fn [st {:keys [i expected node]}]
-                            (solver/constrain st (eff ctx (if typed-args (nth typed-args i) (infer ctx node)))
-                                              expected {:argument i})) state ordinary)
-            partial (callback-substitution (trusted-substitution (solver/solve (:env ctx) state))
-                                           (map :expected callbacks))
-            state (reduce
-                   (fn [st {:keys [i expected node]}]
-                     (let [params (callback-context expected partial)
-                           actual (if params
-                                    (infer ctx node {:t :fn :arities [{:params params :ret t/unknown}]})
-                                    (do (infer ctx node) t/unknown))]
-                       ;; Keep the original expected return ivar: the callback's result solves it.
-                       (solver/constrain st actual expected {:argument i :callback true})))
-                   state callbacks)]
+      (let [entries (concat (map #(hash-map :type %) captured)
+                            (if typed-args (map #(hash-map :type %) typed-args)
+                                (map #(hash-map :node %) arg-nodes)))
+            [state] (constrain-generic-arguments ctx state ar entries)]
         (generic-result ctx node label state)))))
 
 (defn- closest-arity-index [arg-nodes problems]
@@ -2419,10 +2435,46 @@
                     (check-composable! ctx stage ty "comp")))))
             shape stages)))
 
+(defn- partial-generic [ctx node ty args]
+  (let [target (or (:partial-target ty) ty)
+        captured (or (:captured-args ty) [])
+        state (solver/instantiate target)
+        [arity & overloads] (:arities (:type state))
+        remaining (- (count (:params arity)) (count captured))]
+    (cond
+      (or (nil? arity) (seq overloads) (:rest arity) (:kwargs arity))
+      (do (run! #(infer ctx %) args)
+          (unchecked-hof! ctx node "partial: generic overloads and variadic contracts not checked" :unsupported-function))
+
+      (> (count args) remaining)
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" (str "partial: no arity accepts " (count args) " captured argument(s)")))
+
+      :else
+      (let [entries (concat (map #(hash-map :type %) captured) (map #(hash-map :node %) args))
+            [state types] (constrain-generic-arguments ctx state arity entries)
+            issue (first (filter #(= :mismatch (:status %)) (:issues (solver/solve (:env ctx) state))))]
+        (cond
+          (some #{t/never} types) t/never
+          issue (let [i (get-in issue [:origin :argument])
+                      at (if (and (nat-int? i) (<= (count captured) i))
+                           (or (nth args (- i (count captured)) nil) node)
+                           node)]
+                  (report! ctx at "TSP2345"
+                           (str "partial: " (t/show (:left issue)) " is not assignable to " (t/show (:right issue)))))
+          :else
+          ;; Keep the original obligations until the remaining arguments arrive.
+          ;; Captures are part of type identity so a union cannot discard them.
+          (-> ty
+              (assoc :partial-target target :captured-args types)
+              (update-in [:body :arities 0 :params] #(vec (drop (count args) %)))))))))
+
 (defn- partial-function [ctx node f args]
   (let [ty (infer ctx f)
         n (count args)]
-    (if-let [shape (function-shape ctx ty)]
+    (if (= :all (:t ty))
+      (partial-generic ctx node ty args)
+      (if-let [shape (function-shape ctx ty)]
       (let [fits (filterv #(or (:rest %) (<= n (count (:params %)))) (:arities shape))
             inputs (infer-call-arguments ctx node args fits)
             candidates (mapv (fn [arity]
@@ -2454,8 +2506,8 @@
                              (:map-edits arity) (assoc :ret (specialize-map-return ctx arity (first inputs)))
                              (pos? remaining) (assoc :rest-min remaining))))
                        valid))))
-      (do (run! #(infer ctx %) args)
-          (check-composable! ctx f ty "partial")))))
+        (do (run! #(infer ctx %) args)
+            (check-composable! ctx f ty "partial"))))))
 
 (defn- single-map [ctx ty]
   (let [ms (t/members (:env ctx) ty)]

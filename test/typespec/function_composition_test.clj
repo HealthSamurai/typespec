@@ -86,6 +86,41 @@
         (pr-str (:diagnostics r)))
     (is (= "boolean?" (main/type-at r "client.clj" 4 1)))))
 
+(deftest partial-retains-generic-constraints-until-the-call
+  (let [api (parse/parse-string
+             "select.clj"
+             "(ns selection)
+(defn choose {:t/sig '(t/all [a] [string? int? a :-> a])}
+  [text offset x] (subs text offset) x)
+(defn either {:t/sig '(t/all [a] [a a :-> a])} [x _] x)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [selection :as s]))
+(let [f (partial (partial s/choose \"title\") 1)] (mapv f [1 2]))
+(let [f (partial s/either :first)] (f \"second\"))
+((partial s/choose 42 1) \"text\")
+((partial s/choose \"title\") \"wrong\" 1)
+((partial s/choose \"title\" 1))
+(partial s/choose \"title\" 1 2 3)")
+        r (check/check-files [api client] {})
+        ds (:diagnostics r)]
+    (is (= [[4 "TSP2345"] [5 "TSP2345"] [6 "TSP2554"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (= ["(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"
+            "#{\"second\" :first}"]
+           (mapv #(main/type-at r "client.clj" % 1) [2 3])))))
+
+(deftest partial-checks-captured-generic-callbacks-once
+  (let [r (checked "(defn run-with {:t/sig '(t/all [a b] [a (t/fn [a :-> b]) int? :-> b])}
+  [x f _] (f x))
+(let [f (partial run-with #_(t/cast string?) \"title\" #(subs % 1))]
+  [(f 1) (f 2)])
+(partial run-with \"title\" #(inc %))")]
+    (is (= [[6 "TSP2345"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= 1 (get-in r [:trust :cast])))))
+
 (deftest opaque-or-shadowed-functions-stay-conservative
   (let [result (checked "(defn no-proof [f x] (comp inc f) (partial subs x))
                          (let [comp (fn [x] x) partial (fn [x] x)]

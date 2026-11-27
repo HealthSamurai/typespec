@@ -180,7 +180,18 @@
 
 ;; ---- resolving named types ----
 
+(defn- bounded-branches [branches]
+  (let [limit 64
+        result (vec (take (inc limit) (distinct branches)))]
+    (when (<= (count result) limit) result)))
+
 (declare merge-spec-maps)
+
+(defn- merge-spec-alternatives [env seen parts]
+  (reduce (fn [prefix suffix]
+            (or (bounded-branches (for [a prefix b suffix] (merge-spec-maps env seen a b)))
+                (reduced nil)))
+          (first parts) (rest parts)))
 
 (defn members
   "Flat list of alternatives of a type, with refs resolved."
@@ -194,10 +205,11 @@
                 (recur env d (conj seen (:name t)))
                 [unknown]))
        :union (mapcat #(members env % seen) (:types t))
-       :merge (let [parts (map #(members env % seen) (:types t))]
-                (if (every? #(and (= 1 (count %)) (= :map (:t (first %)))) parts)
-                  [(reduce #(merge-spec-maps env seen %1 %2) (map first parts))]
-                  [unknown]))
+       :merge (let [parts (mapv #(bounded-branches (members env % seen)) (:types t))]
+                (or (when (and (seq parts) (every? seq parts)
+                               (every? #(= :map (:t %)) (mapcat identity parts)))
+                      (seq (merge-spec-alternatives env seen parts)))
+                    [unknown]))
        [t]))))
 
 (defn resolve-t [env t] (apply union (members env t)))
@@ -764,11 +776,6 @@
       (parse-type ctx (first forms)))))
 
 (defn- flat-keys [x] (cond (keyword? x) [x] (seq? x) (mapcat flat-keys (rest x)) :else []))
-
-(defn- bounded-branches [branches]
-  (let [limit 64
-        result (vec (take (inc limit) (distinct branches)))]
-    (when (<= (count result) limit) result)))
 
 (defn- conjunctive-keys [groups]
   (reduce (fn [prefix suffix]

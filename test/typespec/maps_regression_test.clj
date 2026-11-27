@@ -121,6 +121,36 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest spec-merge-retains-required-key-alternatives
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::slug string?)
+(s/def ::tenant keyword?)
+(s/def ::context (s/keys :req-un [::tenant]))
+(s/def ::lookup (s/keys :req-un [(or ::id ::slug)]))
+(s/def ::request (s/merge ::context ::lookup))
+(s/fdef find-record :args (s/cat :query ::request) :ret keyword?)
+(defn find-record [{:keys [tenant]}] tenant)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/find-record {:tenant :a :id 2})
+(a/find-record {:tenant :a :slug \"two\"})
+(a/find-record {:tenant :a})
+(a/find-record {:id 2})
+(a/find-record {:tenant :a :id \"two\"})")
+        issues (:diagnostics (check/check-files [client api] {:strict-nil true}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
+(deftest spec-merge-bounds-the-combination-of-map-alternatives
+  (let [options (fn [prefix n]
+                  (apply t/union
+                         (for [i (range n)]
+                           (map-type {(keyword prefix (str "key" i)) (t/prim :int)} {}))))
+        merged (fn [n] {:t :merge :types [(options "left" n) (options "right" n)]})]
+    (is (= 64 (count (t/members {} (merged 8)))))
+    (is (= [t/unknown] (t/members {} (merged 9))))))
+
 (deftest get-uses-the-map-of-domain-for-computed-keys
   (let [by-name {:t :map-of :k (t/prim :string) :v (t/prim :int)}
         by-tag {:t :map-of :k (t/prim :keyword) :v (t/prim :boolean)}

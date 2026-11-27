@@ -2615,7 +2615,7 @@
 
 (defn- set-call-result [ctx values input]
   (let [env (:env ctx)
-        by-value (zipmap values (map t/lit values))]
+        by-value (zipmap values (map literal-type values))]
     (t/with-assumption
      (apply t/union
             (for [member (t/members env (eff ctx input))]
@@ -4641,6 +4641,20 @@
                   :else t/unknown)))
        (or (t/assumption source) (some t/assumption args))))))
 
+(defn- spread-set-target? [members]
+  (every? #(or (= :set (:kind %)) (= (t/prim :set) (t/strip %)))
+          members))
+
+(defn- apply-set-lookup [ctx node f label source args]
+  (if (not= 1 (count args))
+    (apply-arity! ctx node label [1] (count args))
+    (let [input (first args)]
+      (if-let [values (literal-set-members f)]
+        (set-call-result ctx values input)
+        (t/with-assumption
+         (apply t/union (map #(typed-set-call-result ctx % input) (t/members (:env ctx) source)))
+         (t/assumption source))))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4688,6 +4702,8 @@
                           (apply-key-lookup ctx node label (:val ty) (into prefix-types items))
                           (spread-map-target? (t/members (:env ctx) ty))
                           (apply-map-lookup ctx node label ty (into prefix-types items))
+                          (spread-set-target? (t/members (:env ctx) ty))
+                          (apply-set-lookup ctx node f label ty (into prefix-types items))
                           :else
                           (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
                               t/unknown))))

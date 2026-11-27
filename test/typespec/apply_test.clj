@@ -106,6 +106,24 @@
   (is (nil? (apply {:title nil} [:title 42])))
   (is (= 42 (apply {:title "text"} [:miss 42]))))
 
+(deftest applies-sets-as-one-argument-lookups
+  (let [r (checked "(apply #{false nil :present} [false])
+(apply #{false nil :present} [nil])
+(apply #{:present} [:missing])
+(apply #{:present} [:present])
+(s/fdef known-set :args (s/cat) :ret (s/coll-of string? :kind set?))
+(defn known-set [] #{\"word\"})
+(apply (known-set) [\"word\"])
+(apply (known-set) [:other])
+(inc (apply #{\"wrong\"} [\"wrong\"]))
+(apply #{:present} [:present :default])")]
+    (is (= ["false" "nil?" "nil?" ":present" "(s/nilable string?)" "nil?"]
+           (mapv #(type-at r %) [2 3 4 5 8 9])))
+    (is (= [[10 "TSP2345"] [11 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (false? (apply #{false nil} [false])))
+  (is (thrown? clojure.lang.ArityException (apply #{:present} [:present :default]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

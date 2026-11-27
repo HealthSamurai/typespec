@@ -36,6 +36,24 @@
   (is (empty? (repeat 0.5 :value)))
   (is (thrown? IllegalArgumentException (repeat 9223372036854775808N :value))))
 
+(deftest repeatedly-checks-the-zero-arity-callback-when-it-can-run
+  (let [r (checked "(first (repeatedly (fn [] \"word\")))
+(repeatedly 1.9 (fn [] \"word\"))
+(first (repeatedly 0 42))
+(first (repeatedly 0.5 (fn [] \"word\")))
+(repeatedly 2 inc)
+(repeatedly 2 42)
+(repeatedly :bad (fn [] :value))
+(repeatedly)
+(repeatedly 1 :key)")]
+    (is (= ["string?" "(s/coll-of string? :kind seq? :min-count 2 :max-count 2)" "nil?" "string?"]
+           (mapv #(at r %) (range 2 6))))
+    (is (= [[6 "TSP2554"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [:value :value] (vec (repeatedly 1.9 (constantly :value)))))
+  (is (empty? (repeatedly 0 42)))
+  (is (thrown? clojure.lang.ArityException (first (repeatedly 2 inc)))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

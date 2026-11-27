@@ -5857,6 +5857,42 @@
            :else (coll-of :seq (peek types)))))
      (some t/assumption types))))
 
+(defmethod special 'repeatedly [ctx node _]
+  (let [[amount f :as args] (args-of node)]
+    (if-not (#{1 2} (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "repeatedly expects 1 or 2 arguments")
+          t/unknown)
+      (let [callback (or f amount)
+            n (when f (eff ctx (infer ctx amount)))
+            env (:env ctx)]
+        (cond
+          (= t/never n) (do (infer ctx callback) t/never)
+          (and n (= :mismatch (:status (t/sub-result env n (t/prim :number)))))
+          (do (infer ctx callback) (assignable! ctx amount n (t/prim :number)) t/unknown)
+
+          :else
+          (let [value (when n (:val (t/resolve-t env n)))
+                size (when n
+                       (or (slice-limit ctx n)
+                           (when (and (number? value) (< 0 value 4503599627370496))
+                             (let [whole (long value)]
+                               (if (< whole value) (inc whole) whole)))))
+                result (cond
+                         (= 0 size) (infer ctx callback)
+                         (#{:kw :map :set :vector} (:op callback))
+                         (do (infer ctx callback)
+                             (report! ctx callback "TSP2554" "repeatedly calls its callback with no arguments")
+                             t/unknown)
+                         :else (apply-fn-node ctx callback []))
+                nonempty? (or (not n) (and (number? value) (pos? value)))]
+            (if (and (= 0 size) (= t/never result))
+              t/never
+              (t/with-assumption
+               (length/with-bounds (coll-of :seq (if (= 0 size) t/never result))
+                                   (or size (if nonempty? 1 0)) size)
+               (or (t/assumption n) (t/assumption result))))))))))
+
 (defn- partition-count [size step]
   (when (some? size)
     (cond

@@ -237,6 +237,33 @@
   (is (s/valid? (s/tuple char? bytes? class?) [\: (byte-array [1]) java.net.URI]))
   (is (not (s/valid? (s/tuple char? bytes? class?) [\: (int-array [1]) java.net.URI]))))
 
+(deftest instance-predicates-resolve-core-vars-and-respect-shadowing
+  (let [api (parse/parse-string "api.clj" "(ns api (:refer-clojure :rename {instance? is-instance? partial bind-first})
+  (:require [clojure.spec.alpha :as s]))
+(defn instance? [_ value] (string? value))
+(s/def ::file (bind-first is-instance? java.io.File))
+(s/def ::custom (bind-first instance? java.io.File))
+(s/def ::object (clojure.core/partial clojure.core/instance? Object))
+(s/def ::shadow (fn [String] (is-instance? String String)))
+(s/def ::wrong-arity (bind-first is-instance? java.io.File :extra))
+(s/fdef file :args (s/cat :value ::file) :ret any?)
+(s/fdef custom :args (s/cat :value ::custom) :ret any?)
+(s/fdef present :args (s/cat :value ::object) :ret any?)
+(defn file [x] x)
+(defn custom [x] x)
+(defn present [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/file (java.io.File. \"test\"))
+(a/file \"not a file\")
+(a/custom \"text\")
+(a/present false)
+(a/present nil)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 5 "TSP9002"] ["api.clj" 7 "TSP9002"] ["api.clj" 8 "TSP9002"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

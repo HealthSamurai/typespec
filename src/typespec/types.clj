@@ -697,8 +697,8 @@
           full (when n (str (get (:aliases ctx) (symbol n) n)))]
       (cond (#{"clojure.spec.alpha" "s"} full) (keyword "s" (name sym))
             (= "t" n) (keyword "t" (name sym))
-            (and (= "clojure.core" full) (= "fn" (name sym))) :fn
-            (nil? n) (keyword (name sym))
+            (and (= "clojure.core" full) (#{"fn" "partial"} (name sym))) (keyword (name sym))
+            (nil? n) (if (= sym (get-in ctx [:refer-clojure :rename 'partial])) :partial (keyword (name sym)))
             :else nil))))
 
 (declare parse-type)
@@ -729,6 +729,20 @@
 (defn- literal-set-type [values]
   (apply union (map #(if (nil? %) nil-t (lit %)) (sort-by pr-str values))))
 
+(defn- instance-predicate-type [ctx class-form]
+  (when (and (symbol? class-form) (not (primitives (str class-form)))
+             (not (contains? (:locals ctx) class-form))
+             (not (contains? (:refers ctx) class-form))
+             (not (contains? (:defined-symbols ctx) class-form)))
+    (when-let [class-name (resolve-class (:imports ctx) class-form)]
+      (if (= "java.lang.Object" class-name) some-t (class-type class-name)))))
+
+(defn- partial-instance-type [ctx form]
+  (let [[head predicate class-form & extra] form]
+    (when (and (= 'partial (core-name ctx head))
+               (= 'instance? (core-name ctx predicate)) (empty? extra))
+      (instance-predicate-type ctx class-form))))
+
 (defn- predicate-expression-type [ctx parameter? expression]
   (when (seq? expression)
     (let [[head arg value & more] expression
@@ -737,8 +751,8 @@
         contains? (when (and (set? arg) (every? literal-set-member? arg)
                              (parameter? value) (empty? more))
                     (literal-set-type arg))
-        instance? (when (and (symbol? arg) (parameter? value) (empty? more))
-                    (some-> (resolve-class (:imports ctx) arg) class-type))
+        instance? (when (and (parameter? value) (empty? more))
+                    (instance-predicate-type ctx arg))
         or (let [branches (mapv #(predicate-expression-type ctx parameter? %) (rest expression))]
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
@@ -765,7 +779,7 @@
     (symbol? form) (let [predicate (core-name ctx form)]
                      (or (qualification-target predicate) (builtin-predicate-type predicate)))
     (and (set? form) (every? literal-set-member? form)) (literal-set-type (filter identity form))
-    (seq? form) (predicate-spec-type ctx form)))
+    (seq? form) (or (partial-instance-type ctx form) (predicate-spec-type ctx form))))
 
 (defn- spec-conjunction-type [ctx forms]
   ;; Later s/and operands see the conformed value. Only combine predicates
@@ -1057,9 +1071,7 @@
                 (if (and (= 2 (count form)) (vector? (second form))) (p (second form)) (fail))
                 (parse-sig ctx (second form)))
         (:fn* :fn) (or (predicate-spec-type ctx form) (fail))
-        :partial (if-let [c (and (= 'instance? (second form)) (resolve-class (:imports ctx) (nth form 2 nil)))]
-                   (class-type c)
-                   (fail))
+        :partial (or (partial-instance-type ctx form) (fail))
         :t/class (if-let [c (resolve-class (:imports ctx) (second form))] (class-type c) (fail))
         (:t/pick :t/omit :t/partial :t/keys-of :t/get)
         (if (:operator-error ctx) (parse-operator ctx (first form) form) (fail))

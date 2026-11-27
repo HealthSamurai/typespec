@@ -966,6 +966,24 @@
   (is (= [1 :clojure.core/none] (vec (dedupe [:clojure.core/none :clojure.core/none 1 :clojure.core/none]))))
   (is (thrown? IllegalArgumentException (first (dedupe 42)))))
 
+(deftest cycle-preserves-elements-and-can-repeat-beyond-the-input-length
+  (let [r (checked "(first (cycle [\"word\"]))
+(cycle [1 2])
+(cycle [])
+(first (cycle nil))
+(take 8 (cycle (int-array [1])))
+(inc (first (cycle [\"bad\"])))
+(cycle 42)
+(cycle [] :extra)")]
+    (is (= ["string?" "(s/coll-of int? :kind seq? :min-count 2)"
+            "(s/coll-of t/never :kind seq? :max-count 0)" "nil?"
+            "(s/coll-of int? :kind seq? :min-count 1 :max-count 8)"]
+           (mapv #(at r %) (range 2 7))))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [1 2 1 2 1 2] (vec (take 6 (cycle [1 2])))))
+  (is (thrown? IllegalArgumentException (cycle 42))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

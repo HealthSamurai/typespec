@@ -5955,6 +5955,20 @@
            items (assoc :items items))
          (some t/assumption sources))))))
 
+(defmethod special 'cycle [ctx node _]
+  (if-let [source (unary-sequence-source ctx node 'cycle)]
+    (t/with-assumption
+     (apply t/union
+            (for [member (t/members (:env ctx) (eff ctx source))
+                  :let [member (or (map-entry-sequence member) member)
+                        [lo hi] (sequence-member-bounds member)]]
+              (cond
+                (= t/never member) t/never
+                (= 0 hi) (length/with-bounds (coll-of :seq t/never) 0 0)
+                :else (length/with-bounds (coll-of :seq (member-element member)) lo nil))))
+     (t/assumption source))
+    t/unknown))
+
 (defmethod special 'partition-by [ctx node _]
   (let [[f coll :as args] (args-of node)]
     (case (count args)

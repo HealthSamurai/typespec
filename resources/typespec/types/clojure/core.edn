@@ -37,6 +37,7 @@
  clojure.core/symbol     ([(t/or string? keyword? symbol?) :-> symbol?] [(s/nilable string?) string? :-> symbol?])
  clojure.core/parse-long [string? :-> (s/nilable int?)]
  clojure.core/parse-double [string? :-> (s/nilable double?)]
+ clojure.core/parse-boolean [string? :-> (s/nilable boolean?)]
  clojure.core/parse-uuid [string? :-> (s/nilable uuid?)]
  clojure.core/random-uuid [:-> uuid?]
  clojure.core/not        [any? :-> boolean?]

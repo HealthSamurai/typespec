@@ -3324,6 +3324,9 @@
   (parsed-string-result ctx node parse-double
                         (fn [value] (if (Double/isNaN (double value)) (t/prim :double) (t/lit value)))))
 
+(defmethod special 'parse-boolean [ctx node _]
+  (parsed-string-result ctx node parse-boolean t/lit))
+
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
 (defmethod special 'time [ctx node _]

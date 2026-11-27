@@ -192,6 +192,23 @@
   (is (Double/isNaN (parse-double "NaN")))
   (is (thrown? NullPointerException (+ (parse-double "broken") 1.0))))
 
+(deftest parse-boolean-keeps-false-separate-from-invalid-input
+  (let [file (parse/parse-string "parsing.clj" "(ns parsing)
+(parse-boolean \"true\")
+(parse-boolean \"false\")
+(parse-boolean \"FALSE\")
+(if-some [flag (parse-boolean \"false\")] (if flag :on :off) :invalid)
+(parse-boolean 42)
+(parse-boolean \"true\" \"false\")")
+        result (check/check-files [file] {})]
+    (is (= ["true" "false" "nil?" ":off"]
+           (mapv #(main/type-at result "parsing.clj" % 1) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))))
+  (is (false? (parse-boolean "false")))
+  (is (nil? (parse-boolean "FALSE")))
+  (is (thrown? IllegalArgumentException (parse-boolean 42))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

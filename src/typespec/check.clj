@@ -4479,10 +4479,25 @@
           t/unknown))
     t/unknown))
 
-(doseq [h '[rand-nth]]
-  (defmethod special h [ctx node _]
-    (let [[c] (args-of node)]
-      (indexed (elem-type ctx (infer ctx c))))))
+(defmethod special 'rand-nth [ctx node _]
+  (if-let [source (unary-sequence-source ctx node 'rand-nth)]
+    (let [arg (first (args-of node))
+          members (t/members (:env ctx) (eff ctx source))
+          known-empty? #(and (not= :nil (:t %)) (= 0 (second (sequence-member-bounds %))))]
+      (when-let [bad (first (filter unordered-collection? members))]
+        (report! ctx arg "TSP2345" (str "rand-nth cannot index " (t/show bad))))
+      (when (some #(and (not (unordered-collection? %)) (known-empty? %)) members)
+        (report! ctx arg "TSP330-02" "rand-nth cannot index an empty collection"))
+      (t/with-assumption
+       (apply t/union
+              (for [member members]
+                (cond
+                  (#{:nil :never} (:t member)) member
+                  (or (unordered-collection? member) (known-empty? member)) t/never
+                  (:items member) (apply t/union (:items member))
+                  :else (member-element member))))
+       (t/assumption source)))
+    t/unknown))
 
 (defn- infer-nth-positions [ctx index members values default-type]
   (let [candidates (mapv (fn [value] [value (checked-int-index value)]) values)

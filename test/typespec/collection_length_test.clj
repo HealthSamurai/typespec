@@ -888,6 +888,22 @@
         (pr-str (:diagnostics r)))
     (is (= ["\"name\"" "nil?" "nil?" "java.lang.Character"] (mapv #(at r %) (range 2 6))))))
 
+(deftest rand-nth-returns-an-element-and-rejects-known-invalid-input
+  (let [r (checked "(rand-nth [\"only\"])
+(rand-nth [:a :b])
+(rand-nth nil)
+(rand-nth \"x\")
+(rand-nth [])
+(rand-nth #{1})
+(rand-nth {:x 1})
+(rand-nth \"\")
+(rand-nth [] :extra)
+(inc (rand-nth [\"bad\"]))")]
+    (is (= [[6 "TSP330-02"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP330-02"] [10 "TSP2554"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"only\"" "#{:a :b}" "nil?" "java.lang.Character"] (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

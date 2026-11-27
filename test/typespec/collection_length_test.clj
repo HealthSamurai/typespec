@@ -781,6 +781,21 @@
     (is (= ["nil?" "nil?" "(s/coll-of t/never :kind seq? :max-count 0)" "t/never"]
            (mapv #(at r %) [6 7 8 9])))))
 
+(deftest take-preserves-the-selected-prefix-and-its-bounds
+  (let [r (checked "(first (take 1 [\"word\" 2]))
+(first (take 0 42))
+(first (take 0.5 [\"one\" :two]))
+(take 2 [1 2 3])
+(inc (first (take 1 [\"word\" 2])))
+(take \"invalid\" [1])
+(take 1 42)
+(take)")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"word\"" "nil?" "\"one\"" "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

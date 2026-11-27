@@ -5407,7 +5407,51 @@
           el (elem-type ctx (infer ctx c))]
       (coll-of (if (= 'set h) :set :seq) el))))
 
-(doseq [h '[take drop take-last]]
+(defn- slice-limit [ctx amount]
+  (let [value (:val (t/resolve-t (:env ctx) amount))]
+    (when (number? value)
+      (cond
+        (not (pos? value)) 0
+        (<= value 1) 1
+        (integer? value) value))))
+
+(defn- check-sequence-slice [ctx node head transducer? transform]
+  (let [[amount source :as args] (args-of node)
+        [n ty :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (and transducer? (= 1 (count types))) t/unknown
+      (not= 2 (count types))
+      (do (report! ctx node "TSP2554" (str head (if transducer? " expects 1 or 2 arguments" " expects 2 arguments")))
+          t/unknown)
+      (some #{t/never} types) t/never
+      (= :mismatch (:status (t/sub-result (:env ctx) n (t/prim :number))))
+      (do (assignable! ctx amount n (t/prim :number)) t/unknown)
+      :else
+      (let [limit (slice-limit ctx n)]
+        (if (and (= 'take head) (= 0 limit))
+          (length/with-bounds (coll-of :seq t/never) 0 0)
+          (if-let [bad (unsupported-sequence-member ctx ty)]
+            (do (report! ctx source "TSP2345" (str head " cannot sequence " (t/show bad))) t/unknown)
+            (t/with-assumption (transform ty limit) (or (t/assumption n) (t/assumption ty)))))))))
+
+(defn- limited-sequence [ctx source limit]
+  (apply t/union
+         (for [member (t/members (:env ctx) source)
+               :let [member (or (map-entry-sequence member) member)
+                     [lo hi] (sequence-member-bounds member)
+                     upper (if limit (if hi (min hi limit) limit) hi)
+                     items (when (and limit (:items member))
+                             (subvec (:items member) 0 (int upper)))
+                     element (cond (= 0 upper) t/never
+                                   items (apply t/union items)
+                                   :else (member-element member))]]
+           (cond-> (length/with-bounds (coll-of :seq element) (if limit (min lo limit) 0) upper)
+             items (assoc :items items)))))
+
+(defmethod special 'take [ctx node _]
+  (check-sequence-slice ctx node 'take true (partial limited-sequence ctx)))
+
+(doseq [h '[drop take-last]]
   (defmethod special h [ctx node _]
     (let [[n c] (args-of node)]
       (infer ctx n)

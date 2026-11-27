@@ -5575,17 +5575,47 @@
 (defmethod special 'take [ctx node _]
   (check-sequence-slice ctx node 'take true (partial limited-sequence ctx false)))
 
+(defn- skipped-sequence [ctx source limit nullable?]
+  (if (some? limit)
+    (sequence-tail ctx source limit nullable?)
+    (apply t/union
+           (for [member (t/members (:env ctx) source)
+                 :let [member (or (map-entry-sequence member) member)
+                       [_ hi] (sequence-member-bounds member)]]
+             (cond
+               (not nullable?) (length/with-bounds (coll-of :seq (if (= 0 hi) t/never (member-element member))) 0 hi)
+               (= 0 hi) t/nil-t
+               :else (t/union t/nil-t (length/with-bounds (coll-of :seq (member-element member)) 1 hi)))))))
+
 (defmethod special 'drop [ctx node _]
-  (check-sequence-slice
-   ctx node 'drop true
-   (fn [source limit]
-     (if limit
-       (sequence-tail ctx source limit false)
-       (apply t/union
-              (for [member (t/members (:env ctx) source)
-                    :let [member (or (map-entry-sequence member) member)
-                          [_ hi] (sequence-member-bounds member)]]
-                (length/with-bounds (coll-of :seq (if (= 0 hi) t/never (member-element member))) 0 hi)))))))
+  (check-sequence-slice ctx node 'drop true
+                        (fn [source limit] (skipped-sequence ctx source limit false))))
+
+(defmethod special 'nthrest [ctx node _]
+  (let [[source amount :as args] (args-of node)
+        [ty n :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count types))
+      (do (report! ctx node "TSP2554" "nthrest expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      (= :mismatch (:status (t/sub-result (:env ctx) n (t/prim :number))))
+      (do (assignable! ctx amount n (t/prim :number)) t/unknown)
+
+      :else
+      (let [limit (slice-limit ctx n)
+            raw (:val (t/resolve-t (:env ctx) n))
+            positive? (and (number? raw) (pos? raw))]
+        (cond
+          (= 0 limit) (t/with-assumption ty (t/assumption n))
+          (and (not positive?) (unsupported-sequence-member ctx ty)) ty
+          (report-invalid-sequence-args! ctx 'nthrest [source] [ty]) t/unknown
+          :else
+          (t/with-assumption
+           (cond->> (skipped-sequence ctx ty limit false)
+             (not positive?) (t/union ty))
+           (or (t/assumption n) (t/assumption ty))))))))
 
 (defmethod special 'take-last [ctx node _]
   (check-sequence-slice ctx node 'take-last false (partial limited-sequence ctx true)))

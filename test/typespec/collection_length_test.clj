@@ -810,6 +810,23 @@
     (is (= ["\"word\"" ":second" "nil?" "2"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest nthrest-preserves-the-source-at-zero-and-known-positions-after-skipping
+  (let [r (checked "(nthrest nil 0)
+(nthrest 42 -1)
+(first (nthrest [1 \"word\"] 0.5))
+(first (nthrest [1] 2))
+(inc (first (nthrest [1 \"word\"] 1)))
+(nthrest 42 1)
+(nthrest [] :invalid)
+(nthrest [])
+(nthrest 42 1.5)")]
+    (is (= ["nil?" "42" "\"word\"" "nil?"]
+           (mapv #(at r %) (range 2 6))))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"] [10 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= 42 (nthrest 42 -1)))
+  (is (thrown? IllegalArgumentException (nthrest 42 1.5))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

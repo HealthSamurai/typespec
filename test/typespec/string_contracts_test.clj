@@ -352,6 +352,27 @@
   (is (every? qualified-ident? [:space/key 'space/key]))
   (is (not-any? qualified-ident? [:plain 'plain 42 nil])))
 
+(deftest simple-ident-proves-the-namespace-absent-for-either-kind
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef simple-ns :args (s/cat :x simple-ident?) :ret nil?)
+(defn simple-ns [x] (namespace x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.string :as str]))
+(api/simple-ns :plain)
+(api/simple-ns 'plain)
+(api/simple-ns :space/key)
+(simple-ident? (symbol nil \"space/key\"))
+(simple-ident? (keyword \"\" \"key\"))
+(mapv name (filter simple-ident? [:space/key 'plain]))
+(str/upper-case (api/simple-ns 'plain))")
+        result (check/check-files [api client] {})]
+    (is (= [[4 "TSP2345"] [8 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["true" "false"]
+           (mapv #(main/type-at result "client.clj" % 1) [5 6]))))
+  (is (every? simple-ident? [:plain 'plain]))
+  (is (not-any? simple-ident? [:space/key 'space/key 42 nil])))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

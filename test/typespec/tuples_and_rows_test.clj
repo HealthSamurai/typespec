@@ -49,6 +49,22 @@
   (is (= {"0" "one" "1" "two"} (update-keys ["one" "two"] str)))
   (is (thrown? ClassCastException (update-keys {:source 2} inc))))
 
+(deftest merge-with-checks-only-colliding-keys-and-preserves-other-fields
+  (let [r (checked "(:n (merge-with + {:n 2 :other \"word\"} {:n 3}))
+(:other (merge-with + {:n 2 :other \"word\"} {:n 3}))
+(:value (merge-with 42 nil {:value \"word\"}))
+(merge-with + nil nil)
+(merge-with +)
+(merge-with + {:n 2} {:n \"bad\"})
+(merge-with 42 {:n 2} {:n 3})
+(merge-with)
+(merge-with + false)")]
+    (is (= ["int?" "\"word\"" "\"word\"" "nil?" "nil?" "nil?"] (mapv #(type-at r %) [2 3 4 5 6 10])))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= {:n 5 :other "word"} (merge-with + {:n 2 :other "word"} {:n 3})))
+  (is (thrown? ClassCastException (merge-with + {:n 2} {:n "bad"}))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

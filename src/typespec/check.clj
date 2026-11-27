@@ -4445,6 +4445,43 @@
                 ms))
       t/unknown)))
 
+(defn- combine-map-fields [ctx f called? left right]
+  (reduce (fn [shape [k value]]
+            (let [required? (contains? (:req right) k)
+                  old-required? (contains? (:req shape) k)
+                  old (or (get (:req shape) k) (get (:opt shape) k))
+                  value (if (and old (not= t/never old))
+                          (let [_ (vreset! called? true)
+                                combined (apply-fn-node ctx f [old value])]
+                            (apply t/union combined
+                                   (cond-> []
+                                     (not required?) (conj old)
+                                     (not old-required?) (conj value))))
+                          value)]
+              (if (or old-required? required?)
+                (assoc-map-key shape k (dissoc value :fresh))
+                (assoc-in shape [:opt k] (dissoc value :fresh)))))
+          left (concat (:req right) (remove (comp #{t/never} val) (:opt right)))))
+
+(defmethod special 'merge-with [ctx node _]
+  (let [[f & args] (args-of node)
+        types (mapv #(t/resolve-t (:env ctx) (eff ctx (infer ctx %))) args)]
+    (cond
+      (nil? f) (do (report! ctx node "TSP2554" "merge-with expects a function") t/unknown)
+      (some #{t/never} types) (do (infer ctx f) t/never)
+      (every? #(or (= t/nil-t %) (= (t/lit false) %)) types) (do (infer ctx f) t/nil-t)
+      (= 1 (count types)) (do (infer ctx f) (first types))
+      :else
+      (let [maps (remove #{t/nil-t} types)]
+        (cond
+          (empty? maps) (do (infer ctx f) t/nil-t)
+          (every? :complete-keys? maps)
+          (let [called? (volatile! false)
+                result (reduce #(combine-map-fields ctx f called? %1 %2) maps)]
+            (when-not @called? (infer ctx f))
+            (t/with-assumption result (some t/assumption types)))
+          :else (do (infer ctx f) t/unknown))))))
+
 (defn- project-map-keys [ctx source keys]
   (reduce (fn [shape [node key-type]]
             (let [k (:val key-type)

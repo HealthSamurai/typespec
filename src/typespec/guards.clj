@@ -190,10 +190,11 @@
     :else
     (let [targets (t/members env target)]
       (if-let [arm (first (filter #(proves? env leaf (dissoc % :qualified?)) targets))]
-        (let [qualified? (:qualified? arm)]
+        (if-some [qualified? (:qualified? arm)]
           (if-some [known (t/name-qualification leaf)]
             (if (= qualified? known) [leaf t/never] [t/never leaf])
-            [arm (assoc arm :qualified? (not qualified?))]))
+            [arm (assoc arm :qualified? (not qualified?))])
+          [leaf t/never])
         (if (every? #(definitely-disjoint? leaf %) targets)
           [t/never leaf]
           [target leaf])))))

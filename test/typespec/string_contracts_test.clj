@@ -373,6 +373,34 @@
   (is (every? simple-ident? [:plain 'plain]))
   (is (not-any? simple-ident? [:space/key 'space/key 42 nil])))
 
+(deftest ident-spec-and-guard-accept-keywords-and-symbols
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.core :as core]))
+(s/fdef label :args (s/cat :x core/ident?) :ret string?)
+(defn label [x] (name x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.string :as str]))
+(api/label :label)
+(api/label 'label)
+(api/label \"label\")
+(defn guarded [x] (when (ident? x) (str/upper-case (name x))))
+(ident? :x)
+(ident? 'x)
+(ident? \"x\")")
+        result (check/check-files [api client] {})]
+    (is (= [[4 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["true" "true" "false"]
+           (mapv #(main/type-at result "client.clj" % 1) [6 7 8]))))
+  (let [shadowed (parse/parse-string "shadowed.clj" "(ns shadowed
+  (:refer-clojure :exclude [ident?])
+  (:require [clojure.spec.alpha :as s]))
+(defn ident? [x] (string? x))
+(s/def ::custom ident?)")
+        result (check/check-files [shadowed] {})]
+    (is (= ["TSP9002"] (mapv :code (:diagnostics result)))))
+  (is (every? ident? ['value :key]))
+  (is (not-any? ident? ["value" 42 nil])))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

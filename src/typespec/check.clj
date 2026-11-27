@@ -3317,7 +3317,7 @@
        nil))))
 
 (doseq [head '[qualified-keyword? simple-keyword? qualified-symbol? simple-symbol?
-               qualified-ident? simple-ident?]]
+               qualified-ident? simple-ident? ident?]]
   (defmethod special head [ctx node _]
     (core-unary-result
      ctx node

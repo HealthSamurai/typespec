@@ -60,6 +60,7 @@
  clojure.core/simple-symbol? [any? :-> boolean?]
  clojure.core/qualified-ident? [any? :-> boolean?]
  clojure.core/simple-ident? [any? :-> boolean?]
+ clojure.core/ident?     [any? :-> boolean?]
  clojure.core/instance?  [any? any? :-> boolean?]
  clojure.core/empty?     [any? :-> boolean?]
  clojure.core/contains?  [any? any? :-> boolean?]

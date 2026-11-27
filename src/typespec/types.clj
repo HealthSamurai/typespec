@@ -99,6 +99,7 @@
                             (assoc (prim :symbol) :qualified? true))
     simple-ident? (union (assoc (prim :keyword) :qualified? false)
                          (assoc (prim :symbol) :qualified? false))
+    ident? (union (prim :keyword) (prim :symbol))
     nil))
 
 (defn tuple
@@ -876,9 +877,10 @@
         fail #(do ((:fail ctx) form) unknown)]
     (cond
       (keyword? form) (if (namespace form) (ref-t form) (fail))
-      (symbol? form) (let [nm (if (= "clojure.core" (namespace form)) (symbol (name form)) form)]
+      (symbol? form) (let [nm (if (= "clojure.core" (namespace form)) (symbol (name form)) form)
+                           qualification (qualification-target (core-name ctx form))]
                        (cond (get (:type-vars ctx) nm) (get (:type-vars ctx) nm)
-                             (qualification-target nm) (qualification-target nm)
+                             qualification qualification
                              (pred-prims nm) (cond-> (prim (pred-prims nm))
                                                (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'sequential? 'fn?} nm)
                                                (with-meta {::unchecked-contract true}))

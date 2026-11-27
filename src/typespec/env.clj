@@ -607,7 +607,9 @@
         (for [[protocol methods] (sort-by key protocols)
               [_ {:keys [var file pos arities]}] methods
               :let [fd (get fdefs var)
-                    contracts (get-in fd [:type :arities])
+                    contracts (if-let [ret (get-in fd [:type :ret])]
+                                (for [n arities] {:params (vec (repeat n t/unknown)) :ret ret})
+                                (get-in fd [:type :arities]))
                     valid? (fn [arity]
                              (and (contains? arities (count (:params arity)))
                                   (not (:rest arity)) (not (:kwargs arity))))

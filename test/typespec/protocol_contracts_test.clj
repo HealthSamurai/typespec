@@ -52,6 +52,28 @@
     (is (= ["TSP2322"] (mapv :code (:diagnostics r))) (pr-str (:diagnostics r)))
     (is (re-find #"int\?" (get-in r [:diagnostics 0 :message])))))
 
+(deftest return-only-protocol-spec-applies-to-each-arity
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defprotocol Display (describe [this] [this prefix]))
+(s/fdef describe :ret string?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(def good
+  (reify a/Display
+    (describe [this] \"ready\")
+    (describe [this prefix] (str prefix \"ready\"))))
+(def wrong
+  (reify a/Display
+    (describe [this] 42)
+    (describe [this prefix] (str prefix \"ready\"))))
+(str/upper-case (a/describe good))
+(inc (a/describe good \"current: \"))
+(extend-type Long a/Display
+  (describe ([this] (str this)) ([this prefix] this)))")
+        diagnostics (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 8 "TSP2322"] ["client.clj" 11 "TSP2345"] ["client.clj" 13 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest extend-protocol-checks-each-receiver-and-the-shared-spec
   (let [r (checked "(clojure.core/extend-protocol api/Display
   String

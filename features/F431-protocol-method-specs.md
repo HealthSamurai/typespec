@@ -13,6 +13,8 @@ origin: Clojure
 Чекер собирает методы и арности из `defprotocol`. `s/fdef` задаёт
 типы параметров и результата для вызовов и тел `reify` и `extend-type`.
 Протокол и реализация могут быть в разных namespace.
+Если `s/fdef` задаёт только `:ret`, этот тип действует для каждой арности
+из `defprotocol`. Типы остальных параметров выводятся из их хинтов и тела.
 
 ```clojure example
 (ns example (:require [clojure.spec.alpha :as s]))

@@ -184,6 +184,23 @@
   (is (= "ext" (apply subs (cons "text" [1]))))
   (is (thrown? ClassCastException (apply subs (cons "text" ["bad"])))))
 
+(deftest apply-preserves-a-declared-result-without-argument-arities
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef format-value :ret string?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (apply a/format-value [:label \"a\"]))
+(inc (apply a/format-value [:label \"a\"]))
+(defn use [^clojure.lang.ISeq values]
+  (str/upper-case (apply a/format-value :label values)))
+(defn invalid [^clojure.lang.ISeq values]
+  (inc (apply a/format-value :label values)))
+(apply a/format-value :label 42)")
+        r (check/check-files [client api] {})]
+    (is (= [[3 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (str/includes? (get-in r [:diagnostics 2 :message]) "apply cannot spread 42"))))
+
 (deftest list-star-keeps-prefixes-and-spreads-the-final-argument
   (let [r (checked "(apply subs (list* \"text\" [1 3]))
 (apply subs (list* \"text\" 1 [3]))

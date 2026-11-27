@@ -4784,6 +4784,10 @@
                   (some #(not (#{:unknown :any} (:t %))) (conj params rest))))
             (:arities ty))))
 
+(defn- return-type-without-arity [{:keys [t arities ret]}]
+  (when (and (= :fn t) (empty? arities) ret (not= :unknown (:t ret)))
+    ret))
+
 (defn- spread-seqable? [ty]
   (case (:t ty)
     (:nil :never :coll :map :map-of) true
@@ -5039,7 +5043,7 @@
                                   t/unknown)
                               (checked-entry-position ctx (first nodes) label (first types) entry-index))
                             (apply-arity! ctx node label [1] (count types)))
-                          (or (= :all (:t ty)) (seq (:arities ty)))
+                          (or (= :all (:t ty)) (seq (:arities ty)) (return-type-without-arity ty))
                           (let [result (call-fn ctx node label ty nodes types)]
                             (if (and unary-refiner (= 1 (count types)))
                               (refine-unary-result ctx (first types) result unary-refiner)
@@ -5069,7 +5073,9 @@
           (do (when (or (:strict (:opts ctx)) (checkable-spread-contract? ftype))
                 (report! ctx tail "TSP410-01" "apply cannot verify the length or positions of the final argument"
                          :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:apply-tail}))
-              t/unknown))))))
+              (or (some-> (return-type-without-arity ftype)
+                          (t/with-assumption (t/assumption tail-type)))
+                  t/unknown)))))))
 
 (defn- prefixed-sequence [ctx prefix source]
   (let [size (count prefix)]

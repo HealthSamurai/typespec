@@ -4699,6 +4699,26 @@
     (t/with-assumption (list-value-type ctx (mapv #(dissoc % :fresh) types))
                        (some t/assumption types))))
 
+(defn- constructed-map [ctx node head types]
+  (cond
+    (some #{t/never} types) t/never
+    (odd? (count types))
+    (do (report! ctx node "TSP2554" (str head " expects complete key/value pairs")) t/never)
+    :else
+    (let [pairs (mapv (fn [[k v]] [(t/resolve-t (:env ctx) (eff ctx k)) (dissoc v :fresh)])
+                      (partition 2 types))]
+      (t/with-assumption
+       (if (every? #(literal-map-key-type? (first %)) pairs)
+         (reduce (fn [shape [k v]] (assoc-map-key shape (:val k) v)) empty-map-shape pairs)
+         (length/with-bounds {:t :map-of
+                              :k (apply t/union (map first pairs))
+                              :v (apply t/union (map second pairs))}
+                             1 (count pairs)))
+       (some t/assumption types)))))
+
+(defmethod special 'hash-map [ctx node _]
+  (constructed-map ctx node 'hash-map (mapv #(infer ctx %) (args-of node))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4713,7 +4733,7 @@
             spreads (spread-tail-types ctx tail tail-members)
             known-spreads (finite-spreads spreads tail-members)
             exact? (some? known-spreads)
-            constructor (when exact? (core-callback-head ctx f #{'vector 'list}))
+            constructor (when exact? (core-callback-head ctx f #{'vector 'list 'hash-map}))
             callback? (and exact? (callback-node? ctx f))
             spread-context (fn [items] (direct-callback-context (into prefix-types items) false))
             ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
@@ -4745,6 +4765,7 @@
                           (= :never (:t ty)) t/never
                           (= 'vector constructor) (constructed-vector ctx types)
                           (= 'list constructor) (constructed-list ctx types)
+                          (= 'hash-map constructor) (constructed-map ctx node label types)
                           (or (= :all (:t ty)) (seq (:arities ty)))
                           (call-fn ctx node label ty nodes types)
                           (and (= :lit (:t ty)) (ident? (:val ty)))

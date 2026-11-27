@@ -213,6 +213,20 @@
   (is (= "ext" (apply subs (apply list ["text" 1]))))
   (is (thrown? ClassCastException (apply subs (apply list ["text" "wrong"])))))
 
+(deftest hash-map-preserves-known-pairs-and-rejects-unpaired-keys
+  (let [r (checked "(:name (hash-map :name \"text\"))
+(:name (apply hash-map :name [\"text\"]))
+(:name (hash-map :name \"old\" :name \"new\"))
+(:missing (apply hash-map []) :default)
+(inc (:name (hash-map :name \"bad\")))
+(hash-map :unpaired)
+(apply hash-map [:name \"text\" :unpaired])")]
+    (is (= ["\"text\"" "\"text\"" "\"new\"" ":default"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= {:name "new"} (hash-map :name "old" :name "new")))
+  (is (thrown? IllegalArgumentException (apply hash-map [:unpaired]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

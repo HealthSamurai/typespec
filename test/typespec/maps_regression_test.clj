@@ -142,6 +142,35 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest spec-merge-rejects-values-for-disjoint-scalar-fields
+  (let [schema (parse/parse-string "schema.clj" "(ns schema (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::row (s/keys :req-un [::id]))
+(s/def ::patch (s/keys :opt-un [::id]))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [schema :as schema]))
+(s/def ::id string?)
+(s/def ::row (s/merge ::schema/row (s/keys :req-un [::id])))
+(s/def ::patch (s/merge (s/keys :opt-un [::id]) ::schema/patch))
+(s/def ::choice (s/and #{:left} #{:right}))
+(s/fdef save :args (s/cat :row ::row))
+(s/fdef patch :args (s/cat :row ::patch))
+(s/fdef choose :args (s/cat :key ::choice))
+(defn save [row] row)
+(defn patch [row] row)
+(defn choose [key] key)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/save {:id \"text\"})
+(a/save {:id 1})
+(a/patch {})
+(a/patch {:id \"text\"})
+(a/patch {:id 1})
+(a/choose :left)")
+        issues (:diagnostics (check/check-files [client api schema] {}))]
+    (is (= [[2 "TSP2322"] [3 "TSP2322"] [5 "TSP2322"] [6 "TSP2322"] [7 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(re-find #"t/never" (:message %)) issues))))
+
 (deftest spec-merge-bounds-the-combination-of-map-alternatives
   (let [options (fn [prefix n]
                   (apply t/union

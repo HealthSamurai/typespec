@@ -578,6 +578,29 @@
     (when (every? #(#{:prim :class :lit :some :nil :never :any} (:t %)) parts)
       (apply union parts))))
 
+(defn- scalar-category [{:keys [t name val]}]
+  (case t
+    :prim (cond (#{:int :double :number} name) :number
+                (#{:string :keyword :symbol :boolean :uuid} name) name)
+    :lit (cond (number? val) :number
+               (string? val) :string
+               (keyword? val) :keyword
+               (symbol? val) :symbol
+               (boolean? val) :boolean
+               (instance? java.util.UUID val) :uuid)
+    nil))
+
+(defn- disjoint-scalar-types? [left right]
+  (let [lt (:t left) rt (:t right)
+        nonnil? #{:lit :prim :class :some}]
+    (cond
+      (or (:platform left) (:platform right)) false
+      (and (= :lit lt) (= :lit rt)) (not= (:val left) (:val right))
+      (= :nil lt) (contains? nonnil? rt)
+      (= :nil rt) (contains? nonnil? lt)
+      :else (let [a (scalar-category left) b (scalar-category right)]
+              (and a b (not= a b))))))
+
 (defn- narrower-scalar-contract [env seen a b]
   (when (and a b (not= a b))
     (let [left (scalar-contract env seen a)
@@ -587,7 +610,9 @@
           (= :any (:t left)) b
           (= :any (:t right)) a
           (= :proved (:status (contract-sub-result left right))) a
-          (= :proved (:status (contract-sub-result right left))) b)))))
+          (= :proved (:status (contract-sub-result right left))) b
+          (every? identity (for [l (members {} left) r (members {} right)]
+                             (disjoint-scalar-types? l r))) never)))))
 
 (defn- merge-spec-maps [env seen a b]
   (let [required (merge (:req a) (:req b))

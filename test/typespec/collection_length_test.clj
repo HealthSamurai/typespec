@@ -895,6 +895,23 @@
   (is (= [1 3 5] (into [] (take-nth -2) [1 2 3 4 5])))
   (is (thrown? ArithmeticException (into [] (take-nth 0) [1]))))
 
+(deftest interleave-keeps-row-order-and-stops-at-the-shortest-source
+  (let [r (checked "(second (interleave [1] [\"word\" :unused]))
+(nth (interleave [1 3] [\"word\"] [:tag :unused]) 2)
+(interleave [1 2] [3] [4 5])
+(first (interleave [1] []))
+(first (interleave [\"only\"]))
+(interleave)
+(inc (second (interleave [1] [\"word\"])))
+(interleave 42 [1])")]
+    (is (= ["\"word\"" ":tag" "(s/coll-of int? :kind seq? :min-count 3 :max-count 3)"
+            "nil?" "\"only\"" "(s/coll-of t/never :kind seq? :max-count 0)"]
+           (mapv #(at r %) (range 2 8))))
+    (is (= [[8 "TSP2345"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [1 "word" :tag] (vec (interleave [1 3] ["word"] [:tag :unused]))))
+  (is (thrown? ClassCastException (inc (second (interleave [1] ["word"]))))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

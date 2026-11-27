@@ -5898,6 +5898,33 @@
      :upper (when (every? :upper parts) (apply max (map :upper parts)))
      :element (t/with-assumption (apply t/union (map :element parts)) (t/assumption source))}))
 
+(defmethod special 'interleave [ctx node _]
+  (let [args (args-of node)
+        sources (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (empty? sources) (length/with-bounds (coll-of :seq t/never) 0 0)
+      (some #{t/never} sources) t/never
+      (report-invalid-sequence-args! ctx 'interleave args sources) t/unknown
+
+      :else
+      (let [normalized (mapv #(apply t/union (map (fn [m] (or (map-entry-sequence m) m))
+                                                (t/members (:env ctx) %)))
+                             sources)
+            parts (mapv #(sequence-summary ctx %) normalized)
+            width (count sources)
+            lo (*' width (apply min (map :lower parts)))
+            hi (when-let [limits (seq (keep :upper parts))] (*' width (apply min limits)))
+            positions (mapv :items normalized)
+            items (when (every? some? positions) (vec (apply interleave positions)))
+            element (cond
+                      (= 0 hi) t/never
+                      items (apply t/union items)
+                      :else (apply t/union (map :element parts)))]
+        (t/with-assumption
+         (cond-> (length/with-bounds (coll-of :seq element) lo hi)
+           items (assoc :items items))
+         (some t/assumption sources))))))
+
 (defmethod special 'partition-by [ctx node _]
   (let [[f coll :as args] (args-of node)]
     (case (count args)

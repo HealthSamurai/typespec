@@ -12,6 +12,27 @@
 (defn- codes [result] (mapv :code (:diagnostics result)))
 (defn- type-at [result row] (main/type-at result "sample.clj" row 1))
 
+(deftest update-vals-preserves-required-fields-and-vector-kind
+  (let [api (parse/parse-string "rows.clj" "(ns rows (:require [clojure.spec.alpha :as s]))
+(s/def ::amount int?)
+(s/fdef raw :args (s/cat) :ret (s/keys :req-un [::amount]))
+(defn raw [] {:amount 2})")
+        client (parse/parse-string "client.clj" "(ns client (:require [rows :as api] [clojure.string :as str]))
+(str/upper-case (:amount (update-vals (api/raw) str)))
+(inc (:amount (update-vals (api/raw) str)))
+(first (update-vals [1 2] inc))
+(:absent (update-vals nil 42) :default)
+(update-vals {:amount \"bad\"} inc)
+(update-vals 42 inc)
+(update-vals {})")
+        r (check/check-files [api client] {})]
+    (is (= [[3 "TSP2345"] [6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r))))
+    (is (= ["int?" ":default"] (mapv #(main/type-at r "client.clj" % 1) [4 5]))))
+  (is (= [2 3] (update-vals [1 2] inc)))
+  (is (= {} (update-vals nil 42)))
+  (is (thrown? ClassCastException (update-vals {:amount "bad"} inc))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

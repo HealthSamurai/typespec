@@ -7563,6 +7563,68 @@
       :prim (cond-> opaque (= :vector (:name member)) (assoc :key (t/prim :int)))
       opaque)))
 
+(defn- kv-rewrite-input [member]
+  (let [{:keys [bounds key value]} (kv-reduction-input member)]
+    {:source member :bounds bounds :key key
+     :value (if (= :map (:t member))
+              (let [known (concat (vals (:req member)) (vals (:opt member))
+                                  (when-let [index (:map-index member)] [(:v index)]))]
+                (if (seq known) (apply t/union known) value))
+              value)}))
+
+(defn- invalid-kv-source [ctx source]
+  (or (unsupported-sequence-member ctx source)
+      (some #(when (or (= :string (:name %)) (string? (:val %)) (array-component %)
+                       (#{:set :seq} (or (:kind %) (:name %)))) %)
+            (t/members (:env ctx) source))))
+
+(defn- check-kv-rewrite [ctx node head axis transform]
+  (let [[coll f :as args] (args-of node)]
+    (if (not= 2 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" (str head " expects two arguments"))
+          t/unknown)
+      (let [source (eff ctx (infer ctx coll))
+            bad (invalid-kv-source ctx source)]
+        (cond
+          (= t/never source) (do (infer ctx f) t/never)
+          bad (do (infer ctx f)
+                  (report! ctx coll "TSP2345" (str head " cannot reduce keys and values of " (t/show bad)))
+                  t/unknown)
+          :else
+          (let [members (mapv kv-rewrite-input (t/members (:env ctx) source))
+                active (remove #(= 0 (second (:bounds %))) members)
+                input (apply t/union (map axis active))
+                result (if (seq active) (apply-fn-node ctx f [input]) (infer ctx f))]
+            (if (and (empty? active) (= t/never result))
+              t/never
+              (t/with-assumption
+               (apply t/union
+                      (for [{[lo _] :bounds :as member} members]
+                        (cond
+                          (not= t/never result) (transform member (dissoc result :fresh))
+                          (pos? lo) t/never
+                          :else (transform (assoc member :bounds [0 0]) result))))
+               (or (t/assumption source) (t/assumption result))))))))))
+
+(defn- rewritten-map-values [{member :source [lo hi] :bounds} result]
+  (cond
+    (vector-member? member)
+    (cond-> (length/with-bounds (coll-of :vector (if (= 0 hi) t/never result)) lo hi)
+      (:items member) (assoc :items (mapv (constantly result) (:items member))))
+    (= 0 hi) empty-map-shape
+    (= :map-of (:t member)) (assoc member :v result)
+    (= :map (:t member))
+    (cond-> (-> (dissoc member :fresh)
+                (update :req update-vals (constantly result))
+                (update :opt update-vals #(if (= t/never %) % result)))
+      (:map-index member) (assoc-in [:map-index :v] result))
+    (= (t/prim :map) (t/strip member)) {:t :map-of :k t/unknown :v result}
+    :else t/unknown))
+
+(defmethod special 'update-vals [ctx node _]
+  (check-kv-rewrite ctx node 'update-vals :value rewritten-map-values))
+
 (doseq [[head part] {'keys :key 'vals :value}]
   (defmethod special head [ctx node _]
     (let [args (args-of node)

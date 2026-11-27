@@ -566,6 +566,35 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest return-only-spec-checks-bodies-and-cross-namespace-calls
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef render :ret string?)
+(defn render
+  ([] \"default\")
+  ([^String label] label)
+  ([left right & rest] (str left right (count rest))))
+(s/fdef wrong :ret string?)
+(defn wrong [] 42)
+(s/fdef external :ret int?)
+(s/fdef same :ret string?)
+(defn same {:t/sig '[int? :-> string?]} [x] (str x))
+(s/fdef disagree :ret string?)
+(defn disagree {:t/sig '[int? :-> int?]} [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(defn accepts [^String x] x)
+(accepts (a/render))
+(accepts (a/render \"valid\"))
+(accepts (a/render \"a\" \"b\" \"c\"))
+(inc (a/render))
+(a/render 42)
+(inc (a/external :anything))
+(accepts (a/external))")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 8 "TSP2322"] ["api.clj" 13 "TSP2790"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest collection-spec-options-keep-checking-the-project
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

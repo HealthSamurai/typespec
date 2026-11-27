@@ -8580,6 +8580,7 @@
         ftype (if (= :all (:t (:type v))) (solver/open-rigid (:type v)) (:type v))
         bodies (:arities parts)
         plans (when (and (= :fdef (:source v))
+                         (not (:return-only? v))
                          (or (some :keyword-regex? (:arities ftype))
                              (not-any? #(= :map (:op (:rest (env/split-params (:params %))))) bodies)))
                 (spec-implementation-plans ctx bodies (:arities ftype) :total))
@@ -8588,7 +8589,8 @@
       (when (t/primitives (str (:val tn)))
         (report! ctx tn "TSP7021"
                  (str "a hint on the name is not a return type: write (defn " (:val nm) " ^" (:val tn) " [...] ...)"))))
-    (when (and (:strict (:opts ctx)) (not (:private? parts)) (= :hints (:source v))
+    (when (and (:strict (:opts ctx)) (not (:private? parts))
+               (or (= :hints (:source v)) (:return-only? v))
                (some (fn [a] (or (= :unknown (:t (:ret a))) (some #(= :unknown (:t %)) (:params a)))) (:arities ftype)))
       (report! ctx nm "TSP7010" (str "public function " (:val nm) " has no signature: add s/fdef, {:t/sig '[...]} or type hints")))
     (when (some nil? plans)

@@ -534,16 +534,21 @@
          (= 'clojure.spec.alpha/fdef h)
          (let [[_ nm & opts] (:children form)
                options (t/spec-option-map (map parse/node->data opts))
+               {:keys [args ret]} options
                ctx (assoc (type-ctx file (opaque form)) :spec-definitions spec-definitions :spec? true)
-               ars (if-let [{:keys [args ret]} options]
-                     (t/spec-args->arities ctx args (if ret (t/parse-type ctx ret) t/unknown))
-                     (do ((:fail ctx) (parse/node->data form)) nil))]
+               result (if ret (t/parse-type ctx ret) t/unknown)
+               ars (if options
+                     (t/spec-args->arities ctx args result)
+                     (do ((:fail ctx) (parse/node->data form)) nil))
+               type (cond
+                      ars {:t :fn :arities ars}
+                      (and (nil? args) (not= t/unknown result)) {:t :fn :ret result})]
            (if (= :sym (:op nm))
              (let [sym (qualify (:val nm))
                    location {:file (:file file) :pos (:pos form)}]
-               (if ars
+               (if type
                  (-> (update acc :opaque-fdefs dissoc sym)
-                     (register-spec :fdefs sym (assoc location :type {:t :fn :arities ars}) diags))
+                     (register-spec :fdefs sym (assoc location :type type) diags))
                  (assoc-in acc [:opaque-fdefs sym] location)))
              acc))
 
@@ -637,30 +642,38 @@
   (let [sig (when (:sig d)
               (operators/normalize operator-env (:sig d)
                                    (operator-errors diags (:file d) (:sig-pos d))))
-        declared (or sig (:type fd))
+        return-only (get-in fd [:type :ret])
+        declared (or sig (when-not return-only (:type fd)))
         invalid? (operators/invalid? sig)
         hints (when-not declared
                 (hints-sig env (:file d) (:parts d)
                            (fn [at param previous type]
                              (note diags (:file d) at "TSP114-01"
                                    (str "incompatible preconditions on " param ": "
-                                        (t/show previous) " and " (t/show type))))))]
-    (when (and sig fd (not invalid?) (not (t/alpha-equivalent? sig (:type fd))))
+                                        (t/show previous) " and " (t/show type))))))
+        inferred (cond-> hints (and hints return-only)
+                   (update :arities #(mapv (fn [arity] (assoc arity :ret return-only)) %)))]
+    (when (and sig fd (not invalid?)
+               (if return-only
+                 (some #(not (t/alpha-equivalent? (:ret %) return-only))
+                       (:arities (if (= :all (:t sig)) (:body sig) sig)))
+                 (not (t/alpha-equivalent? sig (:type fd)))))
       (note diags (:file d) (:name (:parts d)) "TSP2790"
             (str "t/sig and s/fdef of " (name sym) " disagree: "
-                 (t/show sig) " vs " (t/show (:type fd)))))
+                 (t/show sig) " vs " (if return-only (str ":ret " (t/show return-only)) (t/show (:type fd))))))
     {:parts (:parts d) :pfile (:file d) :definition (:definition d)
-     :type (or declared hints)
+     :type (or declared inferred)
      :contract (if sig {:file (:file (:file d)) :pos (:sig-pos d)}
                    (select-keys fd [:file :pos]))
      :source (cond sig :sig fd :fdef :else :hints)
+     :return-only? (boolean (and return-only (not sig)))
      :tagged? (boolean (or (some #(tag-node (:params %)) (:arities (:parts d)))
                            (tag-node (:name (:parts d)))))
      :complete? (if declared
                   (not invalid?)
                   (every? (fn [a] (and (not= :unknown (:t (:ret a)))
                                        (not-any? #(= :unknown (:t %)) (:params a))))
-                          (:arities hints)))
+                          (:arities inferred)))
      :private? (:private? (:parts d))
      :file (:file (:file d)) :pos (:pos d)}))
 

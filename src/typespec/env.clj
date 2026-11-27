@@ -219,16 +219,27 @@
   '{string? :string int? :int integer? :int number? :number keyword? :keyword boolean? :boolean
     map? :map vector? :vector uuid? :uuid})
 
+(defn- precondition-head [file test]
+  (let [operator (first (:children test))
+        sym (:val operator)]
+    (when (and (= :list (:op test)) (= :sym (:op operator))
+               (empty? (:directives test)) (empty? (:directives operator))
+               (not (contains? (:locals file) sym))
+               (not (contains? (:defined-symbols file) sym)))
+      (or (t/core-name file sym) (let [resolved (resolve-sym file sym)]
+                                  (when (namespace resolved) resolved))))))
+
 (defn- pre-types
   "{param-symbol type} from :pre conditions like (string? x) and (s/valid? ::spec x)."
-  [file body]
-  (into {}
-        (for [test (pre-conditions body)
-              :let [h (head file test) [a b _ & more] (rest (:children test))]]
-          (cond (and (pre-preds h) (= :sym (:op a)) (nil? b)) [(:val a) (t/prim (pre-preds h))]
-                (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
-                [(:val b) (t/ref-t (:val a))]
-                :else nil))))
+  [file params body]
+  (let [file (assoc file :locals (into #{} (keep #(when (= :sym (:op %)) (:val %))) (:children params)))]
+    (into {}
+          (for [test (pre-conditions body)
+                :let [h (precondition-head file test) [a b _ & more] (rest (:children test))]]
+            (cond (and (pre-preds h) (= :sym (:op a)) (nil? b)) [(:val a) (t/prim (pre-preds h))]
+                  (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
+                  [(:val b) (t/ref-t (:val a))]
+                  :else nil)))))
 
 (defn pattern-type
   "Type a parameter must have, as far as its hint or destructuring pattern says."
@@ -247,7 +258,7 @@
   {:t :fn
    :arities (vec (for [{:keys [params body]} (:arities parts)
                        :let [{:keys [fixed rest]} (split-params params)
-                             pre (pre-types file body)]]
+                             pre (pre-types file params body)]]
                    (cond-> {:params (mapv #(or (when (= :sym (:op %)) (get pre (:val %)))
                                                (pattern-type env file %))
                                           fixed)

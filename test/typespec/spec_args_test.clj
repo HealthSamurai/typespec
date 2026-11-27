@@ -36,6 +36,24 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest preconditions-distinguish-core-vars-from-shadowed-predicates
+  (let [api (parse/parse-string "api.clj" "(ns api (:refer-clojure :exclude [string?]))
+(defn string? [x] (number? x))
+(defn local-var [x] {:pre [(string? x)]} x)
+(defn local-param [number? x] {:pre [(number? x)]} x)
+(defn explicit [number? x] {:pre [(clojure.core/number? x)]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/local-var 42)
+(api/local-param string? \"text\")
+(api/explicit string? 42)
+(api/explicit string? \"text\")")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [f (fn [number? x] {:pre [(number? x)]} x)]
+    (is (= "text" (f string? "text")))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

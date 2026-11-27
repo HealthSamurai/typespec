@@ -95,6 +95,8 @@
     simple-keyword? (assoc (prim :keyword) :qualified? false)
     qualified-symbol? (assoc (prim :symbol) :qualified? true)
     simple-symbol? (assoc (prim :symbol) :qualified? false)
+    qualified-ident? (union (assoc (prim :keyword) :qualified? true)
+                            (assoc (prim :symbol) :qualified? true))
     nil))
 
 (defn tuple

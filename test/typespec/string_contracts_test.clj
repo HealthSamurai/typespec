@@ -330,6 +330,28 @@
   (is (nil? (namespace (symbol nil "space/local"))))
   (is (thrown? IllegalArgumentException (symbol 42))))
 
+(deftest qualified-ident-covers-keywords-and-symbols-in-specs-and-guards
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef ns-of :args (s/cat :x qualified-ident?) :ret string?)
+(defn ns-of [x] (namespace x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.string :as str]))
+(str/upper-case (api/ns-of :space/key))
+(str/upper-case (api/ns-of 'space/key))
+(api/ns-of :plain)
+(api/ns-of 'plain)
+(defn indexed [x] (when (qualified-ident? x) (str/upper-case (namespace x))))
+(qualified-ident? 42)
+(qualified-ident? :space/key)
+(qualified-ident? 'space/key)")
+        result (check/check-files [api client] {})]
+    (is (= [[4 "TSP2345"] [5 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["false" "true" "true"]
+           (mapv #(main/type-at result "client.clj" % 1) [7 8 9]))))
+  (is (every? qualified-ident? [:space/key 'space/key]))
+  (is (not-any? qualified-ident? [:plain 'plain 42 nil])))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

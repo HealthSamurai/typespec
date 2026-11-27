@@ -184,17 +184,19 @@
       :else [target leaf])))
 
 (defn qualification-parts [env target leaf]
-  (let [base (dissoc target :qualified?)
-        qualified? (:qualified? target)]
-    (cond
-      (= t/never leaf) [t/never t/never]
-      (#{:lit :nil} (:t leaf)) (if (t/sub? env leaf target) [leaf t/never] [t/never leaf])
-      (definitely-disjoint? leaf base) [t/never leaf]
-      (proves? env leaf base)
-      (if-some [known (t/name-qualification leaf)]
-        (if (= qualified? known) [leaf t/never] [t/never leaf])
-        [target (assoc base :qualified? (not qualified?))])
-      :else [target leaf])))
+  (cond
+    (= t/never leaf) [t/never t/never]
+    (#{:lit :nil} (:t leaf)) (if (t/sub? env leaf target) [leaf t/never] [t/never leaf])
+    :else
+    (let [targets (t/members env target)]
+      (if-let [arm (first (filter #(proves? env leaf (dissoc % :qualified?)) targets))]
+        (let [qualified? (:qualified? arm)]
+          (if-some [known (t/name-qualification leaf)]
+            (if (= qualified? known) [leaf t/never] [t/never leaf])
+            [arm (assoc arm :qualified? (not qualified?))]))
+        (if (every? #(definitely-disjoint? leaf %) targets)
+          [t/never leaf]
+          [target leaf])))))
 
 (defn- class-split [env leaf class]
   (let [target (t/class-type class)]

@@ -987,9 +987,14 @@
                              (= 't/never nm) never
                              (:inside-all ctx) (fail)
                              :else (if-let [c (resolve-class (:imports ctx) nm)] (class-type c) (fail))))
-      (set? form) (if (and (seq form) (every? #(and (some? %) (literal-set-member? %)) form))
-                    (literal-set-type form)
-                    (fail))
+      (set? form) (if (:spec? ctx)
+                    ;; A set used as a predicate returns the member itself.
+                    (if (every? literal-set-member? form)
+                      (literal-set-type (filter identity form))
+                      (fail))
+                    (if (and (seq form) (not (contains? form nil)) (every? literal-set-member? form))
+                      (literal-set-type form)
+                      (fail)))
       (vector? form) (if (and (:inside-all ctx) (some #{'&} form)) (fail) (parse-sig ctx form))
       (seq? form)
       (case (type-form-op ctx (first form))

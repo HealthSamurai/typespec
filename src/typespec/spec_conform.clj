@@ -30,7 +30,7 @@
                       (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
                       t/unknown))
 
-                  (set? form) (t/parse-type (assoc context :fail (constantly nil)) form)
+                  (set? form) (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
                   (seq? form)
                   (let [args (rest form)
                         child #(output context % active)]

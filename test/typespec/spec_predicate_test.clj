@@ -157,6 +157,35 @@
         (pr-str issues))
     (is (= [false false true true] (mapv boolean [nil false 0 :enabled])))))
 
+(deftest literal-spec-sets-use-the-members-truthiness
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::mode #{nil false :auto})
+(s/def ::none #{})
+(s/def ::tagged (s/or :mode ::mode :count int?))
+(s/fdef select-mode :args (s/cat :mode ::mode) :ret ::mode)
+(s/fdef reject :args (s/cat :value ::none) :ret any?)
+(defn select-mode [mode] mode)
+(defn reject [value] value)
+(defn literal-type-only {:t/sig '[#{false} :-> #{false}]} [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/select-mode nil)
+(a/select-mode false)
+(a/select-mode :auto)
+(a/select-mode true)
+(a/reject :auto)
+(a/literal-type-only false)
+(a/literal-type-only true)")
+        {:keys [diagnostics env]} (check/check-files [client api] {})
+        conformed (t/members env (conform/tagged-result env nil :api/tagged))]
+    (is (= [["client.clj" 2 "TSP2345"] ["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= (t/lit :auto)
+           (some #(when (= :mode (get-in % [:items 0 :val])) (get-in % [:items 1])) conformed)))
+    (is (= [false false true false] (mapv #(s/valid? #{nil false :auto} %) [nil false :auto true])))
+    (is (not (s/valid? #{} :auto)))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

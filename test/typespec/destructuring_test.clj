@@ -648,7 +648,7 @@
 (defn counts [] {})
 (let [{:as all} (list :tag :count (seq (counts)))]
   (if (nil? (get all \"n\")) (inc (get all \"n\" 0)) (inc (get all \"n\"))))
-(s/fdef flags :args (s/cat) :ret (s/map-of string? #{false}))
+(s/fdef flags :args (s/cat) :ret (s/map-of string? false?))
 (defn flags [] {\"enabled\" false})
 (let [{:as all} (list :tag :flags (flags))]
   (if (some? (get all \"enabled\")) (inc (get all \"enabled\")) 0))")]
@@ -662,7 +662,7 @@
 (defn counts [] {\"n\" 4})
 (s/fdef nullable :args (s/cat) :ret (s/map-of string? (s/nilable int?)))
 (defn nullable [] {\"n\" nil})
-(s/fdef flags :args (s/cat) :ret (s/map-of keyword? #{false}))
+(s/fdef flags :args (s/cat) :ret (s/map-of keyword? false?))
 (defn flags [] {:enabled false})")
         client (parse/parse-string
                 "client.clj"
@@ -694,7 +694,7 @@
   (let [api (parse/parse-string
              "options.clj"
              "(ns options (:require [clojure.spec.alpha :as s]))
-(s/fdef counts :args (s/cat) :ret (s/map-of string? (s/or :count int? :disabled #{false})))
+(s/fdef counts :args (s/cat) :ret (s/map-of string? (s/or :count int? :disabled false?)))
 (defn counts [] {\"n\" 4})
 (s/fdef nullable :args (s/cat) :ret (s/map-of string? (s/nilable int?)))
 (defn nullable [] {\"n\" nil})")

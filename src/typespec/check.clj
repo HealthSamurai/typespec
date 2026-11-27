@@ -6169,7 +6169,24 @@
          (cond-> (length/with-bounds (coll-of :seq element) lo hi)
            items (assoc :items items)))))))
 
-(doseq [h '[drop-while group-by some every? not-any? run! max-key min-key]]
+(defmethod special 'drop-while [ctx node _]
+  (check-while-sequence
+   ctx node 'drop-while
+   (fn [member {:keys [can-fail?] :as predicate}]
+     (cond
+       (= t/never member) t/never
+       (not can-fail?) (length/with-bounds (coll-of :seq t/never) 0 0)
+       :else
+       (let [[skip-min skip-max] (leading-run-bounds member predicate)]
+         (if (= skip-min skip-max)
+           (sequence-tail ctx member skip-min false)
+           (let [[lo hi] (sequence-member-bounds member)
+                 lower (if skip-max (max 0 (-' lo skip-max)) 0)
+                 upper (when hi (max 0 (-' hi skip-min)))]
+             (length/with-bounds (coll-of :seq (if (= 0 upper) t/never (member-element member)))
+                                 lower upper))))))))
+
+(doseq [h '[group-by some every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
           c (last more)]
@@ -6178,7 +6195,6 @@
         (let [el (elem-type ctx (infer ctx c))
               [ret] (apply-predicate ctx f el false)]
           (case h
-            drop-while (coll-of :seq el)
             (every? not-any?) (t/prim :boolean)
             some (t/union (t/remove-nil (:env ctx) ret) t/nil-t)
             run! t/nil-t

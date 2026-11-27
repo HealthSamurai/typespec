@@ -919,6 +919,20 @@
     (is (= ["(s/coll-of string? :kind seq? :min-count 2 :max-count 2)" "\"one\"" "nil?" ":two"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest drop-while-preserves-elements-after-the-first-rejection
+  (let [r (checked "(first (drop-while string? [\"skip\" 2 \"keep\"]))
+(second (drop-while string? [\"skip\" 2 \"keep\"]))
+(first (drop-while string? [\"all\"]))
+(first (drop-while (fn [_] false) [\"first\"]))
+(str/upper-case (first (drop-while string? [\"skip\" 2 \"keep\"])))
+(drop-while number? 42)
+(drop-while string? [] :extra)
+(drop-while (fn [_ _] true) [])")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["2" "\"keep\"" "nil?" "\"first\""] (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

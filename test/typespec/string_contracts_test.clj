@@ -440,6 +440,26 @@
          (vec (filter namespace [:space/key :plain 'scope/key 'plain (keyword "" "key")]))))
   (is (thrown? NullPointerException (mapv #(str/upper-case (namespace %)) (remove namespace [:plain])))))
 
+(deftest testing-namespace-refines-immutable-identifiers
+  (let [file (parse/parse-string "guard.clj" "(ns guard (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef good :args (s/cat :x ident?) :ret (s/nilable string?))
+(defn good [x] (when (namespace x) (str/upper-case (namespace x))))
+(s/fdef opposite :args (s/cat :x ident?) :ret (s/nilable string?))
+(defn opposite [x] (when-not (namespace x) (str/upper-case (namespace x))))
+(s/fdef unknown :args (s/cat :x clojure.lang.Named) :ret (s/nilable string?))
+(defn unknown [x] (when (namespace x) (str/upper-case (namespace x))))")
+        result (check/check-files [file] {})]
+    (is (= [[5 "TSP2531"] [7 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result))))
+  (is (= "SPACE" (when (namespace :space/key) (str/upper-case (namespace :space/key)))))
+  (let [names (atom ["space" nil])
+        unstable (reify clojure.lang.Named
+                   (getName [_] "key")
+                   (getNamespace [_] (first (first (swap-vals! names next)))))]
+    (is (thrown? NullPointerException
+                 (when (namespace unstable) (str/upper-case (namespace unstable)))))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

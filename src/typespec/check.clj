@@ -930,8 +930,17 @@
                           (assoc-in branch [:locals local] type)))
                       branches [(t/remove-nil env ty) (nil-part env ty)]))))))))
 
+(defn- namespace-contexts [ctx node]
+  (when (and (= 'namespace (builtin-head ctx node)) (not (:guards-disabled? ctx)))
+    (let [[_ arg & more] (:children node)]
+      (when (and arg (empty? more))
+        (refine-path ctx arg
+                     #(mapv (fn [ty] (when-not (= t/never ty) ty))
+                            (guards/namespace-parts (:env ctx) %)))))))
+
 (defn- truth-contexts [ctx node]
   (or (find-contexts ctx node)
+      (namespace-contexts ctx node)
       (refine-path ctx node (fn [leaf]
                              (for [truthy? [true false]
                                    :let [ty (truth-part (:env ctx) leaf truthy?)]]

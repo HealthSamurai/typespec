@@ -743,6 +743,12 @@
                (= 'instance? (core-name ctx predicate)) (empty? extra))
       (instance-predicate-type ctx class-form))))
 
+(defn- refine-predicate-type [left right]
+  (cond
+    (and (= some-t right) (nilable? {} left)) (remove-nil {} left)
+    (and (= some-t left) (nilable? {} right)) (remove-nil {} right)
+    :else (or (narrower-scalar-contract {} #{} left right) left)))
+
 (defn- predicate-expression-type [ctx parameter? expression]
   (when (seq? expression)
     (let [[head arg value & more] expression
@@ -759,7 +765,7 @@
                 (when-let [opaque (:fail ctx)]
                   (doseq [[clause type] checks :when (nil? type)]
                     (opaque clause)))
-                (vary-meta (reduce #(or (narrower-scalar-contract {} #{} %1 %2) %1) known)
+                (vary-meta (reduce refine-predicate-type known)
                            assoc ::unchecked-contract true)))
         or (let [branches (mapv #(predicate-expression-type ctx parameter? %) (rest expression))]
              (when (and (seq branches) (every? some? branches))
@@ -782,19 +788,36 @@
                                  (fn [argument] (or (= param argument) (and reader-fn? (= '%1 argument))))
                                  body))))
 
-(defn- transparent-predicate-type [ctx form]
+(defn- transparent-predicate-type [ctx form seen]
   (cond
+    (qualified-keyword? form)
+    (when (and (not (seen form)) (< (count seen) 64))
+      (let [definitions (:spec-definitions ctx)]
+        (when-let [{:keys [spec-form spec-context]} (definitions form)]
+          (when-let [type (transparent-predicate-type (assoc spec-context :spec-definitions definitions)
+                                                     spec-form (conj seen form))]
+            (vary-meta type assoc ::referenced-specs #{form})))))
+
     (symbol? form) (let [predicate (core-name ctx form)]
                      (or (qualification-target predicate) (builtin-predicate-type predicate)))
     (and (set? form) (every? literal-set-member? form)) (literal-set-type (filter identity form))
-    (seq? form) (or (partial-instance-type ctx form) (predicate-spec-type ctx form))))
+    (seq? form) (if (and (= :s/nilable (type-form-op ctx (first form))) (= 2 (count form)))
+                  (when-let [type (transparent-predicate-type ctx (second form) seen)]
+                    (vary-meta (union type nil-t) merge (select-keys (meta type) [::referenced-specs])))
+                  (or (partial-instance-type ctx form) (predicate-spec-type ctx form)))))
 
 (defn- spec-conjunction-type [ctx forms]
   ;; Later s/and operands see the conformed value. Only combine predicates
   ;; before a form that might have transformed it.
-  (let [prefix (seq (take-while some? (map #(transparent-predicate-type ctx %) forms)))]
+  (let [prefix (seq (take-while some? (map #(transparent-predicate-type ctx % #{}) forms)))]
     (if prefix
-      (reduce #(or (narrower-scalar-contract {} #{} %1 %2) %1) prefix)
+      (let [leading (first forms)
+            refined (reduce refine-predicate-type prefix)
+            type (if (and (qualified-keyword? leading) (= refined (first prefix)))
+                   (ref-t leading)
+                   refined)
+            references (into #{} (mapcat #(-> % meta ::referenced-specs)) prefix)]
+        (cond-> type (seq references) (vary-meta assoc ::referenced-specs references)))
       (parse-type ctx (first forms)))))
 
 (defn- flat-keys [x] (cond (keyword? x) [x] (seq? x) (mapcat flat-keys (rest x)) :else []))
@@ -881,13 +904,13 @@
     (if (regex-op ctx form)
       {:context ctx :form form}
       (when (qualified-keyword? form)
-        (when-let [{:keys [spec-form spec-context]} (get-in ctx [:regex-specs form])]
+        (when-let [{:keys [spec-form spec-context]} (get-in ctx [:spec-definitions form])]
           (if (or (contains? (:active-regex-specs ctx) form)
                   (neg? (vswap! (:regex-expansion-budget ctx) dec)))
             {:opaque? true}
             (recur (assoc spec-context
                           :fail (:fail ctx)
-                          :regex-specs (:regex-specs ctx)
+                          :spec-definitions (:spec-definitions ctx)
                           :regex-expansion-budget (:regex-expansion-budget ctx)
                           :active-regex-specs (conj (:active-regex-specs ctx) form))
                    spec-form)))))))

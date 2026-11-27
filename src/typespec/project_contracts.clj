@@ -4,7 +4,9 @@
             [typespec.types :as t]))
 
 (defn- references [ty]
-  (into #{} (keep #(when (and (map? %) (= :ref (:t %))) (:name %)))
+  (into #{} (mapcat (fn [node]
+                     (cond-> (or (::t/referenced-specs (meta node)) #{})
+                       (and (map? node) (= :ref (:t node))) (conj (:name node)))))
         (tree-seq coll? seq ty)))
 
 (defn dependency-paths

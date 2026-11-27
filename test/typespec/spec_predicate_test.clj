@@ -3,6 +3,7 @@
             [clojure.test :refer [deftest is]]
             [typespec.check :as check]
             [typespec.parse :as parse]
+            [typespec.project-contracts :as contracts]
             [typespec.spec-conform :as conform]
             [typespec.types :as t]))
 
@@ -284,6 +285,33 @@
   (let [short-text #(and (string? %) (< (count %) 8))]
     (is (= [true false false]
            (mapv #(s/valid? short-text %) ["valid" :wrong "longer-than-limit"])))))
+
+(deftest spec-and-narrows-named-value-preserving-contracts
+  (let [schema (parse/parse-string "schema.clj" "(ns schema (:require [clojure.spec.alpha :as spec]))
+(spec/def ::maybe-title (spec/nilable string?))
+(spec/def ::alias ::maybe-title)
+(spec/def ::tagged (spec/or :number int? :text string?))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [schema :as schema]))
+(s/def ::title (s/and ::schema/alias some?))
+(s/def ::entry (s/and ::schema/tagged vector?))
+(s/fdef title :args (s/cat :x ::title) :ret string?)
+(s/fdef entry :args (s/cat :x ::entry) :ret any?)
+(defn title [x] (subs x 0))
+(defn entry [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/title \"hello\")
+(a/title nil)
+(a/title 42)
+(a/entry 1)
+(a/entry \"text\")")
+        {:keys [env diagnostics]} (check/check-files [client api schema] {})
+        signature (get-in env [:vars 'api/title :type])
+        dependencies (contracts/dependency-paths (:specs env) signature)]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [:api/title :schema/alias :schema/maybe-title]
+           (get dependencies :schema/maybe-title)))))
 
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"

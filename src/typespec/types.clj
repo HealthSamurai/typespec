@@ -1159,6 +1159,8 @@
                           assoc ::shape-form (first form) ::unchecked-contract true)
         (:t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
         :s/spec (p (second form))
+        :s/nonconforming (if (= 2 (count form)) (p (second form)) (fail))
+        :s/with-gen (if (= 3 (count form)) (p (second form)) (fail))
         :s/keys (if-let [options (spec-keys-options (rest form))] (parse-keys options) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
         (:s/coll-of :s/every) (if-let [options (when (next form) (spec-option-map (drop 2 form)))]

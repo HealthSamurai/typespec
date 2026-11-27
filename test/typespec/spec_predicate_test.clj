@@ -409,6 +409,26 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest spec-wrappers-keep-cross-namespace-input-constraints
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::row (s/nonconforming (s/keys :req-un [::id])))
+(s/def ::pair (s/with-gen (s/tuple string? int?) #(throw (ex-info \"generator not invoked\" {}))))
+(s/def ::broken (s/with-gen string?))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/fdef serve :args (s/cat :row ::d/row :pair ::d/pair) :ret int?)
+(defn serve [{:keys [id]} [_ n]] (+ id n))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/serve {:id 2} [\"ok\" 3])
+(a/serve {:id \"2\"} [\"ok\" 3])
+(a/serve {} [\"ok\" 3])
+(a/serve {:id 2} [\"ok\" \"3\"])")
+        diagnostics (:diagnostics (check/check-files [client api domain] {}))]
+    (is (= [["client.clj" 3 "TSP2322"] ["client.clj" 4 "TSP2741"] ["client.clj" 5 "TSP2345"]
+            ["domain.clj" 5 "TSP9002"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

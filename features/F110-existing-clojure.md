@@ -76,6 +76,8 @@ origin: Typespec
 `parse-boolean` различает точные `true`, `false` и `nil`.
 `parse-uuid` проверяет известную строку тем же парсером, что Clojure,
 и сохраняет ненулевой тип UUID при успехе.
+Колбэки `parse-double`, `parse-boolean` и `parse-uuid`
+используют те же правила для известных строк.
 
 ## Примеры
 

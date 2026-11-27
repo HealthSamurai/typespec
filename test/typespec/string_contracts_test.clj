@@ -497,6 +497,27 @@
   (is (= [0 2] (mapv parse-long ["0" "2"])))
   (is (thrown? NullPointerException (mapv inc (mapv parse-long ["bad"])))))
 
+(deftest string-parser-callbacks-share-the-direct-call-result-types
+  (let [file (parse/parse-string "parsing.clj" "(ns parsing (:require [clojure.spec.alpha :as s]))
+(s/fdef doubles :args (s/cat :values (s/coll-of #{\"1.25\" \"NaN\"} :kind vector?)) :ret (s/coll-of double? :kind vector?))
+(defn doubles [values] (mapv parse-double values))
+(s/fdef malformed :args (s/cat :values (s/coll-of #{\"1.25\" \"bad\"} :kind vector?)) :ret (s/coll-of double? :kind vector?))
+(defn malformed [values] (mapv parse-double values))
+(s/fdef flags :args (s/cat :values (s/coll-of #{\"false\"} :kind vector? :min-count 1)) :ret nil?)
+(defn flags [values] (some parse-boolean values))
+(s/fdef uuids :args (s/cat :values (s/coll-of #{\"1-1-1-1-1\"} :kind vector?)) :ret (s/coll-of uuid? :kind vector?))
+(defn uuids [values] (mapv parse-uuid values))
+(s/fdef malformed-uuids :args (s/cat :values (s/coll-of #{\"bad\"} :kind vector?)) :ret (s/coll-of uuid? :kind vector?))
+(defn malformed-uuids [values] (mapv parse-uuid values))")
+        result (check/check-files [file] {})]
+    (is (= [[5 "TSP2322"] [11 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result))))
+  (is (= [1.25 nil] (mapv parse-double ["1.25" "bad"])))
+  (is (nil? (some parse-boolean ["false"])))
+  (is (every? uuid? (mapv parse-uuid ["1-1-1-1-1"])))
+  (is (= [nil] (mapv parse-uuid ["bad"]))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

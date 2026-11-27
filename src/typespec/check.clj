@@ -2483,9 +2483,15 @@
       (result-type value)
       t/nil-t)))
 
+(defn- parsed-double-type [value]
+  (if (Double/isNaN (double value)) (t/prim :double) (t/lit value)))
+
 (def ^:private unary-callback-refiners
   {'namespace namespace-member-result
-   'parse-long (partial parsed-string-member parse-long t/lit)})
+   'parse-long (partial parsed-string-member parse-long t/lit)
+   'parse-double (partial parsed-string-member parse-double parsed-double-type)
+   'parse-boolean (partial parsed-string-member parse-boolean t/lit)
+   'parse-uuid (partial parsed-string-member parse-uuid (constantly (t/prim :uuid)))})
 
 (defn- core-callback-refiner [ctx node]
   (when (= :sym (:op node))
@@ -3366,21 +3372,9 @@
        (when (and (= :lit (:t member)) (or (string? value) (ident? value)))
          (t/lit (name value)))))))
 
-(defn- parsed-string-result [ctx node parse result-type]
-  (core-unary-result ctx node (partial parsed-string-member parse result-type)))
-
-(defmethod special 'parse-long [ctx node _]
-  (parsed-string-result ctx node parse-long t/lit))
-
-(defmethod special 'parse-double [ctx node _]
-  (parsed-string-result ctx node parse-double
-                        (fn [value] (if (Double/isNaN (double value)) (t/prim :double) (t/lit value)))))
-
-(defmethod special 'parse-boolean [ctx node _]
-  (parsed-string-result ctx node parse-boolean t/lit))
-
-(defmethod special 'parse-uuid [ctx node _]
-  (parsed-string-result ctx node parse-uuid (constantly (t/prim :uuid))))
+(doseq [head '[parse-long parse-double parse-boolean parse-uuid]]
+  (defmethod special head [ctx node _]
+    (core-unary-result ctx node (unary-callback-refiners head))))
 
 (defn- qualified-name-type [kind qualified?]
   (cond-> (t/prim kind) (some? qualified?) (assoc :qualified? qualified?)))

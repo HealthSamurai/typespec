@@ -140,6 +140,22 @@
   (is (nil? (namespace :unqualified)))
   (is (thrown? NullPointerException (str/upper-case (namespace :unqualified)))))
 
+(deftest name-preserves-the-local-part-of-known-names
+  (let [file (parse/parse-string "names.clj" "(ns names)
+(name \"as-is\")
+(name :space/local)
+(name 'space/local)
+(name :plain)
+(name 42)
+(name :a :b)")
+        result (check/check-files [file] {})]
+    (is (= ["\"as-is\"" "\"local\"" "\"local\"" "\"plain\""]
+           (mapv #(main/type-at result "names.clj" % 1) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))))
+  (is (= "local" (name 'space/local)))
+  (is (thrown? ClassCastException (name 42))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

@@ -3300,6 +3300,14 @@
      (when (and (= :lit (:t member)) (ident? (:val member)))
        (if-some [value (namespace (:val member))] (t/lit value) t/nil-t)))))
 
+(defmethod special 'name [ctx node _]
+  (core-unary-result
+   ctx node
+   (fn [member]
+     (let [value (:val member)]
+       (when (and (= :lit (:t member)) (or (string? value) (ident? value)))
+         (t/lit (name value)))))))
+
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
 (defmethod special 'time [ctx node _]

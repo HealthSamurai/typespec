@@ -180,6 +180,8 @@
 
 ;; ---- resolving named types ----
 
+(declare merge-spec-maps)
+
 (defn members
   "Flat list of alternatives of a type, with refs resolved."
   ([env t] (members env t #{}))
@@ -194,9 +196,7 @@
        :union (mapcat #(members env % seen) (:types t))
        :merge (let [parts (map #(members env % seen) (:types t))]
                 (if (every? #(and (= 1 (count %)) (= :map (:t (first %)))) parts)
-                  [(reduce (fn [a b] {:t :map :req (merge (:req a) (:req b))
-                                      :opt (apply dissoc (merge (:opt a) (:opt b)) (concat (keys (:req a)) (keys (:req b))))})
-                           (map first parts))]
+                  [(reduce #(merge-spec-maps env seen %1 %2) (map first parts))]
                   [unknown]))
        [t]))))
 
@@ -560,6 +560,35 @@
   [source target]
   (binding [*strict-shapes* true *contract-subtyping* true]
     (sub-result {} source target)))
+
+(defn- scalar-contract [env seen type]
+  (let [parts (members env type seen)]
+    (when (every? #(#{:prim :class :lit :some :nil :never :any} (:t %)) parts)
+      (apply union parts))))
+
+(defn- narrower-field-contract [env seen a b]
+  (when (and a b (not= a b))
+    (let [left (scalar-contract env seen a)
+          right (scalar-contract env seen b)]
+      (when (and left right)
+        (cond
+          (= :any (:t left)) b
+          (= :any (:t right)) a
+          (= :proved (:status (contract-sub-result left right))) a
+          (= :proved (:status (contract-sub-result right left))) b)))))
+
+(defn- merge-spec-maps [env seen a b]
+  (let [required (merge (:req a) (:req b))
+        optional (apply dissoc (merge (:opt a) (:opt b)) (keys required))
+        left (merge (:opt a) (:req a))
+        right (merge (:opt b) (:req b))
+        refine (fn [row]
+                 (reduce-kv (fn [result k _]
+                              (if-let [field (narrower-field-contract env seen (get left k) (get right k))]
+                                (assoc result k field)
+                                result))
+                            row row))]
+    {:t :map :req (refine required) :opt (refine optional)}))
 
 ;; ---- printing ----
 

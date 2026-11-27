@@ -88,6 +88,39 @@
     (is (= 14 (count (:opt type))))
     (is (::t/unchecked-contract (meta type)))))
 
+(deftest spec-merge-keeps-narrower-overlapping-fields
+  (let [ids (parse/parse-string "ids.clj" "(ns ids (:require [clojure.spec.alpha :as s]))
+(s/def ::id number?)
+(s/def ::required (s/keys :req-un [::id]))
+(s/def ::optional (s/keys :opt-un [::id]))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [ids :as ids]))
+(s/def ::id int?)
+(s/def ::required (s/keys :req-un [::id]))
+(s/def ::optional (s/keys :opt-un [::id]))
+(s/def ::record (s/merge ::ids/required ::optional))
+(s/def ::reversed (s/merge ::required ::ids/required))
+(s/def ::patch (s/merge ::optional ::ids/optional))
+(s/fdef submit :args (s/cat :entry ::record) :ret int?)
+(s/fdef replace-record :args (s/cat :entry ::reversed) :ret int?)
+(s/fdef patch :args (s/cat :entry ::patch) :ret any?)
+(defn submit [{:keys [id]}] id)
+(defn replace-record [{:keys [id]}] id)
+(defn patch [entry] entry)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/submit {:id 3})
+(a/submit {:id 3.5})
+(a/submit {})
+(a/replace-record {:id 3})
+(a/replace-record {:id 3.5})
+(a/patch {})
+(a/patch {:id 3})
+(a/patch {:id 3.5})")
+        issues (:diagnostics (check/check-files [client api ids] {}))]
+    (is (= [["client.clj" 3 "TSP2322"] ["client.clj" 4 "TSP2741"]
+            ["client.clj" 6 "TSP2322"] ["client.clj" 9 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest get-uses-the-map-of-domain-for-computed-keys
   (let [by-name {:t :map-of :k (t/prim :string) :v (t/prim :int)}
         by-tag {:t :map-of :k (t/prim :keyword) :v (t/prim :boolean)}

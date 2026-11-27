@@ -904,6 +904,21 @@
         (pr-str (:diagnostics r)))
     (is (= ["\"only\"" "#{:a :b}" "nil?" "java.lang.Character"] (mapv #(at r %) (range 2 6))))))
 
+(deftest take-while-keeps-the-proved-prefix
+  (let [r (checked "(take-while string? [\"one\" \"two\" 3 \"later\"])
+(first (take-while string? [\"one\" 2]))
+(first (take-while number? [\"one\" 2]))
+(second (take-while (fn [_] true) [1 :two]))
+(inc (first (take-while string? [\"bad\"])))
+(take-while number? 42)
+(take-while)
+(take-while (fn [_ _] true) [])")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of string? :kind seq? :min-count 2 :max-count 2)" "\"one\"" "nil?" ":two"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

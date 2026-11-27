@@ -5967,10 +5967,10 @@
           (report! ctx node "TSP2554" "map-indexed expects 1 or 2 arguments")
           t/unknown))))
 
-(defn- filter-types [ctx f el]
+(defn- filter-splitter [ctx f]
   (let [env (:env ctx)]
     (if-let [summary (get-in env [:guards (guard-symbol ctx f)])]
-      (if (empty? (:directives f)) (guards/apply-summary env summary el) [el el])
+      (when (empty? (:directives f)) #(guards/apply-summary env summary %))
       (let [descriptor (deferred-callback ctx f)
             node (or (:node descriptor) f)
             captured (if descriptor (callback-scope descriptor) ctx)
@@ -5989,15 +5989,16 @@
                          (guards/compile-body (guard-compiler captured)
                                               (cond-> [parameter] (:reader? branch) (conj '%))
                                               (:body branch))))))]
-        (if (guards/useful? plan) (guards/split env plan el) [el el])))))
+        (when (guards/useful? plan) #(guards/split env plan %))))))
 
 (defn- apply-predicate [ctx f el narrow?]
   (let [before (when *diags* (count @*diags*))
         ret (apply-fn-node ctx f [el])
-        [yes no] (if (and narrow? (not (:guards-disabled? ctx))
-                          (or (nil? before) (= before (count @*diags*))))
-                   (filter-types ctx f el) [el el])]
-    [ret yes no]))
+        split (when (and narrow? (not (:guards-disabled? ctx))
+                         (or (nil? before) (= before (count @*diags*))))
+                (filter-splitter ctx f))
+        [yes no] (if split (split el) [el el])]
+    [ret yes no split]))
 
 (doseq [[head kind] {'filter :seq 'remove :seq 'filterv :vector}]
   (defmethod special head [ctx node _]
@@ -6118,16 +6119,65 @@
             (do (when key-fn (apply-fn-node ctx key-fn [(elem-type ctx source)]))
                 (sequence-with-kind ctx source :seq nil))))))))
 
-(doseq [h '[take-while drop-while group-by some every? not-any? run! max-key min-key]]
+(defn- leading-run-bounds [member {:keys [can-pass? can-fail? split]}]
+  (let [[lo hi] (sequence-member-bounds member)]
+    (cond
+      (not can-pass?) [0 0]
+      (not can-fail?) [lo hi]
+      (and split (:items member))
+      (let [splits (map split (:items member))]
+        [(count (take-while #(= t/never (second %)) splits))
+         (count (take-while #(not= t/never (first %)) splits))])
+      :else [0 hi])))
+
+(defn- check-while-sequence [ctx node head transform]
+  (let [[f source :as args] (args-of node)]
+    (case (count args)
+      1 (do (infer ctx f) t/unknown)
+      2 (let [ty (eff ctx (infer ctx source))]
+          (cond
+            (= t/never ty) (do (infer ctx f) t/never)
+            (report-invalid-sequence-args! ctx head [source] [ty]) (do (infer ctx f) t/unknown)
+            :else
+            (let [members (map #(or (map-entry-sequence %) %) (t/members (:env ctx) ty))
+                  normalized (apply t/union members)
+                  {:keys [element upper]} (sequence-summary ctx normalized)]
+              (if (= 0 upper)
+                (do (infer ctx f) (length/with-bounds (coll-of :seq t/never) 0 0))
+                (let [[ret yes no split] (apply-predicate ctx f element true)
+                      ret (eff ctx ret)
+                      can-pass? (and (not= t/never yes) (not= t/never (truth-part (:env ctx) ret true)))
+                      can-fail? (and (not= t/never no) (not= t/never (truth-part (:env ctx) ret false)))
+                      predicate {:can-pass? can-pass? :can-fail? can-fail? :split split :yes yes}]
+                  (t/with-assumption (apply t/union (map #(transform % predicate) members))
+                                     (or (t/assumption ty) (t/assumption ret))))))))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" (str head " expects 1 or 2 arguments"))
+          t/unknown))))
+
+(defmethod special 'take-while [ctx node _]
+  (check-while-sequence
+   ctx node 'take-while
+   (fn [member {:keys [yes] :as predicate}]
+     (if (= t/never member)
+       t/never
+       (let [[lo hi] (leading-run-bounds member predicate)
+             items (when (and (:items member) (= lo hi)) (subvec (:items member) 0 (int lo)))
+             element (cond (= 0 hi) t/never
+                           items (apply t/union items)
+                           :else yes)]
+         (cond-> (length/with-bounds (coll-of :seq element) lo hi)
+           items (assoc :items items)))))))
+
+(doseq [h '[drop-while group-by some every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
           c (last more)]
       (if (nil? c)
         (do (infer ctx f) t/unknown)
         (let [el (elem-type ctx (infer ctx c))
-              [ret yes] (apply-predicate ctx f el (= 'take-while h))]
+              [ret] (apply-predicate ctx f el false)]
           (case h
-            take-while {:t :coll :kind :seq :of (dissoc yes :fresh)}
             drop-while (coll-of :seq el)
             (every? not-any?) (t/prim :boolean)
             some (t/union (t/remove-nil (:env ctx) ret) t/nil-t)

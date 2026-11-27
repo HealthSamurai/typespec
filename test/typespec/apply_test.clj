@@ -124,6 +124,23 @@
   (is (false? (apply #{false nil} [false])))
   (is (thrown? clojure.lang.ArityException (apply #{:present} [:present :default]))))
 
+(deftest applies-vectors-with-checked-positions-and-jvm-index-coercion
+  (let [r (checked "(apply [\"text\" 2] [0])
+(apply [\"text\" 2] [1N])
+(apply [\"text\" 2] [4294967296])
+(apply [\"text\" 2] [0.5])
+(apply [\"text\" 2] [2])
+(apply [\"text\" 2] [-1])
+(apply [\"text\" 2] [0 :extra])
+(apply [] [0])")]
+    (is (= ["\"text\"" "2" "\"text\""] (mapv #(type-at r %) [2 3 4])))
+    (is (= [[5 "TSP2345"] [6 "TSP330-02"] [7 "TSP330-02"] [8 "TSP2554"] [9 "TSP330-02"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r))))
+    (is (= 20 (get-in r [:diagnostics 1 :pos :col]))))
+  (is (= "text" (apply ["text"] [4294967296])))
+  (is (thrown? IndexOutOfBoundsException (apply ["text"] [1])))
+  (is (thrown? IllegalArgumentException (apply ["text"] [0.5]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

@@ -4655,6 +4655,31 @@
          (apply t/union (map #(typed-set-call-result ctx % input) (t/members (:env ctx) source)))
          (t/assumption source))))))
 
+(defn- apply-vector-lookup [ctx node label vectors arg-nodes args]
+  (if (not= 1 (count args))
+    (apply-arity! ctx node label [1] (count args))
+    (let [env (:env ctx)
+          index-node (first arg-nodes)
+          index (eff ctx (first args))
+          indices (t/members env index)]
+      (if (= :mismatch (:status (t/sub-result env index (t/prim :int))))
+        (do (assignable! ctx index-node index (t/prim :int)) t/unknown)
+        (let [parts (for [vector vectors
+                          position indices
+                          :let [value (:val position)]]
+                      (cond
+                        (and (= :lit (:t position)) (integer? value))
+                        (let [i (lookup-index value)
+                              element (vector-element-at vector i)]
+                          (when (= :absent (length/position vector i))
+                            (report! ctx index-node "TSP330-02"
+                                     (str "index " i " is out of bounds for length " (length/describe vector))))
+                          element)
+                        (= 0 (second (length/bounds vector)))
+                        (do (report! ctx index-node "TSP330-02" "cannot index an empty vector") t/never)
+                        :else (or (:of vector) t/unknown)))]
+          (t/with-assumption (apply t/union parts) (t/assumption index)))))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4692,18 +4717,23 @@
                     (fn [items]
                       (let [ty (if callback?
                                  (t/resolve-t (:env ctx) (infer ctx f (spread-context items)))
-                                 ftype)]
+                                 ftype)
+                            types (into prefix-types items)
+                            nodes (into prefix (spread-tail-nodes tail items))
+                            members (t/members (:env ctx) ty)]
                         (cond
                           (= :never (:t ty)) t/never
                           (or (= :all (:t ty)) (seq (:arities ty)))
-                          (call-fn ctx node label ty (into prefix (spread-tail-nodes tail items))
-                                   (into prefix-types items))
+                          (call-fn ctx node label ty nodes types)
                           (and (= :lit (:t ty)) (ident? (:val ty)))
-                          (apply-key-lookup ctx node label (:val ty) (into prefix-types items))
-                          (spread-map-target? (t/members (:env ctx) ty))
-                          (apply-map-lookup ctx node label ty (into prefix-types items))
-                          (spread-set-target? (t/members (:env ctx) ty))
-                          (apply-set-lookup ctx node f label ty (into prefix-types items))
+                          (apply-key-lookup ctx node label (:val ty) types)
+                          (spread-map-target? members)
+                          (apply-map-lookup ctx node label ty types)
+                          (spread-set-target? members)
+                          (apply-set-lookup ctx node f label ty types)
+                          (every? vector-member? members)
+                          (t/with-assumption (apply-vector-lookup ctx node label members nodes types)
+                                             (t/assumption ty))
                           :else
                           (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
                               t/unknown))))

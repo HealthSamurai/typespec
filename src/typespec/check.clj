@@ -6237,61 +6237,72 @@
          (count (take-while #(not= t/never (first %)) splits))])
       :else [0 hi])))
 
-(defn- check-while-sequence [ctx node head transform]
+(defn- check-while-sequence [ctx node head transducer? transform]
   (let [[f source :as args] (args-of node)]
-    (case (count args)
-      1 (do (infer ctx f) t/unknown)
-      2 (let [ty (eff ctx (infer ctx source))]
-          (cond
-            (= t/never ty) (do (infer ctx f) t/never)
-            (report-invalid-sequence-args! ctx head [source] [ty]) (do (infer ctx f) t/unknown)
-            :else
-            (let [members (map #(or (map-entry-sequence %) %) (t/members (:env ctx) ty))
-                  normalized (apply t/union members)
-                  {:keys [element upper]} (sequence-summary ctx normalized)]
-              (if (= 0 upper)
-                (do (infer ctx f) (length/with-bounds (coll-of :seq t/never) 0 0))
-                (let [[ret yes no split] (apply-predicate ctx f element true)
-                      ret (eff ctx ret)
-                      can-pass? (and (not= t/never yes) (not= t/never (truth-part (:env ctx) ret true)))
-                      can-fail? (and (not= t/never no) (not= t/never (truth-part (:env ctx) ret false)))
-                      predicate {:can-pass? can-pass? :can-fail? can-fail? :split split :yes yes}]
-                  (t/with-assumption (apply t/union (map #(transform % predicate) members))
-                                     (or (t/assumption ty) (t/assumption ret))))))))
+    (cond
+      (and transducer? (= 1 (count args))) (do (infer ctx f) t/unknown)
+      (= 2 (count args))
+      (let [ty (eff ctx (infer ctx source))]
+        (cond
+          (= t/never ty) (do (infer ctx f) t/never)
+          (report-invalid-sequence-args! ctx head [source] [ty]) (do (infer ctx f) t/unknown)
+          :else
+          (let [members (map #(or (map-entry-sequence %) %) (t/members (:env ctx) ty))
+                normalized (apply t/union members)
+                {:keys [element upper]} (sequence-summary ctx normalized)]
+            (if (= 0 upper)
+              (if (= t/never (infer ctx f)) t/never
+                  (t/with-assumption (transform normalized {:can-pass? false :can-fail? false})
+                                     (t/assumption ty)))
+              (let [[ret yes no split] (apply-predicate ctx f element true)
+                    ret (eff ctx ret)
+                    can-pass? (and (not= t/never yes) (not= t/never (truth-part (:env ctx) ret true)))
+                    can-fail? (and (not= t/never no) (not= t/never (truth-part (:env ctx) ret false)))
+                    predicate {:can-pass? can-pass? :can-fail? can-fail? :split split :yes yes}]
+                (t/with-assumption (apply t/union (map #(transform % predicate) members))
+                                   (or (t/assumption ty) (t/assumption ret))))))))
+      :else
       (do (run! #(infer ctx %) args)
-          (report! ctx node "TSP2554" (str head " expects 1 or 2 arguments"))
+          (report! ctx node "TSP2554" (str head (if transducer? " expects 1 or 2 arguments" " expects two arguments")))
           t/unknown))))
 
+(defn- take-while-type [member {:keys [yes] :as predicate}]
+  (if (= t/never member)
+    t/never
+    (let [[lo hi] (leading-run-bounds member predicate)
+          items (when (and (:items member) (= lo hi) (pos? hi)) (subvec (:items member) 0 (int lo)))
+          element (cond (= 0 hi) t/never
+                        items (apply t/union items)
+                        :else yes)]
+      (cond-> (length/with-bounds (coll-of :seq element) lo hi)
+        items (assoc :items items)))))
+
+(defn- drop-while-type [ctx member {:keys [can-fail?] :as predicate}]
+  (cond
+    (= t/never member) t/never
+    (not can-fail?) (length/with-bounds (coll-of :seq t/never) 0 0)
+    :else
+    (let [[skip-min skip-max] (leading-run-bounds member predicate)]
+      (if (= skip-min skip-max)
+        (sequence-tail ctx member skip-min false)
+        (let [[lo hi] (sequence-member-bounds member)
+              lower (if skip-max (max 0 (-' lo skip-max)) 0)
+              upper (when hi (max 0 (-' hi skip-min)))]
+          (length/with-bounds (coll-of :seq (if (= 0 upper) t/never (member-element member)))
+                              lower upper))))))
+
 (defmethod special 'take-while [ctx node _]
-  (check-while-sequence
-   ctx node 'take-while
-   (fn [member {:keys [yes] :as predicate}]
-     (if (= t/never member)
-       t/never
-       (let [[lo hi] (leading-run-bounds member predicate)
-             items (when (and (:items member) (= lo hi)) (subvec (:items member) 0 (int lo)))
-             element (cond (= 0 hi) t/never
-                           items (apply t/union items)
-                           :else yes)]
-         (cond-> (length/with-bounds (coll-of :seq element) lo hi)
-           items (assoc :items items)))))))
+  (check-while-sequence ctx node 'take-while true take-while-type))
 
 (defmethod special 'drop-while [ctx node _]
+  (check-while-sequence ctx node 'drop-while true (partial drop-while-type ctx)))
+
+(defmethod special 'split-with [ctx node _]
   (check-while-sequence
-   ctx node 'drop-while
-   (fn [member {:keys [can-fail?] :as predicate}]
-     (cond
-       (= t/never member) t/never
-       (not can-fail?) (length/with-bounds (coll-of :seq t/never) 0 0)
-       :else
-       (let [[skip-min skip-max] (leading-run-bounds member predicate)]
-         (if (= skip-min skip-max)
-           (sequence-tail ctx member skip-min false)
-           (let [[lo hi] (sequence-member-bounds member)
-                 lower (if skip-max (max 0 (-' lo skip-max)) 0)
-                 upper (when hi (max 0 (-' hi skip-min)))]
-             (length/with-bounds (coll-of :seq (if (= 0 upper) t/never (member-element member)))
-                                 lower upper))))))))
+   ctx node 'split-with false
+   (fn [member predicate]
+     (t/tuple [(take-while-type member predicate)
+               (drop-while-type ctx member predicate)]))))
 
 (defn- check-collection-callback [ctx node head narrow? finish]
   (let [[f source :as args] (args-of node)]

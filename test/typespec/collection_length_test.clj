@@ -859,6 +859,21 @@
   (is (= [[1] ["word"]] (mapv vec (split-at 1 [1 "word"]))))
   (is (thrown? IllegalArgumentException (first (second (split-at 1 42))))))
 
+(deftest split-with-keeps-both-sides-of-the-first-rejected-element
+  (let [r (checked "(first (first (split-with number? [1 \"word\" 2])))
+(first (second (split-with number? [1 \"word\" 2])))
+(second (second (split-with number? [1 \"word\" 2])))
+(first (second (split-with :unused [])))
+(inc (first (second (split-with number? [1 \"word\" 2]))))
+(split-with inc 42)
+(split-with number?)")]
+    (is (= ["1" "\"word\"" "2" "nil?"]
+           (mapv #(at r %) (range 2 6))))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [[1] ["word" 2]] (mapv vec (split-with number? [1 "word" 2]))))
+  (is (thrown? ClassCastException (inc (first (second (split-with number? [1 "word" 2])))))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

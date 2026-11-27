@@ -7565,7 +7565,12 @@
 
 (defn- kv-rewrite-input [member]
   (let [{:keys [bounds key value]} (kv-reduction-input member)]
-    {:source member :bounds bounds :key key
+    {:source member :bounds bounds
+     :key (if (= :map (:t member))
+            (let [known (concat (map t/lit (concat (keys (:req member)) (keys (:opt member))))
+                                (when-let [index (:map-index member)] [(:k index)]))]
+              (if (seq known) (apply t/union known) key))
+            key)
      :value (if (= :map (:t member))
               (let [known (concat (vals (:req member)) (vals (:opt member))
                                   (when-let [index (:map-index member)] [(:v index)]))]
@@ -7624,6 +7629,17 @@
 
 (defmethod special 'update-vals [ctx node _]
   (check-kv-rewrite ctx node 'update-vals :value rewritten-map-values))
+
+(defn- rewritten-map-keys [{member :source [lo hi] :bounds value :value} result]
+  (let [open? (and (= :map (:t member)) (not (:complete-keys? member)) (not (:map-index member)))]
+    (cond
+      (= 0 hi) empty-map-shape
+      (and (not open?) (literal-map-key-type? result))
+      (assoc-in empty-map-shape [(if (pos? lo) :req :opt) (:val result)] value)
+      :else (length/with-bounds {:t :map-of :k (if open? t/unknown result) :v (if open? t/unknown value)} (min 1 lo) hi))))
+
+(defmethod special 'update-keys [ctx node _]
+  (check-kv-rewrite ctx node 'update-keys :key rewritten-map-keys))
 
 (doseq [[head part] {'keys :key 'vals :value}]
   (defmethod special head [ctx node _]

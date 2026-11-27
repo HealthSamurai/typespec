@@ -33,6 +33,22 @@
   (is (= {} (update-vals nil 42)))
   (is (thrown? ClassCastException (update-vals {:amount "bad"} inc))))
 
+(deftest update-keys-checks-key-callbacks-and-preserves-value-types
+  (let [r (checked "(inc (:target (update-keys {:source 2} (fn [_] :target))))
+(:target (update-keys {:source 2} (fn [_] :target)))
+(:target (update-keys nil 42) :default)
+(get (update-keys [\"one\" \"two\"] str) \"0\" \"missing\")
+(subs (:target (update-keys {:source 2} (fn [_] :target))) 0)
+(update-keys {:source 2} inc)
+(update-keys 42 str)
+(update-keys {})")]
+    (is (= ["int?" "2" ":default" "(t/or \"missing\" string?)"]
+           (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= {"0" "one" "1" "two"} (update-keys ["one" "two"] str)))
+  (is (thrown? ClassCastException (update-keys {:source 2} inc))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

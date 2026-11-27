@@ -1095,6 +1095,20 @@
             ":missing" ":missing" "t/never"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest max-key-checks-numeric-keys-and-returns-a-candidate
+  (let [r (checked "(max-key 42 :only)
+(max-key count \"a\" \"bb\")
+(str/upper-case (max-key count \"a\" \"bb\" \"ccc\"))
+(max-key inc 1 2)
+(max-key (fn [_] :not-numeric) 1 2)
+(max-key (fn [x] (subs x 1)) \"one\" 42)
+(max-key count)")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= [":only" "#{\"a\" \"bb\"}" "string?" "#{1 2}"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

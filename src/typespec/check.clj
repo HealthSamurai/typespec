@@ -6267,15 +6267,38 @@
        {:t :map-of :k (widen ret)
         :v (length/with-bounds (coll-of :vector element) 1 upper)}))))
 
-(doseq [h '[max-key min-key]]
-  (defmethod special h [ctx node _]
-    (let [[f & more] (args-of node)
-          c (last more)]
-      (if (nil? c)
-        (do (infer ctx f) t/unknown)
-        (let [el (elem-type ctx (infer ctx c))]
-          (apply-predicate ctx f el false)
-          el)))))
+(defn- check-key-extremum [ctx node head]
+  (let [[f & values] (args-of node)
+        candidates (mapv #(infer ctx %) values)]
+    (cond
+      (empty? candidates)
+      (do (when f (infer ctx f))
+          (report! ctx node "TSP2554" (str head " expects a key function and at least one value"))
+          t/unknown)
+
+      (some #{t/never} candidates) (do (infer ctx f) t/never)
+
+      (= 1 (count candidates))
+      (if (= t/never (infer ctx f)) t/never (first candidates))
+
+      :else
+      (let [value (apply t/union candidates)
+            key-type (apply-fn-node ctx f [value])]
+        (when (= :mismatch (:status (t/sub-result (:env ctx) (eff ctx key-type) (t/prim :number))))
+          (assignable! ctx f key-type (t/prim :number)))
+        (if (= t/never key-type) t/never value)))))
+
+(defmethod special 'max-key [ctx node _]
+  (check-key-extremum ctx node 'max-key))
+
+(defmethod special 'min-key [ctx node _]
+  (let [[f & more] (args-of node)
+        c (last more)]
+    (if (nil? c)
+      (do (infer ctx f) t/unknown)
+      (let [el (elem-type ctx (infer ctx c))]
+        (apply-predicate ctx f el false)
+        el))))
 
 (defn- literal-collection-count [node]
   (cond

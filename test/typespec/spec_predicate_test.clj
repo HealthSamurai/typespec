@@ -216,6 +216,27 @@
     (is (s/valid? (s/and number? (s/conformer str) string?) 1.5))
     (is (s/valid? (s/and (s/or :number int? :text string?) vector?) 1))))
 
+(deftest jvm-value-predicates-preserve-tuple-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::delimiter #(char? %))
+(s/def ::payload bytes?)
+(s/def ::kind class?)
+(s/fdef describe :args (s/cat :value (s/tuple ::delimiter ::payload ::kind)) :ret string?)
+(defn describe [[^Character delimiter ^bytes payload ^Class kind]]
+  (str (.charValue delimiter) (alength payload) (.getName kind)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]) (:import [java.net URI]))
+(a/describe [\\: (byte-array [1 2]) String])
+(a/describe [\\: (byte-array [1 2]) URI])
+(a/describe [\":\" (byte-array [1 2]) String])
+(a/describe [\\: (int-array [1 2]) String])
+(a/describe [\\: (byte-array [1 2]) \"String\"])")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (s/valid? (s/tuple char? bytes? class?) [\: (byte-array [1]) java.net.URI]))
+  (is (not (s/valid? (s/tuple char? bytes? class?) [\: (int-array [1]) java.net.URI]))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

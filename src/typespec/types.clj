@@ -671,6 +671,9 @@
       some? some-t
       nil? nil-t
       list? (class-type "clojure.lang.IPersistentList")
+      char? (class-type "java.lang.Character")
+      bytes? (class-type "[B")
+      class? (class-type "java.lang.Class")
       true? (lit true)
       false? (lit false)
       nil)))
@@ -728,7 +731,8 @@
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
-                   (contains? '#{list? vector? map? set? string? keyword? symbol? boolean? true? false? nil? any?} op))
+                   (contains? '#{list? vector? map? set? string? keyword? symbol? boolean?
+                                 true? false? nil? any? char? bytes? class?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 
 (defn predicate-spec-type

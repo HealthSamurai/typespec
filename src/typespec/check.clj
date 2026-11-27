@@ -9026,11 +9026,10 @@
     :sym (let [s (:val node)
                cname (java-static? ctx s)]
            (cond (contains? (:locals ctx) s) (get-in ctx [:locals s])
+                 (class-symbol-name ctx node) (t/class-type "java.lang.Class")
                  cname (if-let [class-name (java/field-class cname (name s) true)]
                          (java-field-type class-name)
                          t/unknown)
-                 (and (nil? (namespace s)) (not (t/primitives (name s)))
-                      (t/resolve-class (:imports (:file ctx)) s)) t/unknown
                  :else (or (:type (read-var ctx s node :value)) t/unknown)))
     :vector (let [items (mapv #(dissoc (infer ctx %) :fresh) (:children node))]
               (t/tuple items (literal-element-type ctx items)))

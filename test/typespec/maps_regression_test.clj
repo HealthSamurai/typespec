@@ -1206,6 +1206,27 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest dissoc-proves-finite-removals-in-a-map-of
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/fdef fallback :args (s/cat :m ::counts) :ret string?)
+(defn fallback [m] (get (dissoc m \"a\") \"a\" \"none\"))
+(s/fdef neighbour :args (s/cat :m ::counts) :ret int?)
+(defn neighbour [m] (get (dissoc m \"a\") \"b\" 0))
+(s/fdef removed :args (s/cat :m ::counts :key #{\"a\"}) :ret nil?)
+(defn removed [m key] (get (dissoc m key) \"a\"))
+(s/fdef uncertain :args (s/cat :m ::counts :key #{\"a\" \"b\"}) :ret nil?)
+(defn uncertain [m key] (get (dissoc m key) \"a\"))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/fallback {\"a\" 1}))
+(inc (a/neighbour {\"a\" 1 \"b\" 2}))
+(a/removed {\"a\" 1} \"a\")
+(a/removed {\"a\" 1} \"b\")")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 10 "TSP2322"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest merge-required-left-optional-right
   (let [a (map-type {:x (t/prim :string)} {:z (t/prim :string)})
         b (map-type {} {:x (t/prim :int) :z t/nil-t})

@@ -4531,18 +4531,19 @@
     (assoc-entries ctx base (map vector pairs types))))
 
 (defn- dissoc-map-keys [member keys track-absence?]
-  (if (= :map (:t member))
-    (reduce (fn [shape k]
-              (dissoc-map-key shape k (or track-absence? (:map-index shape) (string? k) (symbol? k))))
-            (dissoc member :fresh) keys)
-    member))
+  (let [shape (if (and (seq keys) (= :map-of (:t member))) (indexed-map-shape member) member)]
+    (if (= :map (:t shape))
+      (reduce (fn [shape k]
+                (dissoc-map-key shape k (or track-absence? (:map-index shape) (string? k) (symbol? k))))
+              (dissoc shape :fresh) keys)
+      shape)))
 
 (defmethod special 'dissoc [ctx node _]
   (let [[m & ks] (args-of node)
         mty (infer ctx m)
         env (:env ctx)
         members (t/members env mty)
-        map-shapes? (every? #(#{:map :nil} (:t %)) members)
+        map-shapes? (every? #(#{:map :map-of :nil} (:t %)) members)
         keys (mapv #(if (= :kw (:op %)) (:val %) (stable-map-key %)) ks)]
     (if (and map-shapes? (every? some? keys))
       (apply t/union (map #(dissoc-map-keys % keys false) members))

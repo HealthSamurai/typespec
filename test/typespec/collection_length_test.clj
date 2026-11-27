@@ -1040,6 +1040,20 @@
         (pr-str (:diagnostics r)))
     (is (= ["true" "true" "false" "false" "true"] (mapv #(at r %) (range 2 7))))))
 
+(deftest not-any-tracks-absence-of-truthy-predicate-results
+  (let [r (checked "(not-any? 42 [])
+(not-any? string? [1 2])
+(not-any? string? [\"match\"])
+(not-any? (fn [_] :truthy) [1])
+(not-any? (fn [_] false) [1])
+(not-any? string? 42)
+(not-any? string? [] :extra)
+(not-any? 42 [1])")]
+    (is (= [[7 "TSP2345"] [8 "TSP2554"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["true" "true" "false" "false" "true"] (mapv #(at r %) (range 2 7))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

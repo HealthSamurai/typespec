@@ -6233,7 +6233,19 @@
 (defmethod special 'every? [ctx node _]
   (check-collection-callback ctx node 'every? (partial every-result (:env ctx))))
 
-(doseq [h '[group-by not-any? run! max-key min-key]]
+(defmethod special 'not-any? [ctx node _]
+  (let [env (:env ctx)]
+    (check-collection-callback
+     ctx node 'not-any?
+     (fn [shape]
+       (let [found (some-result env shape)]
+         (cond
+           (= t/never found) t/never
+           (= t/nil-t found) (t/lit true)
+           (or (#{:unknown :any} (:t found)) (t/nilable? env found)) (t/prim :boolean)
+           :else (t/lit false)))))))
+
+(doseq [h '[group-by run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
           c (last more)]
@@ -6242,7 +6254,6 @@
         (let [el (elem-type ctx (infer ctx c))
               [ret] (apply-predicate ctx f el false)]
           (case h
-            not-any? (t/prim :boolean)
             run! t/nil-t
             (max-key min-key) el
             group-by (if (= t/never el)

@@ -65,6 +65,18 @@
   (is (= {:n 5 :other "word"} (merge-with + {:n 2 :other "word"} {:n 3})))
   (is (thrown? ClassCastException (merge-with + {:n 2} {:n "bad"}))))
 
+(deftest rename-keys-reads-original-fields-and-preserves-swaps
+  (let [r (checked "(get (clojure.set/rename-keys {:a 2 :b \"word\"} {:a :b :b :a}) :a)
+(get (clojure.set/rename-keys {:a 2 :b \"word\"} {:a :b :b :a}) :b)
+(:a (clojure.set/rename-keys {:a 2} {:a :b}) :default)
+(clojure.set/rename-keys nil {:a :b})
+(inc (:b (clojure.set/rename-keys {:a \"wrong\"} {:a :b})))
+(clojure.set/rename-keys {})")]
+    (is (= ["\"word\"" "2" ":default" "nil?"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= {:a "word" :b 2} (clojure.set/rename-keys {:a 2 :b "word"} {:a :b :b :a}))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

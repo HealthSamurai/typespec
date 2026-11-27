@@ -4482,6 +4482,50 @@
             (t/with-assumption result (some t/assumption types)))
           :else (do (infer ctx f) t/unknown))))))
 
+(defn- known-renames [env ty]
+  (cond
+    (= t/nil-t ty) {}
+    (and (= :map (:t ty)) (:complete-keys? ty) (empty? (:opt ty)))
+    (let [entries (into {} (map (fn [[old new]] [old (selector-literal-key (t/resolve-t env new))])) (:req ty))]
+      (when (every? some? (vals entries)) entries))))
+
+(defn- rename-map-fields [ctx source renames]
+  (cond
+    (or (empty? renames) (#{:nil :never} (:t source))) source
+    (= :map (:t source))
+    (reduce-kv
+     (fn [shape new olds]
+       (let [entries (keep (fn [old]
+                             (let [{:keys [status type]} (lookup-key ctx source old)]
+                               (when-not (or (= :absent status) (= t/never type))
+                                 [status (or type t/unknown)])))
+                           olds)
+             required? (some #(= :req (first %)) entries)
+             prior (when-not required? (or (get (:req shape) new) (get (:opt shape) new)))
+             value (apply t/union (concat (map second entries) (when prior [prior])))]
+         (cond
+           (empty? entries) shape
+           (or required? (contains? (:req shape) new)) (assoc-map-key shape new value)
+           :else (assoc-in shape [:opt new] value))))
+     (dissoc-map-keys source (keys renames) true)
+     (group-by renames (keys renames)))
+    :else t/unknown))
+
+(defmethod special 'clojure.set/rename-keys [ctx node _]
+  (let [args (args-of node)
+        [source mapping :as types] (mapv #(eff ctx (infer ctx %)) args)
+        env (:env ctx)]
+    (cond
+      (not= 2 (count types))
+      (do (report! ctx node "TSP2554" "rename-keys expects two arguments") t/unknown)
+      (some #{t/never} types) t/never
+      :else
+      (if-let [renames (known-renames env (t/resolve-t env mapping))]
+        (t/with-assumption
+         (apply t/union (map #(rename-map-fields ctx % renames) (t/members env source)))
+         (or (t/assumption source) (t/assumption mapping)))
+        t/unknown))))
+
 (defn- project-map-keys [ctx source keys]
   (reduce (fn [shape [node key-type]]
             (let [k (:val key-type)

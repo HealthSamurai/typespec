@@ -250,17 +250,35 @@
                  (partition 2 (:children pattern)))
     nil))
 
+(defn- precondition-class [file node]
+  (let [sym (:val node)]
+    (when (and (= :sym (:op node))
+               (not (contains? (:locals file) sym))
+               (not (contains? (:defined-symbols file) sym))
+               (not (contains? (:refers file) sym)))
+      (when-let [name (t/resolve-class (:imports file) sym)]
+        (when-let [^Class class (t/load-class name)]
+          (when-not (.isPrimitive class)
+            (let [ty (t/class-type name)]
+              (cond
+                (= :any (:t ty)) t/some-t
+                (#{:int :double} (:name ty)) nil
+                :else ty))))))))
+
 (defn- pre-facts
   "Facts with their source conditions from the supported :pre forms."
   [file params body]
   (let [file (assoc file :locals (set (parameter-bindings params)))]
     (keep (fn [test]
             (let [h (precondition-head file test)
-                  [a b _ & more] (rest (:children test))
-                  type (when (nil? b) (precondition-predicate-type h))]
+                  [a b form & more] (rest (:children test))
+                  type (when (nil? b) (precondition-predicate-type h))
+                  class (when (and (= 'instance? h) b (nil? form)) (precondition-class file a))]
               (cond
                 (and type (= :sym (:op a)))
                 [(:val a) type test]
+                (and class (= :sym (:op b)))
+                [(:val b) class test]
                 (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
                 [(:val b) (t/ref-t (:val a)) test])))
           (pre-conditions body))))

@@ -118,6 +118,24 @@
     (is (false? (present false)))
     (is (thrown? AssertionError (present nil)))))
 
+(deftest preconditions-infer-resolved-instance-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.io File]))
+(defn file-name [x] {:pre [(instance? File x)]} (.getName x))
+(defn shadowed [File x] {:pre [(instance? File x)]} x)
+(defn present [x] {:pre [(instance? Object x)]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/file-name (java.io.File. \"text\"))
+(api/file-name \"text\")
+(api/shadowed java.lang.String \"text\")
+(api/present nil)")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 2 "TSP7023"] ["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [f (fn [x] {:pre [(instance? java.io.File x)]} (.getName ^java.io.File x))]
+    (is (= "text" (f (java.io.File. "text"))))
+    (is (thrown? AssertionError (f "text")))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

@@ -141,6 +141,21 @@
   (is (thrown? IndexOutOfBoundsException (apply ["text"] [1])))
   (is (thrown? IllegalArgumentException (apply ["text"] [0.5]))))
 
+(deftest cons-produces-a-typed-prefix-for-apply
+  (let [r (checked "(apply subs (cons \"text\" [1]))
+(apply subs (cons \"text\" (int-array [1])))
+(first (cons \"text\" nil))
+(second (cons \"text\" [2]))
+(apply subs (cons \"text\" [\"bad\"]))
+(apply subs (cons \"text\" nil))
+(cons :key false)
+(cons :key)")]
+    (is (= ["string?" "string?" "\"text\"" "2"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= "ext" (apply subs (cons "text" [1]))))
+  (is (thrown? ClassCastException (apply subs (cons "text" ["bad"])))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

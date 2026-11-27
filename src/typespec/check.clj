@@ -4760,6 +4760,33 @@
                          :severity (if (:strict (:opts ctx)) :error :warning) :reasons #{:apply-tail}))
               t/unknown))))))
 
+(defn- prefixed-sequence [ctx prefix source]
+  (let [size (count prefix)]
+    (apply t/union
+           (for [member (t/members (:env ctx) source)
+                 :let [member (or (map-entry-sequence member) member)
+                       [lo hi] (sequence-member-bounds member)
+                       tail-items (or (:items member)
+                                      (when (and (= lo hi) (<= lo 64))
+                                        (vec (repeat lo (member-element member)))))
+                       items (when tail-items (into prefix tail-items))
+                       element (if items (apply t/union items)
+                                   (apply t/union (member-element member) prefix))]]
+             (cond-> (length/with-bounds (coll-of :seq element) (+' size lo) (when hi (+' size hi)))
+               items (assoc :items items))))))
+
+(defmethod special 'cons [ctx node _]
+  (let [[_ coll :as args] (args-of node)
+        [item source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count types))
+      (do (report! ctx node "TSP2554" "cons expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+      (report-invalid-sequence-args! ctx 'cons [coll] [source]) t/unknown
+      :else (t/with-assumption (prefixed-sequence ctx [(dissoc item :fresh)] source)
+                               (some t/assumption types)))))
+
 (defmethod special 'lazy-seq [ctx node _]
   (let [forms (args-of node)
         body (infer-body (dissoc ctx :recur-types) forms)]

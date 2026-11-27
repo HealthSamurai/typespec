@@ -601,6 +601,18 @@
       :else (let [a (scalar-category left) b (scalar-category right)]
               (and a b (not= a b))))))
 
+(defn- scalar-intersection [left right]
+  (let [ls (members {} left)
+        rs (members {} right)]
+    (when (<= (* (count ls) (count rs)) 256)
+      (let [intersections (for [l ls r rs]
+                            (cond
+                              (= :proved (:status (contract-sub-result l r))) l
+                              (= :proved (:status (contract-sub-result r l))) r
+                              (disjoint-scalar-types? l r) never))]
+        (when (every? some? intersections)
+          (apply union intersections))))))
+
 (defn- narrower-scalar-contract [env seen a b]
   (when (and a b (not= a b))
     (let [left (scalar-contract env seen a)
@@ -611,8 +623,7 @@
           (= :any (:t right)) a
           (= :proved (:status (contract-sub-result left right))) a
           (= :proved (:status (contract-sub-result right left))) b
-          (every? identity (for [l (members {} left) r (members {} right)]
-                             (disjoint-scalar-types? l r))) never)))))
+          :else (scalar-intersection left right))))))
 
 (defn- merge-spec-maps [env seen a b]
   (let [required (merge (:req a) (:req b))

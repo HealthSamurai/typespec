@@ -171,6 +171,30 @@
         (pr-str issues))
     (is (every? #(re-find #"t/never" (:message %)) issues))))
 
+(deftest spec-merge-retains-the-intersection-of-scalar-alternatives
+  (let [schema (parse/parse-string "schema.clj" "(ns schema (:require [clojure.spec.alpha :as s]))
+(s/def ::status #{:new :active})
+(s/def ::state (s/nilable int?))
+(s/def ::row (s/keys :req-un [::status ::state]))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [schema :as schema]))
+(s/def ::status #{:active :closed})
+(s/def ::state (s/nilable string?))
+(s/def ::row (s/merge ::schema/row (s/keys :req-un [::status ::state])))
+(s/fdef save :args (s/cat :row ::row))
+(defn save [row] row)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/save {:status :active :state nil})
+(a/save {:status :closed :state nil})
+(a/save {:status :new :state nil})
+(a/save {:status :active :state \"ready\"})
+(a/save {:status :active :state 42})")
+        issues (:diagnostics (check/check-files [client api schema] {}))]
+    (is (= [[3 "TSP2322"] [4 "TSP2322"] [5 "TSP2322"] [6 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"to :active$" (:message (first issues))))
+    (is (re-find #"to nil\?$" (:message (last issues))))))
+
 (deftest spec-merge-bounds-the-combination-of-map-alternatives
   (let [options (fn [prefix n]
                   (apply t/union

@@ -1109,6 +1109,19 @@
     (is (= [":only" "#{\"a\" \"bb\"}" "string?" "#{1 2}"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest min-key-checks-all-candidates-and-keeps-their-result-type
+  (let [r (checked "(min-key 42 \"only\")
+(min-key count \"aa\" \"b\")
+(min-key inc 100 200 300)
+(min-key (fn [_] \"not-numeric\") 1 2)
+(min-key 42 1 2)
+(min-key)")]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"only\"" "#{\"aa\" \"b\"}" "#{100 200 300}"]
+           (mapv #(at r %) (range 2 5))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

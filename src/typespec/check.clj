@@ -6292,13 +6292,7 @@
   (check-key-extremum ctx node 'max-key))
 
 (defmethod special 'min-key [ctx node _]
-  (let [[f & more] (args-of node)
-        c (last more)]
-    (if (nil? c)
-      (do (infer ctx f) t/unknown)
-      (let [el (elem-type ctx (infer ctx c))]
-        (apply-predicate ctx f el false)
-        el))))
+  (check-key-extremum ctx node 'min-key))
 
 (defn- literal-collection-count [node]
   (cond

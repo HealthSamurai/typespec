@@ -723,6 +723,24 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest opaque-argument-regex-keeps-the-recognized-result-spec
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef available :args (s/cat :values (s/* int?) :label string?) :ret string?)
+(defn available [& parts] (str (last parts)))
+(s/fdef wrong :args (s/cat :values (s/* int?) :label string?) :ret string?)
+(defn wrong [& parts] 42)
+(s/fdef external :args (s/cat :values (s/* int?) :label string?) :ret int?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/available 1 2 \"ok\"))
+(inc (a/external 1 2 \"ok\"))
+(str/upper-case (a/external \"ok\"))")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 2 "TSP9002"] ["api.clj" 4 "TSP9002"] ["api.clj" 5 "TSP2322"]
+            ["api.clj" 6 "TSP9002"] ["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= #{'api/available 'api/wrong 'api/external} (set (keys (get-in r [:env :opaque-fdefs])))))))
+
 (deftest collection-spec-options-keep-checking-the-project
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

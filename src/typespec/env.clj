@@ -542,14 +542,16 @@
                      (do ((:fail ctx) (parse/node->data form)) nil))
                type (cond
                       ars {:t :fn :arities ars}
-                      (and (nil? args) (not= t/unknown result)) {:t :fn :ret result})]
+                      (not= t/unknown result) {:t :fn :ret result})
+               opaque-args? (and (some? args) (nil? ars))]
            (if (= :sym (:op nm))
              (let [sym (qualify (:val nm))
-                   location {:file (:file file) :pos (:pos form)}]
-               (if type
-                 (-> (update acc :opaque-fdefs dissoc sym)
-                     (register-spec :fdefs sym (assoc location :type type) diags))
-                 (assoc-in acc [:opaque-fdefs sym] location)))
+                   location {:file (:file file) :pos (:pos form)}
+                   opaque? (or (nil? type) opaque-args?)]
+               (cond-> acc
+                 type (register-spec :fdefs sym (assoc location :type type :opaque-args? opaque-args?) diags)
+                 opaque? (assoc-in [:opaque-fdefs sym] location)
+                 (not opaque?) (update :opaque-fdefs dissoc sym)))
              acc))
 
          (= 'defprotocol h)
@@ -673,9 +675,10 @@
                            (tag-node (:name (:parts d)))))
      :complete? (if declared
                   (not invalid?)
-                  (every? (fn [a] (and (not= :unknown (:t (:ret a)))
-                                       (not-any? #(= :unknown (:t %)) (:params a))))
-                          (:arities inferred)))
+                  (and (not (:opaque-args? fd))
+                       (every? (fn [a] (and (not= :unknown (:t (:ret a)))
+                                            (not-any? #(= :unknown (:t %)) (:params a))))
+                               (:arities inferred))))
      :private? (:private? (:parts d))
      :file (:file (:file d)) :pos (:pos d)}))
 
@@ -720,7 +723,8 @@
                                                      (function-var env operator-env sym (:prior-defn d) nil diags)))
                             (function-var env operator-env sym d fd diags))]))
         only-fdef (for [[sym fd] (:fdefs acc) :when (not (contains? vars sym))]
-                    [sym {:type (:type fd) :source :fdef :file (:file fd) :pos (:pos fd)}])]
+                    [sym (cond-> {:type (:type fd) :source :fdef :file (:file fd) :pos (:pos fd)}
+                           (:opaque-args? fd) (assoc :complete? false))])]
     (let [vars (merge (into vars only-fdef) (protocol-vars (:protocols acc) (:fdefs acc) diags))
           [env ext-diags] (externs/merge-contracts (assoc env :vars vars) contracts)
           {:keys [diagnostics] :as recursion} (recursive/analyze (:specs env))]

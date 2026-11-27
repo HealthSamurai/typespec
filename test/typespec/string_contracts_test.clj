@@ -475,6 +475,28 @@
   (is (= "spaceSPACE" (when-some [ns (namespace :space/key)] (str ns (str/upper-case (namespace :space/key))))))
   (is (thrown? NullPointerException (when-not (some? (namespace :plain)) (str/upper-case (namespace :plain))))))
 
+(deftest parse-long-as-a-callback-uses-the-literal-element-contract
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef values :args (s/cat) :ret (s/coll-of #{\"0\" \"2\"} :kind vector? :min-count 1))
+(defn values [] [\"0\" \"2\"])
+(s/fdef mixed :args (s/cat) :ret (s/coll-of #{\"2\" \"bad\"} :kind vector? :min-count 1))
+(defn mixed [] [\"2\" \"bad\"])")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(mapv parse-long (api/values))
+(mapv inc (mapv parse-long (api/values)))
+(mapv inc (mapv parse-long (api/mixed)))
+(some clojure.core/parse-long (api/values))
+(mapv parse-long [42])
+(let [parse-long (fn [_] :local)] (mapv parse-long (api/values)))")
+        result (check/check-files [api client] {})]
+    (is (= [[4 "TSP2531"] [6 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["(s/coll-of int? :kind vector? :min-count 1)" "#{0 2}" "(s/coll-of keyword? :kind vector? :min-count 1)"]
+           (mapv #(main/type-at result "client.clj" % 1) [2 5 7]))))
+  (is (= [0 2] (mapv parse-long ["0" "2"])))
+  (is (thrown? NullPointerException (mapv inc (mapv parse-long ["bad"])))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

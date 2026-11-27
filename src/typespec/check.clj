@@ -2477,10 +2477,23 @@
       (= :lit (:t member)) (t/lit (namespace (:val member)))
       :else (t/prim :string))))
 
-(defn- core-callback? [ctx node head]
-  (and (= :sym (:op node)) (empty? (:directives node)) (not (env/tag-node node))
-       (= head (t/core-name (:file ctx) (:val node)))
-       (= (symbol "clojure.core" (name head)) (guard-symbol ctx node))))
+(defn- parsed-string-member [parse result-type member]
+  (when (and (= :lit (:t member)) (string? (:val member)))
+    (if-some [value (parse (:val member))]
+      (result-type value)
+      t/nil-t)))
+
+(def ^:private unary-callback-refiners
+  {'namespace namespace-member-result
+   'parse-long (partial parsed-string-member parse-long t/lit)})
+
+(defn- core-callback-refiner [ctx node]
+  (when (= :sym (:op node))
+    (let [head (t/core-name (:file ctx) (:val node))]
+      (when-let [refine (unary-callback-refiners head)]
+        (when (and (empty? (:directives node)) (not (env/tag-node node))
+                   (= (symbol "clojure.core" (name head)) (guard-symbol ctx node)))
+          refine)))))
 
 (defn apply-fn-node [ctx fnode arg-types & [require-match?]]
   (case (:op fnode)
@@ -2511,9 +2524,10 @@
             t/unknown)
 
         :else
-        (let [result (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)]
-          (if (and (= 1 (count arg-types)) (core-callback? ctx fnode 'namespace))
-            (refine-unary-result ctx (first arg-types) result namespace-member-result)
+        (let [result (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)
+              refine (when (= 1 (count arg-types)) (core-callback-refiner ctx fnode))]
+          (if refine
+            (refine-unary-result ctx (first arg-types) result refine)
             result))))))
 
 (defn- function-shape [ctx ty]
@@ -3353,13 +3367,7 @@
          (t/lit (name value)))))))
 
 (defn- parsed-string-result [ctx node parse result-type]
-  (core-unary-result
-   ctx node
-   (fn [member]
-     (when (and (= :lit (:t member)) (string? (:val member)))
-       (if-some [value (parse (:val member))]
-         (result-type value)
-         t/nil-t)))))
+  (core-unary-result ctx node (partial parsed-string-member parse result-type)))
 
 (defmethod special 'parse-long [ctx node _]
   (parsed-string-result ctx node parse-long t/lit))

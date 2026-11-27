@@ -3320,6 +3320,10 @@
 (defmethod special 'parse-long [ctx node _]
   (parsed-string-result ctx node parse-long t/lit))
 
+(defmethod special 'parse-double [ctx node _]
+  (parsed-string-result ctx node parse-double
+                        (fn [value] (if (Double/isNaN (double value)) (t/prim :double) (t/lit value)))))
+
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
 (defmethod special 'time [ctx node _]

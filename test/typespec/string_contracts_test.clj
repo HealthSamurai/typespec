@@ -174,6 +174,24 @@
   (is (nil? (parse-long "9223372036854775808")))
   (is (thrown? NullPointerException (inc (parse-long " 42")))))
 
+(deftest parse-double-distinguishes-valid-floating-point-strings
+  (let [file (parse/parse-string "parsing.clj" "(ns parsing)
+(parse-double \" 0x1.0p2 \")
+(parse-double \"NaN\")
+(parse-double \"Infinity\")
+(parse-double \"broken\")
+(+ (parse-double \"3.25\") 1.0)
+(+ (parse-double \"broken\") 1.0)
+(parse-double :broken)")
+        result (check/check-files [file] {})]
+    (is (= ["4.0" "double?" "##Inf" "nil?"]
+           (mapv #(main/type-at result "parsing.clj" % 1) [2 3 4 5])))
+    (is (= [[7 "TSP2531"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))))
+  (is (= 4.0 (parse-double " 0x1.0p2 ")))
+  (is (Double/isNaN (parse-double "NaN")))
+  (is (thrown? NullPointerException (+ (parse-double "broken") 1.0))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

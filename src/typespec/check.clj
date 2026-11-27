@@ -5617,6 +5617,25 @@
              (not positive?) (t/union ty))
            (or (t/assumption n) (t/assumption ty))))))))
 
+(defmethod special 'nthnext [ctx node _]
+  (let [[source amount :as args] (args-of node)
+        [ty n :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count types))
+      (do (report! ctx node "TSP2554" "nthnext expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+      (report-invalid-sequence-args! ctx 'nthnext [source] [ty]) t/unknown
+
+      :else
+      (let [members (map #(or (map-entry-sequence %) %) (t/members (:env ctx) ty))]
+        (if (and (every? #(or (= :vector (:kind %))
+                              (pos? (first (sequence-member-bounds %)))) members)
+                 (= :mismatch (:status (t/sub-result (:env ctx) n (t/prim :number)))))
+          (do (assignable! ctx amount n (t/prim :number)) t/unknown)
+          (t/with-assumption (skipped-sequence ctx ty (slice-limit ctx n) true)
+                             (or (t/assumption n) (t/assumption ty))))))))
+
 (defmethod special 'take-last [ctx node _]
   (check-sequence-slice ctx node 'take-last false (partial limited-sequence ctx true)))
 

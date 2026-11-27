@@ -827,6 +827,23 @@
   (is (= 42 (nthrest 42 -1)))
   (is (thrown? IllegalArgumentException (nthrest 42 1.5))))
 
+(deftest nthnext-sequences-at-zero-and-returns-nil-when-the-tail-is-empty
+  (let [r (checked "(first (nthnext [1 \"word\"] 1))
+(nthnext [1] 1)
+(nthnext [] 0)
+(nthnext nil :unused)
+(first (nthnext \"ab\" 0))
+(inc (first (nthnext [1 \"word\"] 1)))
+(nthnext 42 0)
+(nthnext [] :invalid)
+(nthnext [])")]
+    (is (= ["\"word\"" "nil?" "nil?" "nil?" "java.lang.Character"]
+           (mapv #(at r %) (range 2 7))))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (nil? (nthnext nil :unused)))
+  (is (thrown? ClassCastException (nthnext [] :invalid))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

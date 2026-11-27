@@ -186,6 +186,36 @@
     (is (= [false false true false] (mapv #(s/valid? #{nil false :auto} %) [nil false :auto true])))
     (is (not (s/valid? #{} :auto)))))
 
+(deftest spec-and-narrows-through-value-preserving-predicates
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::count (s/and number? int? pos?))
+(s/def ::label (s/and some? string?))
+(s/def ::converted (s/and number? (s/conformer str) string?))
+(s/def ::tagged (s/and (s/or :number int? :text string?) vector?))
+(s/fdef show :args (s/cat :n ::count :label ::label) :ret string?)
+(s/fdef convert :args (s/cat :x ::converted) :ret any?)
+(s/fdef tag :args (s/cat :x ::tagged) :ret any?)
+(defn show [n label] (subs label n))
+(defn convert [x] x)
+(defn tag [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/show 1 \"text\")
+(a/show 1.5 \"text\")
+(a/show 1 :wrong)
+(a/show 1 nil)
+(a/convert 1.5)
+(a/convert \"text\")
+(a/tag 1)
+(a/tag \"text\")
+(a/tag :wrong)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (s/valid? (s/and number? (s/conformer str) string?) 1.5))
+    (is (s/valid? (s/and (s/or :number int? :text string?) vector?) 1))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

@@ -566,7 +566,7 @@
     (when (every? #(#{:prim :class :lit :some :nil :never :any} (:t %)) parts)
       (apply union parts))))
 
-(defn- narrower-field-contract [env seen a b]
+(defn- narrower-scalar-contract [env seen a b]
   (when (and a b (not= a b))
     (let [left (scalar-contract env seen a)
           right (scalar-contract env seen b)]
@@ -584,7 +584,7 @@
         right (merge (:opt b) (:req b))
         refine (fn [row]
                  (reduce-kv (fn [result k _]
-                              (if-let [field (narrower-field-contract env seen (get left k) (get right k))]
+                              (if-let [field (narrower-scalar-contract env seen (get left k) (get right k))]
                                 (assoc result k field)
                                 result))
                             row row))]
@@ -661,6 +661,20 @@
     map? :map vector? :vector set? :set seq? :seq sequential? :coll coll? :coll
     fn? :fn ifn? :fn})
 
+(defn- builtin-predicate-type [predicate]
+  (if-let [primitive (pred-prims predicate)]
+    (cond-> (prim primitive)
+      (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'sequential? 'fn?} predicate)
+      (with-meta {::unchecked-contract true}))
+    (case predicate
+      any? any
+      some? some-t
+      nil? nil-t
+      list? (class-type "clojure.lang.IPersistentList")
+      true? (lit true)
+      false? (lit false)
+      nil)))
+
 (defn type-form-op [ctx sym]
   (when (symbol? sym)
     (let [sym (get (:refers ctx) sym sym)
@@ -729,6 +743,21 @@
       (predicate-expression-type (update ctx :defined-symbols (fnil conj #{}) param)
                                  (fn [argument] (or (= param argument) (and reader-fn? (= '%1 argument))))
                                  body))))
+
+(defn- transparent-predicate-type [ctx form]
+  (cond
+    (symbol? form) (let [predicate (core-name ctx form)]
+                     (or (qualification-target predicate) (builtin-predicate-type predicate)))
+    (and (set? form) (every? literal-set-member? form)) (literal-set-type (filter identity form))
+    (seq? form) (predicate-spec-type ctx form)))
+
+(defn- spec-conjunction-type [ctx forms]
+  ;; Later s/and operands see the conformed value. Only combine predicates
+  ;; before a form that might have transformed it.
+  (let [prefix (seq (take-while some? (map #(transparent-predicate-type ctx %) forms)))]
+    (if prefix
+      (reduce #(or (narrower-scalar-contract {} #{} %1 %2) %1) prefix)
+      (parse-type ctx (first forms)))))
 
 (defn- flat-keys [x] (cond (keyword? x) [x] (seq? x) (mapcat flat-keys (rest x)) :else []))
 
@@ -971,22 +1000,13 @@
                            core (core-name ctx form)
                            predicate (if (:spec? ctx) core nm)
                            qualification (qualification-target core)]
-                       (cond (get (:type-vars ctx) nm) (get (:type-vars ctx) nm)
-                             qualification qualification
-                             (pred-prims predicate)
-                             (cond-> (prim (pred-prims predicate))
-                               (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'sequential? 'fn?} predicate)
-                               (with-meta {::unchecked-contract true}))
-                             (= 'any? predicate) any
-                             (= 'some? predicate) some-t
-                             (= 'nil? predicate) nil-t
-                             (= 'list? predicate) (class-type "clojure.lang.IPersistentList")
-                             (= 'true? predicate) (lit true)
-                             (= 'false? predicate) (lit false)
-                             (= 't/unknown nm) unknown
-                             (= 't/never nm) never
-                             (:inside-all ctx) (fail)
-                             :else (if-let [c (resolve-class (:imports ctx) nm)] (class-type c) (fail))))
+                       (or (get (:type-vars ctx) nm) qualification (builtin-predicate-type predicate)
+                           (case nm
+                             t/unknown unknown
+                             t/never never
+                             (if-let [c (when-not (:inside-all ctx) (resolve-class (:imports ctx) nm))]
+                               (class-type c)
+                               (fail)))))
       (set? form) (if (:spec? ctx)
                     ;; A set used as a predicate returns the member itself.
                     (if (every? literal-set-member? form)
@@ -1005,7 +1025,9 @@
         :s/or (vary-meta (apply union (map p (take-nth 2 (drop 2 form))))
                          assoc ::shape-form 's/or ::spec-tags (vec (take-nth 2 (rest form))))
         :t/or (vary-meta (apply union (map p (rest form))) assoc ::shape-form 't/or)
-        (:s/and :t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
+        :s/and (vary-meta (if (:spec? ctx) (spec-conjunction-type ctx (rest form)) (p (second form)))
+                          assoc ::shape-form (first form) ::unchecked-contract true)
+        (:t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
         :s/spec (p (second form))
         :s/keys (if (even? (count (rest form))) (parse-keys (rest form)) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}

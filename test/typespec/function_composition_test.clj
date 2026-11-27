@@ -11,6 +11,22 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest partial-keeps-a-return-only-function-spec
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defmulti render (fn [tag & _] tag))
+(defmethod render :label [_ x] (str x))
+(s/fdef render :ret string?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(let [label (partial a/render :label)]
+  (str/upper-case (label 1)))
+(let [label (partial a/render :label)]
+  (inc (apply label [1])))
+(str/upper-case (first (mapv (partial a/render :label) [1])))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest composition-transfers-inputs-and-returns
   (let [result (checked "(comp inc count)
                          ((comp inc count) \"abc\")

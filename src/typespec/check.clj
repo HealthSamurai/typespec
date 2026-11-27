@@ -2991,8 +2991,10 @@
       (partial-generic ctx node ty args)
       (if-let [shape (function-shape ctx ty)]
         (partial-from-shape ctx node shape args)
-        (do (run! #(infer ctx %) args)
-            (check-composable! ctx f ty "partial"))))))
+        (if (return-type-without-arity ty)
+          (if (some #{t/never} (mapv #(infer ctx %) args)) t/never ty)
+          (do (run! #(infer ctx %) args)
+              (check-composable! ctx f ty "partial")))))))
 
 (defn- single-map [ctx ty]
   (let [ms (t/members (:env ctx) ty)]

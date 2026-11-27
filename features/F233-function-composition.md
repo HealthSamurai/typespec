@@ -15,6 +15,8 @@ flags: strict strict-nil
 обычных spec, type hints, `:t/sig` или EDN-деклараций. Получившуюся функцию
 можно вызвать сразу, сохранить в `let` или передать как callback.
 
+`partial` сохраняет известный `:ret` из `s/fdef`, когда арности функции неизвестны.
+
 ```clojure example
 (ns example
   (:require [clojure.string :as str]))

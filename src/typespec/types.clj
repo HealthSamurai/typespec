@@ -856,10 +856,7 @@
     (qualified-keyword? form) (named-spec-input ctx form seen conjunction-input-shape)
     (seq? form)
     (case (type-form-op ctx (first form))
-      (:s/keys :s/tuple) (parse-type ctx form)
-      :s/map-of (let [{:keys [kind]} (spec-option-map (drop 3 form))]
-                  (when (or (nil? kind) (= 'map? (core-name ctx kind)))
-                    (parse-type ctx form)))
+      (:s/keys :s/tuple :s/map-of) (parse-type ctx form)
       :s/coll-of (let [{:keys [kind]} (spec-option-map (drop 2 form))]
                    (when (or (nil? kind) (#{'vector? 'set? 'list? 'seq?} (core-name ctx kind)))
                      (parse-type ctx form)))
@@ -1102,7 +1099,7 @@
                        ty)))]
     (or (= a b) (= (normalize a) (normalize b)))))
 
-(defn- collection-type [ctx [_ inner :as form] {:keys [kind min-count max-count count] :as opts}]
+(defn- collection-type [ctx form inner {:keys [kind min-count max-count count] :as opts}]
   (let [kinds '{coll? nil vector? :vector set? :set list? :seq seq? :seq}
         kind-name (if kind (core-name ctx kind) 'coll?)
         kind-type (get kinds kind-name)
@@ -1122,6 +1119,14 @@
                 (and (some? count) (not exact?))
                 (= :s/every (type-form-op ctx (first form))))
             (with-meta {::unchecked-contract true}))))
+      (do ((:fail ctx) form) unknown))))
+
+(defn- map-of-type [ctx [_ key value :as form] {:keys [kind] :as options}]
+  (let [kind-name (if (contains? options :kind) (core-name ctx kind) 'map?)]
+    (case kind-name
+      map? {:t :map-of :k (parse-type ctx key) :v (parse-type ctx value)}
+      (vector? set? list? seq?)
+      (collection-type ctx form (list 'clojure.spec.alpha/tuple key value) options)
       (do ((:fail ctx) form) unknown))))
 
 (defn parse-type
@@ -1169,10 +1174,10 @@
         :s/keys (if-let [options (spec-keys-options (rest form))] (parse-keys options) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
         (:s/coll-of :s/every) (if-let [options (when (next form) (spec-option-map (drop 2 form)))]
-                               (collection-type ctx form options)
+                               (collection-type ctx form (second form) options)
                                (fail))
-        :s/map-of (if (and (nnext form) (spec-option-map (drop 3 form)))
-                    {:t :map-of :k (p (second form)) :v (p (nth form 2))}
+        :s/map-of (if-let [options (when (nnext form) (spec-option-map (drop 3 form)))]
+                    (map-of-type ctx form options)
                     (fail))
         :s/tuple (with-meta (tuple (mapv p (rest form))) {::tuple-contract true})
         :s/fspec (if-let [{:keys [args ret]} (when-not (:inside-all ctx) (spec-option-map (rest form)))]

@@ -429,6 +429,33 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest map-of-kind-checks-entry-collections
+  (let [api (parse/parse-string "api.clj" "(ns api
+  (:refer-clojure :rename {vector? entries?})
+  (:require [clojure.spec.alpha :as s]))
+(s/def ::pairs (s/map-of string? int? :kind entries?))
+(s/def ::index (s/map-of string? int?))
+(s/fdef entries :args (s/cat :pairs ::pairs) :ret int?)
+(defn entries [pairs] (count pairs))
+(s/fdef index :args (s/cat :pairs ::index) :ret int?)
+(defn index [pairs] (count pairs))
+(s/def ::pairs-only (s/and entries? ::pairs))
+(s/fdef checked-entries :args (s/cat :pairs ::pairs-only) :ret int?)
+(defn checked-entries [pairs] (count pairs))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/entries [[\"good\" 1]])
+(a/entries {\"bad\" 1})
+(a/entries [[\"wrong\" \"2\"]])
+(a/index {\"good\" 1})
+(a/index [[\"wrong\" 1]])
+(a/checked-entries [[\"valid\" 1]])
+(a/checked-entries [[\"wrong\"]])")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

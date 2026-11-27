@@ -383,7 +383,29 @@
 (a/read-counts [])
 (a/read-custom {:n 1})")
         diagnostics (:diagnostics (check/check-files [client api domain] {}))]
-    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP330-01"]]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP330-01"]
+            ["domain.clj" 7 "TSP9002"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
+(deftest collection-kind-resolves-in-the-spec-namespace
+  (let [api (parse/parse-string "api.clj" "(ns api
+  (:refer-clojure :exclude [vector?] :rename {set? allowed-set?})
+  (:require [clojure.spec.alpha :as s] [clojure.core :as core]))
+(defn vector? [x] (map? x))
+(s/def ::custom (s/coll-of any? :kind vector?))
+(s/def ::counts (s/coll-of int? :kind allowed-set?))
+(s/def ::indices (s/every int? :kind core/vector?))
+(s/def ::letters (s/coll-of char? :kind string? :into []))
+(s/fdef emit :args (s/cat :custom ::custom :counts ::counts :indices ::indices :letters ::letters) :ret any?)
+(defn emit [custom counts indices letters] [custom counts indices letters])")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/emit {:n 1} #{1} [1] \"abc\")
+(a/emit {:n 1} [1] [1] \"abc\")
+(a/emit {:n 1} #{1} #{1} \"abc\")")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 5 "TSP9002"] ["api.clj" 8 "TSP9002"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 

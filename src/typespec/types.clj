@@ -1098,23 +1098,22 @@
     (or (= a b) (= (normalize a) (normalize b)))))
 
 (defn- collection-type [ctx [_ inner :as form] {:keys [kind min-count max-count count] :as opts}]
-  (let [kinds '{vector? :vector set? :set list? :seq seq? :seq}
-        kind-name (if (and (symbol? kind) (= "clojure.core" (namespace kind)))
-                    (symbol (name kind))
-                    kind)
+  (let [kinds '{coll? nil vector? :vector set? :set list? :seq seq? :seq}
+        kind-name (if kind (core-name ctx kind) 'coll?)
         kind-type (get kinds kind-name)
         ;; Spec uses bounded-count for :count. An uncounted seq can satisfy
         ;; it with additional elements, so only counted kinds get an upper bound.
         exact? (and (some? count) (#{:vector :set} kind-type))
         declared (remove nil? [min-count max-count count])]
-    (if (every? #(and (integer? %) (<= 0 % Integer/MAX_VALUE)) declared)
+    (if (and (contains? kinds kind-name)
+             (every? #(and (integer? %) (<= 0 % Integer/MAX_VALUE)) declared))
       (let [lower (max (or min-count 0) (or count 0))
             upper (if exact? (min count (or max-count count)) max-count)]
         (if (and upper (> lower upper))
           (do ((:fail ctx) form) unknown)
           (cond-> (length/with-bounds {:t :coll :of (parse-type ctx inner) :kind kind-type} lower upper)
             (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
-                (and kind (not (contains? (dissoc kinds 'list?) kind-name)))
+                (= 'list? kind-name)
                 (and (some? count) (not exact?))
                 (= :s/every (type-form-op ctx (first form))))
             (with-meta {::unchecked-contract true}))))

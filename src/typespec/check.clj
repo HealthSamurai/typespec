@@ -2401,10 +2401,11 @@
 
 (defn- entry-callback-index [ctx node]
   (when (and (= :sym (:op node))
-             (empty? (:directives node)) (not (env/tag-node node))
-             (= 'key (t/core-name (:file ctx) (:val node)))
-             (= 'clojure.core/key (guard-symbol ctx node)))
-    0))
+             (empty? (:directives node)) (not (env/tag-node node)))
+    (let [head (t/core-name (:file ctx) (:val node))]
+      (when (and (#{'key 'val} head)
+                 (= (symbol "clojure.core" (name head)) (guard-symbol ctx node)))
+        (if (= 'key head) 0 1)))))
 
 (defn- checked-entry-position [ctx node label input index]
   (let [env (:env ctx)
@@ -4515,14 +4516,8 @@
 (defmethod special 'key [ctx node _]
   (entry-access ctx node 'key 0))
 
-(doseq [[h i] {'val 1}]
-  (defmethod special h [ctx node _]
-    (let [[entry :as args] (args-of node)
-          ty (infer ctx entry)]
-      (run! #(infer ctx %) (rest args))
-      (if (and (= 1 (count args)) (map-entry-type? ctx ty))
-        (positional-type ctx ty i)
-        t/unknown))))
+(defmethod special 'val [ctx node _]
+  (entry-access ctx node 'val 1))
 
 (defmethod special 'ffirst [ctx node _]
   (if-let [source (unary-sequence-source ctx node 'ffirst)]

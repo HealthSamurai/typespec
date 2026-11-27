@@ -1137,6 +1137,23 @@
     (is (= [":name" "(s/coll-of keyword? :kind vector? :min-count 1 :max-count 1)" "t/unknown"]
            (mapv #(at r %) (range 2 5))))))
 
+(deftest val-checks-map-entry-input-and-retains-value-types
+  (let [r (checked "(val (first {:name \"Ada\"}))
+(val (first {:missing nil}))
+(mapv val (seq {:name \"Ada\"}))
+(val (java.util.AbstractMap$SimpleEntry. :name 1))
+(val 42)
+(val nil)
+(val [1 2])
+(val :one :two)
+(mapv val [42])
+(mapv inc (mapv val (seq {:name \"Ada\"})))")]
+    (is (= [[6 "TSP2345"] [7 "TSP2531"] [8 "TSP2345"] [9 "TSP2554"] [10 "TSP2345"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"Ada\"" "nil?" "(s/coll-of string? :kind vector? :min-count 1 :max-count 1)" "t/unknown"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

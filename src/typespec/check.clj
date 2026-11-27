@@ -6181,6 +6181,9 @@
 (defmethod special 'keep [ctx node _]
   (check-keep ctx node 'keep false))
 
+(defmethod special 'keep-indexed [ctx node _]
+  (check-keep ctx node 'keep-indexed true))
+
 (defn- filter-splitter [ctx f]
   (let [env (:env ctx)]
     (if-let [summary (get-in env [:guards (guard-symbol ctx f)])]

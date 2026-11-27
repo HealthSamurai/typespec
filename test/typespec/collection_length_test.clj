@@ -931,6 +931,25 @@
   (is (= [false "word"] (vec (keep identity [nil false "word"]))))
   (is (thrown? ClassCastException (first (keep inc ["bad"])))))
 
+(deftest keep-indexed-checks-the-index-and-the-element
+  (let [r (checked "(keep-indexed (fn [i x] (+ i x)) [2 3])
+(first (keep-indexed (fn [_ _] false) [nil]))
+(first (keep-indexed (fn [_ _] :unused) []))
+(first (keep-indexed :lookup [\"word\"]))
+(first (keep-indexed (fn [_ _] (throw (Exception.))) [1]))
+(keep-indexed inc [1])
+(keep-indexed (fn [i _] (str/upper-case i)) [1])
+(keep-indexed (fn [_ x] (inc x)) [\"wrong\"])
+(keep-indexed identity 42)
+(keep-indexed)")]
+    (is (= ["(s/coll-of int? :kind seq? :min-count 2 :max-count 2)" "boolean?"
+            "nil?" "string?" "nil?"]
+           (mapv #(at r %) (range 2 7))))
+    (is (= [[7 "TSP2554"] [8 "TSP2345"] [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [false "word"] (vec (keep-indexed (fn [i x] (case i 0 nil 1 false x)) [0 1 "word"]))))
+  (is (thrown? clojure.lang.ArityException (first (keep-indexed inc [1])))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

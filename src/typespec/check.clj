@@ -8752,7 +8752,8 @@
                                (bind-pattern method-ctx rest
                                              (if (= :map (:op rest))
                                                (or (:kwargs expected) (env/pattern-type env file rest))
-                                               (or (:tail expected) t/unknown)))
+                                               (or (:tail expected)
+                                                   (t/union t/nil-t (assoc (coll-of :seq t/unknown) :min-count 1)))))
                                method-ctx)
                   actual (infer-body method-ctx body)]
             :when expected]

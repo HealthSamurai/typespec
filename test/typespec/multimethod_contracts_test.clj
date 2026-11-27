@@ -75,6 +75,21 @@
         (pr-str (:diagnostics result)))
     (is (str/includes? (get-in result [:diagnostics 0 :message]) "(defmethod api/stringify :bad, s/fdef)"))))
 
+(deftest a-variadic-method-knows-its-rest-is-a-sequence-or-nil
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defmulti stringify (fn [tag & _] tag))
+(s/fdef stringify :ret string?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(defmethod a/stringify :values [_ & values] (apply str values))
+(defmethod a/stringify :empty [_ & values] (if (nil? values) \"empty\" (apply str values)))
+(defmethod a/stringify :invalid [_ & values] (str (inc values)))
+(a/stringify :values)
+(a/stringify :empty \"valid\" 42)")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"]]
+           (locations result))
+        (pr-str (:diagnostics result)))))
+
 (def ^:private request-spec
   "
 (s/def :render.text/method #{\"text\" \"plain\"})

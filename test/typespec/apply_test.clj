@@ -87,6 +87,25 @@
   (is (= 7 (apply 'field [{'field 7}])))
   (is (thrown? clojure.lang.ArityException (apply 'field []))))
 
+(deftest applies-maps-as-lookups-and-preserves-spec-values
+  (let [api (parse/parse-string "config.clj" "(ns config (:require [clojure.spec.alpha :as s]))
+(s/def ::title string?)
+(s/fdef read :args (s/cat) :ret (s/keys :req-un [::title]))
+(defn read [] {:title \"text\"})")
+        client (parse/parse-string "client.clj" "(ns client (:require [config :as api] [clojure.string :as str]))
+(str/upper-case (apply (api/read) [:title]))
+(apply {:title \"text\"} [:title])
+(apply {:title nil} [:title 42])
+(apply {:title \"text\"} [:miss 42])
+(inc (apply (api/read) [:title]))
+(apply {:title \"text\"} [])")
+        r (check/check-files [api client] {})]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r))))
+    (is (= ["\"text\"" "nil?" "42"] (mapv #(main/type-at r "client.clj" % 1) [3 4 5]))))
+  (is (nil? (apply {:title nil} [:title 42])))
+  (is (= 42 (apply {:title "text"} [:miss 42]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

@@ -4617,6 +4617,30 @@
                   t/unknown)))
        (some t/assumption args)))))
 
+(defn- spread-map-target? [members]
+  (every? #(or (#{:map :map-of} (:t %)) (= (t/prim :map) (t/strip %)))
+          members))
+
+(defn- apply-map-lookup [ctx node label source args]
+  (let [[key not-found] args
+        not-found (or not-found t/nil-t)
+        env (:env ctx)]
+    (if-not (#{1 2} (count args))
+      (apply-arity! ctx node label [1 2] (count args))
+      (t/with-assumption
+       (apply t/union
+              (for [member (t/members env source)
+                    key-member (t/members env (eff ctx key))]
+                (cond
+                  (and (= :map (:t member)) (#{:lit :nil} (:t key-member)))
+                  (read-literal-map-key ctx member (:val key-member) not-found)
+                  (or (= :map-of (:t member)) (:map-index member))
+                  (read-map-of ctx member key-member not-found)
+                  (:complete-keys? member)
+                  (apply t/union not-found (vals (merge (:req member) (:opt member))))
+                  :else t/unknown)))
+       (or (t/assumption source) (some t/assumption args))))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4662,6 +4686,8 @@
                                    (into prefix-types items))
                           (and (= :lit (:t ty)) (ident? (:val ty)))
                           (apply-key-lookup ctx node label (:val ty) (into prefix-types items))
+                          (spread-map-target? (t/members (:env ctx) ty))
+                          (apply-map-lookup ctx node label ty (into prefix-types items))
                           :else
                           (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
                               t/unknown))))

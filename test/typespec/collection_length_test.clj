@@ -92,6 +92,24 @@
   (is (= [0 1] (vec (reductions (fn [_ x] (reduced x)) 0 [1 2 3]))))
   (is (thrown? clojure.lang.ArityException (first (reductions inc [])))))
 
+(deftest bounded-count-uses-counted-collections-and-clips-other-sources
+  (let [r (checked "(bounded-count :unused [:a :b])
+(bounded-count 0 {:a 1})
+(bounded-count :unused nil)
+(bounded-count 1 \"ab\")
+(bounded-count 1.5 (int-array [1 2 3]))
+(bounded-count 0 (list 1 2))
+(nth [:only] (bounded-count 0 [:a]))
+(bounded-count :bad \"ab\")
+(bounded-count 0 true)
+(bounded-count 1)")]
+    (is (= ["2" "1" "0" "1" "2" "2"] (mapv #(at r %) (range 2 8))))
+    (is (= [[8 "TSP330-02"] [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= 2 (bounded-count :unused [:a :b])))
+  (is (= 2 (bounded-count 1.5 (int-array [1 2 3]))))
+  (is (thrown? ClassCastException (bounded-count :bad "ab"))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

@@ -5857,6 +5857,14 @@
            :else (coll-of :seq (peek types)))))
      (some t/assumption types))))
 
+(defn- ceiling-sequence-limit [ctx amount]
+  (or (slice-limit ctx amount)
+      (let [value (:val (t/resolve-t (:env ctx) amount))]
+        ;; A double below 2^52 still has room for fractional positions.
+        (when (and (number? value) (< 0 value 4503599627370496))
+          (let [whole (long value)]
+            (if (< whole value) (inc whole) whole))))))
+
 (defmethod special 'repeatedly [ctx node _]
   (let [[amount f :as args] (args-of node)]
     (if-not (#{1 2} (count args))
@@ -5873,11 +5881,7 @@
 
           :else
           (let [value (when n (:val (t/resolve-t env n)))
-                size (when n
-                       (or (slice-limit ctx n)
-                           (when (and (number? value) (< 0 value 4503599627370496))
-                             (let [whole (long value)]
-                               (if (< whole value) (inc whole) whole)))))
+                size (when n (ceiling-sequence-limit ctx n))
                 result (cond
                          (= 0 size) (infer ctx callback)
                          (#{:kw :map :set :vector} (:op callback))
@@ -5892,6 +5896,53 @@
                (length/with-bounds (coll-of :seq (if (= 0 size) t/never result))
                                    (or size (if nonempty? 1 0)) size)
                (or (t/assumption n) (t/assumption result))))))))))
+
+(defn- counted-status [member]
+  (let [kind (or (:kind member) (when (= :prim (:t member)) (:name member)))
+        class-name (or (:jvm-class member) (when (= :class (:t member)) (:name member)))
+        class (when class-name (t/load-class class-name))]
+    (cond
+      (or (#{:vector :set :map} kind) (#{:map :map-of} (:t member))
+          (and class (.isAssignableFrom clojure.lang.Counted ^Class class))) :counted
+      (or (array-component member) (= :string kind) (string? (:val member))) :uncounted
+      :else :unknown)))
+
+(defmethod special 'bounded-count [ctx node _]
+  (let [[amount coll :as args] (args-of node)
+        [n source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count types))
+      (do (report! ctx node "TSP2554" "bounded-count expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+      (report-invalid-sequence-args! ctx 'bounded-count [coll] [source]) t/unknown
+
+      :else
+      (let [env (:env ctx)
+            limit (ceiling-sequence-limit ctx n)
+            members (t/members env source)
+            shapes (mapv (fn [member]
+                           [(counted-status member)
+                            (sequence-member-bounds (or (map-entry-sequence member) member))])
+                         members)]
+        (when (and (some (fn [[status [lo _]]] (and (= :uncounted status) (pos? lo))) shapes)
+                   (= :mismatch (:status (t/sub-result env n (t/prim :number)))))
+          (assignable! ctx amount n (t/prim :number)))
+        (t/with-assumption
+         (apply t/union
+                (for [[status [lo hi]] shapes
+                      :let [exact (when (= lo hi) hi)
+                            clipped (cond
+                                      (or (= 0 hi) (= 0 limit)) 0
+                                      (and limit (>= lo limit)) limit
+                                      (and exact limit) (min exact limit))]]
+                  (case status
+                    :counted (if (some? exact) (t/lit exact) (t/prim :int))
+                    :uncounted (if (some? clipped) (t/lit clipped) (t/prim :int))
+                    (if (and (some? exact) (some? clipped))
+                      (t/union (t/lit exact) (t/lit clipped))
+                      (t/prim :int)))))
+         (or (t/assumption n) (t/assumption source)))))))
 
 (defn- partition-count [size step]
   (when (some? size)

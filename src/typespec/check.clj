@@ -2399,6 +2399,44 @@
       (report! ctx node "TSP2345" (str label " cannot read a position from " (t/show bad)))
       (if (= t/never input) t/never (sequence-position-type ctx input index)))))
 
+(defn- entry-callback-index [ctx node]
+  (when (and (= :sym (:op node))
+             (empty? (:directives node)) (not (env/tag-node node))
+             (= 'key (t/core-name (:file ctx) (:val node)))
+             (= 'clojure.core/key (guard-symbol ctx node)))
+    0))
+
+(defn- checked-entry-position [ctx node label input index]
+  (let [env (:env ctx)
+        input (eff ctx input)
+        members (t/members env input)
+        expected (t/class-type "java.util.Map$Entry")
+        vector-literal? (and (= :vector (:op node)) (empty? (:directives node)) (not (env/tag-node node)))
+        bad (some (fn [member]
+                    (let [possible-entry? (or (and (= :prim (:t member)) (#{:vector :coll} (:name member)))
+                                              (and (= :coll (:t member)) (#{nil :vector} (:kind member))
+                                                   (not (:jvm-class member))))]
+                      (when (and (not (#{:nil :never} (:t member)))
+                                 (not (:map-entry? member))
+                                 (or vector-literal? (not possible-entry?))
+                                 (= :mismatch (:status (t/sub-result env member expected))))
+                        member)))
+                  members)]
+    (cond
+      (= t/never input) t/never
+      bad (do (report! ctx node "TSP2345" (str label " expects a Map.Entry, got " (t/show bad))) t/unknown)
+      (t/nilable? env input)
+      (do (report! ctx node "TSP2531" (str label " may receive a nil Map.Entry")) t/unknown)
+      (every? :map-entry? members) (positional-type ctx input index)
+      :else t/unknown)))
+
+(defn- entry-access [ctx node label index]
+  (let [[arg :as args] (args-of node)
+        inputs (mapv #(infer ctx %) args)]
+    (if (= 1 (count inputs))
+      (checked-entry-position ctx arg label (first inputs) index)
+      (do (report! ctx node "TSP2554" (str label " expects one argument")) t/unknown))))
+
 (defn- noncallable-scalar? [ty]
   (case (:t ty)
     :nil true
@@ -2416,12 +2454,19 @@
                (infer ctx fnode))
           ty (if (= :ref (:t ty)) (t/resolve-t (:env ctx) ty) ty)
           ty (contextual-call-target ctx ty arg-types)
-          index (positional-callback-index ctx fnode)]
+          index (positional-callback-index ctx fnode)
+          entry-index (when-not index (entry-callback-index ctx fnode))]
       (cond
         (some? index)
         (let [label (:val fnode)]
           (if (= 1 (count arg-types))
             (or (checked-sequence-position ctx fnode label (first arg-types) index) t/unknown)
+            (do (report! ctx fnode "TSP2554" (str label " expects one argument")) t/unknown)))
+
+        (some? entry-index)
+        (let [label (:val fnode)]
+          (if (= 1 (count arg-types))
+            (checked-entry-position ctx fnode label (first arg-types) entry-index)
             (do (report! ctx fnode "TSP2554" (str label " expects one argument")) t/unknown)))
 
         (and (noncallable-scalar? ty) (not-any? #{t/never} arg-types))
@@ -4467,7 +4512,10 @@
       (if (= t/never source) t/never (sequence-position-type ctx source i))
       t/unknown)))
 
-(doseq [[h i] {'key 0 'val 1}]
+(defmethod special 'key [ctx node _]
+  (entry-access ctx node 'key 0))
+
+(doseq [[h i] {'val 1}]
   (defmethod special h [ctx node _]
     (let [[entry :as args] (args-of node)
           ty (infer ctx entry)]

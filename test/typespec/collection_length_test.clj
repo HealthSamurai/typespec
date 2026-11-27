@@ -1122,6 +1122,21 @@
     (is (= ["\"only\"" "#{\"aa\" \"b\"}" "#{100 200 300}"]
            (mapv #(at r %) (range 2 5))))))
 
+(deftest key-checks-map-entry-input-and-preserves-callback-results
+  (let [r (checked "(key (first {:name \"Ada\"}))
+(mapv key (seq {:name \"Ada\"}))
+(key (java.util.AbstractMap$SimpleEntry. :name 1))
+(key [1 2])
+(key 42)
+(key nil)
+(key)
+(mapv key [42])")]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2531"] [8 "TSP2554"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= [":name" "(s/coll-of keyword? :kind vector? :min-count 1 :max-count 1)" "t/unknown"]
+           (mapv #(at r %) (range 2 5))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

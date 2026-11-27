@@ -104,6 +104,19 @@
   (is (= #{{:n 2}} (clojure.set/project #{{:n 2 :other "word"}} [:n])))
   (is (= #{} (clojure.set/project nil [:n]))))
 
+(deftest relation-rename-preserves-the-values-at-renamed-fields
+  (let [r (checked "(:destination (first (clojure.set/rename #{{:source 2}} {:source :destination})))
+(:source (first (clojure.set/rename #{{:source 2}} {:source :destination})) :default)
+(bounded-count 0 (clojure.set/rename nil {:source :destination}))
+(inc (:destination (first (clojure.set/rename #{{:source \"bad\"}} {:source :destination}))))
+(clojure.set/rename 42 {:source :destination})
+(clojure.set/rename #{})")]
+    (is (= ["2" ":default" "0"] (mapv #(type-at r %) [2 3 4])))
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= #{{:destination 2}} (clojure.set/rename #{{:source 2}} {:source :destination})))
+  (is (= #{} (clojure.set/rename nil {:source :destination}))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

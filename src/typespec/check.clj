@@ -6578,6 +6578,19 @@
       (coll-of :set (if (= 0 upper) t/never (projected-relation-rows ctx element selector keys)))
       (min 1 lower) upper))))
 
+(defmethod special 'clojure.set/rename [ctx node _]
+  (check-map-relation
+   ctx node 'rename
+   (fn [{:keys [element lower upper]} _ mapping]
+     (let [env (:env ctx)
+           renames (known-renames env (t/resolve-t env mapping))
+           rows (cond
+                  (= 0 upper) t/never
+                  renames (apply t/union
+                                 (map #(rename-map-fields ctx % renames) (t/members env element)))
+                  :else t/unknown)]
+       (length/with-bounds (coll-of :set rows) (min 1 lower) upper)))))
+
 (defn- random-sample-mode [ctx ty]
   (let [probability (:val (t/resolve-t (:env ctx) ty))]
     (when (number? probability)

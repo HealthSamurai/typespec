@@ -431,6 +431,49 @@
     (is (= [true true false]
            (mapv #(s/valid? regex %) [["name"] ["name" :format 1] ["name" :format]])))))
 
+(deftest spec-keys-regex-checks-keyword-pairs-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::timeout int?)
+(s/def ::verbose boolean?)
+(s/def ::extension keyword?)
+(s/fdef connect :args (s/cat :host string? :opts (s/keys* :req-un [::timeout] :opt [::verbose]))
+  :ret string?)
+(defn connect [host & {:keys [timeout]}] (subs host timeout))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/connect \"local\" :timeout 1)
+(apply a/connect [\"local\" :timeout 1])
+(let [key :timeout] (a/connect \"local\" key 1))
+(a/connect \"local\" :timeout \"discarded\" :timeout 1)
+(a/connect \"local\" :timeout 1 :verbose \"ordinary extra key\")
+(a/connect \"local\")
+(a/connect \"local\" :timeout \"1\")
+(a/connect \"local\" {:timeout 1})
+(a/connect \"local\" :timeout 1 ::a/verbose :wrong)
+(a/connect \"local\" :timeout 1 ::a/extension 42)
+(a/connect \"local\" 42 1)
+(a/connect 42 :timeout 1)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 7 "TSP2741"] ["client.clj" 8 "TSP2322"] ["client.clj" 9 "TSP2554"]
+            ["client.clj" 10 "TSP2322"] ["client.clj" 11 "TSP2345"] ["client.clj" 12 "TSP2345"]
+            ["client.clj" 13 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
+(deftest spec-keys-regex-checks-the-implementation-arity
+  (let [result (checked "(sp/def ::timeout int?)
+(sp/fdef variadic :args (sp/cat :name string? :opts (sp/keys* :req-un [::timeout])) :ret string?)
+(defn variadic [name key value & more] name)
+(sp/fdef fixed :args (sp/cat :name string? :opts (sp/keys* :req-un [::timeout])) :ret string?)
+(defn fixed [name key value] name)
+(sp/fdef empty-options :args (sp/keys*) :ret int?)
+(defn empty-options [& {:as opts}] (.size ^java.util.Map opts))")
+        issues (:diagnostics result)]
+    (is (some #(and (= "TSP2790" (:code %)) (= 6 (get-in % [:pos :row]))) issues))
+    (is (= #{6 8} (set (map #(get-in % [:pos :row]) issues))) (pr-str issues))
+    (is (some #(and (= "TSP2531" (:code %)) (= 8 (get-in % [:pos :row]))) issues)))
+  (is (nil? ((fn [& {:as opts}] opts))))
+  (is (s/valid? (s/keys*) [])))
+
 (deftest nested-alternatives-and-optional-before-rest
   (let [spec (s/cat :prefix (s/? string?) :xs (s/+ int?))]
     (is (= [true true false false]

@@ -923,6 +923,9 @@
 
 (declare regex-branches)
 
+(defn- regex-tail? [branch]
+  (or (:rest branch) (:kwargs branch)))
+
 (defn- regex-form-branches [ctx form]
   (let [empty-branch {:params [] :rest nil}
         operator (regex-op ctx form)
@@ -938,11 +941,11 @@
             (if (= :s/alt operator)
               (bounded-branches (mapcat identity branches))
               (reduce (fn [prefix suffix]
-                        (if (and (some :rest prefix) (some #(or (:rest %) (seq (:params %))) suffix))
+                        (if (and (some regex-tail? prefix) (some #(or (regex-tail? %) (seq (:params %))) suffix))
                           (reduced nil)
                           (or (bounded-branches
                                (for [p prefix s suffix]
-                                 (merge p (if (:rest p) (dissoc s :rest) s)
+                                 (merge p (if (regex-tail? p) (dissoc s :rest) s)
                                         {:params (into (:params p) (:params s))})))
                               (reduced nil))))
                       [empty-branch] branches)))))
@@ -959,7 +962,8 @@
                ;; They can reject a match without enlarging the argument shape.
                (run! (:fail ctx) (rest operands))
                branches))
-      :s/keys* nil)))
+      :s/keys* (when (and (even? (count operands)) (every? keyword? (take-nth 2 operands)))
+                 [(assoc empty-branch :kwargs (parse-keys operands) :keyword-regex? true)]))))
 
 (defn- regex-branches [ctx form]
   (if-let [{source :context regex :form} (resolve-regex ctx form)]

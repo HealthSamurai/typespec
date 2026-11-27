@@ -1580,6 +1580,33 @@
   (some (fn [[declared ty]] (when (= (name declared) (name k)) ty))
         (concat (:req m) (:opt m))))
 
+(defn- keyword-regex-problems [ctx expected extra call-node]
+  (if (odd? (count extra))
+    [[call-node ["TSP2554" "s/keys* expects complete keyword/value pairs"]]]
+    (let [pairs (partition 2 extra)
+          keys (mapv (fn [[[_ type]]]
+                       (let [value (t/resolve-t (:env ctx) (eff ctx type))]
+                         (when (and (= :lit (:t value)) (keyword? (:val value))) (:val value))))
+                     pairs)]
+      (if (every? some? keys)
+        (let [given (into (array-map) (map (fn [key [_ value]] [key value]) keys pairs))
+              actual {:t :map :req (update-vals given second) :opt {} :fresh true :complete-keys? true}
+              shapes (map-members ctx expected)]
+          (concat
+           (for [[code _ _ field :as problem] (problems ctx call-node actual expected)
+                 :when (not= "TSP2353" code)]
+             [(or (when (= :value (first field)) (first (get given (second field)))) call-node) problem])
+           (for [[key [node type]] given
+                 :when (and (qualified-keyword? key) (get-in ctx [:env :specs key])
+                            (not-every? #(or (contains? (:req %) key) (contains? (:opt %) key)) shapes))
+                 problem (problems ctx node type (t/ref-t key))]
+             [node problem])))
+        (let [key-errors (for [[[node type]] pairs
+                               problem (problems ctx node type (t/prim :keyword))]
+                           [node problem])]
+          (or (seq key-errors)
+              (map #(vector call-node %) (problems ctx call-node t/unknown expected))))))))
+
 (defn- arg-problems [ctx a arg-nodes arg-types call-node]
   (let [check-arg (fn [n at pt]
                     (when at
@@ -1594,16 +1621,18 @@
      fixed
      (when (:rest a) (mapcat (fn [[n at]] (check-arg n at (:rest a))) extra))
      (when-let [kw (:kwargs a)]
-       (let [given (into {} (for [[[kn _] [vn vt]] (partition 2 extra) :when (= :kw (:op kn))] [(:val kn) [vn vt]]))
-             m (first (map-members ctx kw))]
-         (concat
-          (for [rk (keys (:req m)) :when (not (contains? given (keyword (name rk))))]
-            [call-node ["TSP2741" (str "required key " (keyword (name rk)) " is missing")]])
-          (for [[gk [vn vt]] given
-                :let [exp (keyword-parameter m gk)]
-                :when (and exp vt)
-                p (problems ctx vn vt exp)]
-            [vn p])))))))
+       (if (:keyword-regex? a)
+         (keyword-regex-problems ctx kw extra call-node)
+         (let [given (into {} (for [[[kn _] [vn vt]] (partition 2 extra) :when (= :kw (:op kn))] [(:val kn) [vn vt]]))
+               m (first (map-members ctx kw))]
+           (concat
+            (for [rk (keys (:req m)) :when (not (contains? given (keyword (name rk))))]
+              [call-node ["TSP2741" (str "required key " (keyword (name rk)) " is missing")]])
+            (for [[gk [vn vt]] given
+                  :let [exp (keyword-parameter m gk)]
+                  :when (and exp vt)
+                  p (problems ctx vn vt exp)]
+              [vn p]))))))))
 
 (defn- unresolved-type?
   "Contains unknown/any or an unsolved variable. A rigid type parameter is a
@@ -1707,7 +1736,10 @@
       (and (:kwargs ar) (odd? (- i fixed)))
       (let [key (nth args (dec i))]
         (when (= :kw (:op key))
-          (keyword-parameter (first (map-members ctx (:kwargs ar))) (:val key)))))))
+          (if (:keyword-regex? ar)
+            (let [{:keys [type status]} (lookup-key ctx (:kwargs ar) (:val key))]
+              (when (#{:req :opt} status) type))
+            (keyword-parameter (first (map-members ctx (:kwargs ar))) (:val key))))))))
 
 (defn- common-callback-signature [ctx fits args i]
   (let [signatures (mapv #(callback-signature ctx (argument-type ctx % args i)) fits)
@@ -8435,17 +8467,55 @@
                 (emit ["TSP2322" (str "returns " (show-ref ctx actual) ", but the signature says "
                                      (show-ref ctx expected))]))))))
 
-(defn- spec-implementation-plans [bodies contracts coverage]
+(defn- keyword-regex-plan [ctx runtime {:keys [params kwargs] :as contract} coverage]
+  (let [prefix (count params)
+        required (map #(count (:req %)) (map-members ctx kwargs))
+        minimum (+ prefix (* 2 (apply min (or (seq required) [0]))))
+        accepts? #(and (<= minimum %) (even? (- % prefix)))
+        fixed (remove :rest runtime)
+        fixed-counts (into #{} (map t/arity-minimum) fixed)
+        variadic (first (filter :rest runtime))
+        variadic-prefix (some-> variadic t/arity-minimum)
+        params-at (fn [n]
+                    (mapv (fn [i]
+                            (if (< i prefix)
+                              (nth params i)
+                              (if (even? (- i prefix)) (t/prim :keyword) t/unknown)))
+                          (range n)))]
+    (when (or (= :partial coverage)
+              (and variadic (every? fixed-counts (range minimum variadic-prefix 2))))
+      (cond-> (vec (for [body fixed
+                         :let [n (t/arity-minimum body)]
+                         :when (accepts? n)]
+                     [body (assoc contract :params (params-at n) :kwargs nil)]))
+        variadic
+        (conj (let [start (max minimum variadic-prefix)
+                    start (if (accepts? start) start (inc start))
+                    first-count (first (drop-while fixed-counts (iterate #(+ % 2) start)))]
+                [variadic (assoc contract
+                                 :params (params-at variadic-prefix)
+                                 :kwargs (when (= prefix variadic-prefix)
+                                           (if (= first-count variadic-prefix)
+                                             (t/union kwargs t/nil-t)
+                                             kwargs))
+                                 :rest t/unknown
+                                 :rest-min (- first-count variadic-prefix))]))))))
+
+(defn- spec-implementation-plans [ctx bodies contracts coverage]
   (let [runtime (mapv (fn [{:keys [params]}]
                         (let [{:keys [fixed rest]} (env/split-params params)]
                           {:node params :params (vec (repeat (count fixed) t/unknown))
                            :rest (when rest t/unknown)}))
                       bodies)]
-    (mapv #(t/dispatch-plan runtime % coverage) contracts)))
+    (mapv #(if (:keyword-regex? %)
+             (keyword-regex-plan ctx runtime % coverage)
+             (t/dispatch-plan runtime % coverage))
+          contracts)))
 
 (defn- merge-implementation-contracts [n contracts]
   (when (seq contracts)
     {:params (mapv (fn [i] (apply t/union (map #(nth (:params %) i) contracts))) (range n))
+     :kwargs (when (every? :kwargs contracts) (apply t/union (map :kwargs contracts)))
      :tail (apply t/union
                   (for [{:keys [params rest] :as contract} contracts]
                     (if rest
@@ -8481,8 +8551,9 @@
         ftype (if (= :all (:t (:type v))) (solver/open-rigid (:type v)) (:type v))
         bodies (:arities parts)
         plans (when (and (= :fdef (:source v))
-                         (not-any? #(= :map (:op (:rest (env/split-params (:params %))))) bodies))
-                (spec-implementation-plans bodies (:arities ftype) :total))
+                         (or (some :keyword-regex? (:arities ftype))
+                             (not-any? #(= :map (:op (:rest (env/split-params (:params %))))) bodies)))
+                (spec-implementation-plans ctx bodies (:arities ftype) :total))
         body-contracts (group-by (comp :node first) (mapcat identity plans))]
     (when-let [tn (env/tag-node nm)]
       (when (t/primitives (str (:val tn)))
@@ -8512,7 +8583,7 @@
                                (if (= :sym (:op p)) (update c' :params (fnil conj #{}) (:val p)) c')))
                            (dissoc ctx :recur-types :load-time?) (map vector fixed (:params declared)))
               ctx' (cond (nil? rest) ctx'
-                         (:kwargs declared) (bind-pattern ctx' rest (:kwargs declared))
+                         (and (:kwargs declared) (= :map (:op rest))) (bind-pattern ctx' rest (:kwargs declared))
                          (:tail declared) (bind-pattern ctx' rest (:tail declared))
                          (:rest declared) (bind-pattern ctx' rest (t/union {:t :coll :kind :seq :of (:rest declared)} t/nil-t))
                          :else (bind-pattern ctx' rest t/unknown))
@@ -8591,7 +8662,7 @@
         shared (get-in env [:vars sym])
         contracts (when (= :fdef (:source shared)) (get-in shared [:type :arities]))
         selector (get-in env [:multimethod-dispatches sym])
-        plans (spec-implementation-plans arities contracts :partial)
+        plans (spec-implementation-plans ctx arities contracts :partial)
         by-params (group-by (comp :node first) (mapcat identity plans))
         description (when contracts (str "defmethod " sym " " (parse/unparse dispatch) ", s/fdef"))
         ctx (cond-> (dissoc ctx :recur-types :load-time?)
@@ -8611,7 +8682,7 @@
                   method-ctx (if rest
                                (bind-pattern method-ctx rest
                                              (if (= :map (:op rest))
-                                               (env/pattern-type env file rest)
+                                               (or (:kwargs expected) (env/pattern-type env file rest))
                                                (or (:tail expected) t/unknown)))
                                method-ctx)
                   actual (infer-body method-ctx body)]

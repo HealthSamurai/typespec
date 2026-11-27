@@ -2968,7 +2968,7 @@
 
 (defn- single-map [ctx ty]
   (let [ms (t/members (:env ctx) ty)]
-    (when (and (= 1 (count ms)) (= :map (:t (first ms)))) (first ms))))
+    (when (and (= 1 (count ms)) (#{:map :map-of} (:t (first ms)))) (first ms))))
 
 (defn- check-key-value!
   "Key = type: a value stored under a qualified key must fit the spec of that key."
@@ -4589,18 +4589,26 @@
   (let [tys (map #(infer ctx %) (args-of node))
         ms (map #(single-map ctx %) tys)]
     (if (and (seq ms) (every? some? ms))
-      (if (and (next ms) (some :map-index ms))
-        (t/prim :map)
-        (reduce (fn [a b]
-                  (let [req (merge (reduce-kv (fn [r k v]
-                                               (if (contains? r k)
-                                                 (update r k t/union v)
-                                                 r))
-                                             (:req a) (:opt b))
-                                   (:req b))
-                        opt (merge-with t/union (:opt a) (:opt b))]
-                    {:t :map :req req :opt (apply dissoc opt (keys req))}))
-                ms))
+      (let [[left & overlays] ms
+            indexed? #(or (:map-index %) (= :map-of (:t %)))]
+        (cond
+          (empty? overlays) left
+          (and (indexed? left) (every? #(and (:complete-keys? %) (empty? (:opt %))) overlays))
+          (let [base (if (= :map-of (:t left)) (indexed-map-shape left) left)]
+            (t/with-assumption (reduce #(reduce-kv assoc-map-key %1 (:req %2)) base overlays)
+                               (some t/assumption tys)))
+          (some indexed? ms) (t/prim :map)
+          :else
+          (reduce (fn [a b]
+                    (let [req (merge (reduce-kv (fn [r k v]
+                                                 (if (contains? r k)
+                                                   (update r k t/union v)
+                                                   r))
+                                               (:req a) (:opt b))
+                                     (:req b))
+                          opt (merge-with t/union (:opt a) (:opt b))]
+                      {:t :map :req req :opt (apply dissoc opt (keys req))}))
+                  ms)))
       t/unknown)))
 
 (defn- combine-map-fields [ctx f called? left right]

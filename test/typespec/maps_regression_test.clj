@@ -1227,6 +1227,27 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest merge-keeps-the-map-of-index-beneath-closed-overlays
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/fdef status :args (s/cat :m ::counts) :ret string?)
+(defn status [m] (get (merge m {\"status\" 42} {\"status\" \"ok\"}) \"status\"))
+(s/fdef neighbour :args (s/cat :m ::counts) :ret int?)
+(defn neighbour [m] (get (merge m {\"status\" \"ok\"}) \"n\" 0))
+(s/fdef wrong :args (s/cat :m ::counts) :ret int?)
+(defn wrong [m] (get (merge m {\"status\" \"ok\"}) \"status\"))
+(s/fdef identity-merge :args (s/cat :m ::counts) :ret ::counts)
+(defn identity-merge [m] (merge m))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/status {\"n\" 1}))
+(inc (a/neighbour {\"n\" 1}))
+(a/status {\"n\" \"wrong\"})
+(a/status (a/identity-merge {\"n\" 1}))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 8 "TSP2322"] ["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest merge-required-left-optional-right
   (let [a (map-type {:x (t/prim :string)} {:z (t/prim :string)})
         b (map-type {} {:x (t/prim :int) :z t/nil-t})

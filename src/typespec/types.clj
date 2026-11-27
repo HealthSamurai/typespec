@@ -685,7 +685,7 @@
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
-                   (contains? '#{list? vector? map? set? string? keyword? symbol? boolean? nil? any?} op))
+                   (contains? '#{list? vector? map? set? string? keyword? symbol? boolean? true? false? nil? any?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 
 (defn predicate-spec-type
@@ -952,7 +952,8 @@
                              (= 'some? predicate) some-t
                              (= 'nil? predicate) nil-t
                              (= 'list? predicate) (class-type "clojure.lang.IPersistentList")
-                             (#{'true? 'false?} predicate) (with-meta (prim :boolean) {::unchecked-contract true})
+                             (= 'true? predicate) (lit true)
+                             (= 'false? predicate) (lit false)
                              (= 't/unknown nm) unknown
                              (= 't/never nm) never
                              (:inside-all ctx) (fail)

@@ -90,11 +90,13 @@
                          #_(t/satisfies (s/coll-of int? :min-count 2)) []
                          #_(t/satisfies (s/or :a (s/and (s/nilable string?) string?) :b int?)) nil
                          #_(t/satisfies pos-int?) -1
+                         #_(t/satisfies true?) true
                          #_(t/satisfies true?) false
                          (defn assumed? {:t/guard 'string?} [x] (number? x))
                          (defn consumes [x] (when (assumed? x) #_(t/satisfies string?) x))")]
-    (is (= (concat ["TSP2345" "TSP330-01"] (repeat 4 "TSP280-01")) (codes result)) (pr-str (:diagnostics result)))
-    (is (= (concat [nil nil] (repeat 3 #{:unsupported-contract}) [#{:trusted-guard}])
+    (is (= ["TSP2345" "TSP330-01" "TSP280-01" "TSP280-01" "TSP2345" "TSP280-01"]
+           (codes result)) (pr-str (:diagnostics result)))
+    (is (= [nil nil #{:unsupported-contract} #{:unsupported-contract} nil #{:trusted-guard}]
            (mapv :reasons (:diagnostics result))))))
 
 (deftest nested-platform-values-and-qualified-key-diagnostics

@@ -120,6 +120,26 @@
         (pr-str diagnostics))
     (is (= {:text (t/prim :string) :other t/unknown} payloads))))
 
+(deftest boolean-literal-predicates-check-spec-fields-and-returns
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::enabled true?)
+(s/def ::preview #(clojure.core/false? %))
+(s/def ::config (s/keys :req-un [::enabled ::preview]))
+(s/fdef start :args (s/cat :config ::config) :ret true?)
+(defn start [{:keys [enabled]}] enabled)
+(s/fdef stop :args (s/cat) :ret false?)
+(defn stop [] true)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/start {:enabled true :preview false})
+(api/start {:enabled false :preview false})
+(api/start {:enabled true :preview true})
+(api/start {:enabled :yes :preview false})")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 8 "TSP2322"] ["client.clj" 3 "TSP2322"] ["client.clj" 4 "TSP2322"]
+            ["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

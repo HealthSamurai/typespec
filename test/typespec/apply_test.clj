@@ -227,6 +227,23 @@
   (is (= {:name "new"} (hash-map :name "old" :name "new")))
   (is (thrown? IllegalArgumentException (apply hash-map [:unpaired]))))
 
+(deftest array-map-preserves-pairs-declared-in-another-namespace
+  (let [api (parse/parse-string "fields.clj" "(ns fields (:require [clojure.spec.alpha :as s]))
+(s/fdef entry :args (s/cat) :ret (s/tuple #{:title} string?))
+(defn entry [] [:title \"ready\"])")
+        client (parse/parse-string "client.clj" "(ns client (:require [fields :as api] [clojure.string :as str]))
+(str/upper-case (:title (apply array-map (api/entry))))
+(inc (:title (apply array-map (api/entry))))
+(get (array-map 'title 1 'title 2) 'title)
+(array-map :unpaired)
+(apply array-map [:unpaired])")
+        r (check/check-files [api client] {})]
+    (is (= [[3 "TSP2345"] [5 "TSP2554"] [6 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r))))
+    (is (= "2" (main/type-at r "client.clj" 4 1))))
+  (is (= {'title 2} (array-map 'title 1 'title 2)))
+  (is (thrown? IllegalArgumentException (apply array-map [:unpaired]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

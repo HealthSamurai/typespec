@@ -4716,8 +4716,9 @@
                              1 (count pairs)))
        (some t/assumption types)))))
 
-(defmethod special 'hash-map [ctx node _]
-  (constructed-map ctx node 'hash-map (mapv #(infer ctx %) (args-of node))))
+(doseq [head '[hash-map array-map]]
+  (defmethod special head [ctx node _]
+    (constructed-map ctx node head (mapv #(infer ctx %) (args-of node)))))
 
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
@@ -4733,7 +4734,7 @@
             spreads (spread-tail-types ctx tail tail-members)
             known-spreads (finite-spreads spreads tail-members)
             exact? (some? known-spreads)
-            constructor (when exact? (core-callback-head ctx f #{'vector 'list 'hash-map}))
+            constructor (when exact? (core-callback-head ctx f #{'vector 'list 'hash-map 'array-map}))
             callback? (and exact? (callback-node? ctx f))
             spread-context (fn [items] (direct-callback-context (into prefix-types items) false))
             ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
@@ -4765,7 +4766,7 @@
                           (= :never (:t ty)) t/never
                           (= 'vector constructor) (constructed-vector ctx types)
                           (= 'list constructor) (constructed-list ctx types)
-                          (= 'hash-map constructor) (constructed-map ctx node label types)
+                          (#{'hash-map 'array-map} constructor) (constructed-map ctx node label types)
                           (or (= :all (:t ty)) (seq (:arities ty)))
                           (call-fn ctx node label ty nodes types)
                           (and (= :lit (:t ty)) (ident? (:val ty)))

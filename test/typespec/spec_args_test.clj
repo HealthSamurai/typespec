@@ -702,6 +702,27 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest inferred-spec-results-use-recognized-preconditions
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef present :args (s/cat :x (s/nilable string?)))
+(defn present [x] {:pre [(some? x)]} x)
+(s/fdef first-present :args (s/cat :x (s/nilable string?)))
+(defn first-present [x] {:pre [(string? x)]} (identity x))
+(s/fdef maybe :args (s/cat :x (s/nilable string?)))
+(defn maybe [x] x)
+(s/fdef shadowed :args (s/cat :f any? :x (s/nilable string?)))
+(defn shadowed [some? x] {:pre [(some? x)]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/present \"valid\"))
+(str/upper-case (a/first-present \"valid\"))
+(str/upper-case (a/maybe \"ambiguous\"))
+(inc (a/present \"bad\"))
+(str/upper-case (a/shadowed (fn [_] true) nil))")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2531"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest collection-spec-options-keep-checking-the-project
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

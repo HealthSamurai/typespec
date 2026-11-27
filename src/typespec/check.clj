@@ -31,7 +31,8 @@
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
-         unsupported-sequence-member specialize-call-return run-composition map-entry-sequence)
+         unsupported-sequence-member specialize-call-return run-composition map-entry-sequence
+         apply-preconditions)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -2193,8 +2194,9 @@
                                                                   (:kwargs a) t/unknown))
                                           c)
                                       a (if (and infer-return? (= :unknown (:t (:ret a))))
-                                          (let [ret (binding [*types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]
-                                                      (infer-body c body))]
+                                          (let [facts (when spec-bodies (seq (env/pre-facts (:pfile v) params body)))
+                                                ret (binding [*types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]
+                                                      (infer-body (apply-preconditions c facts) (if facts (next body) body)))]
                                             (assoc a :ret (widen (dissoc ret :fresh)) :inferred true))
                                           a)
                                       param (first fixed)

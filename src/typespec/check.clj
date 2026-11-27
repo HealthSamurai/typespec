@@ -6990,6 +6990,31 @@
         (= iterations 7) nil
         :else (recur (join-accumulator ctx acc (widen (dissoc step :fresh))) (inc iterations))))))
 
+(defn- iteration-element [ctx f seed]
+  (let [env (:env ctx)]
+    (loop [element seed attempts 0]
+      (let [step (probe ctx #(apply-fn-node % f [element] true))]
+        (cond
+          (t/sub? env step element) [element true]
+          (or (= :unknown (:t step)) (= attempts 7)) [element false]
+          :else (recur (t/union element (widen (dissoc step :fresh))) (inc attempts)))))))
+
+(defmethod special 'iterate [ctx node _]
+  (let [[f seed :as args] (args-of node)]
+    (if (not= 2 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "iterate expects two arguments")
+          t/unknown)
+      (let [initial (infer ctx seed)]
+        (if (= t/never initial)
+          (do (infer ctx f) t/never)
+          (let [start (widen (dissoc initial :fresh))
+                [element stable?] (iteration-element ctx f start)
+                step (apply-fn-node ctx f [element])]
+            (t/with-assumption
+             (length/with-bounds (coll-of :seq (if stable? element t/unknown)) 1 nil)
+             (or (t/assumption initial) (t/assumption step)))))))))
+
 (defn- map-entry-sequence [member]
   (let [source (or (:entry-map member) member)
         closed? (and (= :map (:t source)) (:complete-keys? source))]

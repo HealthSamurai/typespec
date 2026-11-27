@@ -54,6 +54,22 @@
   (is (empty? (repeatedly 0 42)))
   (is (thrown? clojure.lang.ArityException (first (repeatedly 2 inc)))))
 
+(deftest iterate-checks-the-callback-for-repeated-application
+  (let [r (checked "(first (iterate inc 0))
+(first (iterate str/upper-case \"word\"))
+(iterate (fn [x] (if (string? x) x (str x))) 0)
+(iterate inc \"wrong\")
+(iterate (fn [] 1) 0)
+(iterate 42 :value)
+(iterate inc)
+(iterate parse-long \"1\")")]
+    (is (= ["int?" "string?" "(s/coll-of (t/or int? string?) :kind seq? :min-count 1)"]
+           (mapv #(at r %) (range 2 5))))
+    (is (= [[5 "TSP2345"] [6 "TSP2554"] [7 "TSP2345"] [8 "TSP2554"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [0 "0" "0"] (vec (take 3 (iterate #(if (string? %) % (str %)) 0)))))
+  (is (thrown? ClassCastException (second (iterate inc "wrong")))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

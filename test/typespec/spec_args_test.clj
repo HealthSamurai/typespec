@@ -629,6 +629,35 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest argument-only-spec-infers-results-from-an-unambiguous-rest-body
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef first-count :args (s/+ int?))
+(defn first-count [& xs] (first xs))
+(s/fdef first-or-zero :args (s/cat :message string? :values (s/* int?)))
+(defn first-or-zero [message & xs] (or (first xs) 0))
+(s/fdef maybe-count :args (s/* int?))
+(defn maybe-count [& xs] (first xs))
+(s/fdef mixed :args (s/cat :message string? :values (s/* int?)))
+(defn mixed ([message] 42) ([message & xs] (str (first xs))))
+(s/fdef rest-only :args (s/alt :single (s/cat :message string?)
+                              :many (s/cat :message string? :values (s/+ int?))))
+(defn rest-only ([message] 42) ([message & xs] (str (first xs))))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(inc (a/first-count 2 3))
+(str/upper-case (a/first-count 2 3))
+(inc (a/first-or-zero \"ready\"))
+(inc (a/maybe-count))
+(a/first-count)
+(if-some [v (a/maybe-count 3)] (inc v) 0)
+(str/upper-case (a/mixed \"ready\"))
+(str/upper-case (a/rest-only \"ready\" 3))
+(inc (a/rest-only \"ready\"))")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2531"] ["client.clj" 6 "TSP2554"]
+            ["client.clj" 8 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest collection-spec-options-keep-checking-the-project
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

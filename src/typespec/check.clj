@@ -2130,14 +2130,22 @@
       (run-composition ctx node steps input default))
     (specialize-map-return ctx arity (first arg-types))))
 
-(defn- fixed-spec-bodies [entry arities]
-  (let [bodies (into {} (keep (fn [{:keys [params] :as body}]
-                                (let [{:keys [fixed rest]} (env/split-params params)]
-                                  (when-not rest [(count fixed) body]))))
-                     (get-in entry [:parts :arities]))]
-    (mapv (fn [{:keys [params rest kwargs]}]
-            (when-not (or rest kwargs) (get bodies (count params))))
+(defn- spec-inference-bodies [entry arities]
+  (let [bodies (into {} (map (fn [{:keys [params] :as body}]
+                               (let [{:keys [fixed rest]} (env/split-params params)]
+                                 [[(count fixed) (boolean rest)] body])))
+                     (get-in entry [:parts :arities]))
+        fixed (keep (fn [[n variadic?]] (when-not variadic? n)) (keys bodies))]
+    (mapv (fn [{:keys [params rest kwargs] :as arity}]
+            (when-not (or kwargs (and rest (some #(t/arity-fits? arity %) fixed)))
+              (get bodies [(count params) (boolean rest)])))
           arities)))
+
+(defn- spec-inference-tail [{:keys [rest rest-min]}]
+  (when rest
+    (let [minimum (or rest-min 0)
+          tail {:t :coll :kind :seq :of rest :min-count (max 1 minimum)}]
+      (if (zero? minimum) (t/union t/nil-t tail) tail))))
 
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
@@ -2149,7 +2157,7 @@
                        (not (dynamic-definition? v)))
           missing-return? (some #(= :unknown (:t (:ret %))) arities)
           spec-bodies (when (and missing-return? (= :fdef (:source v)) stable?)
-                        (fixed-spec-bodies v arities))
+                        (spec-inference-bodies v arities))
           infer-return? (and missing-return? (or (= :hints (:source v)) (some some? spec-bodies)))
           shape-candidate? (and (#{:hints :sig :fdef} (:source v))
                                 stable?
@@ -2169,7 +2177,11 @@
                                 a
                                 (let [{:keys [fixed rest]} (env/split-params params)
                                       c (reduce (fn [c [p ty]] (bind-pattern c p ty)) fctx (map vector fixed (:params a)))
-                                      c (if rest (bind-pattern c rest (or (:kwargs a) t/unknown)) c)
+                                      c (if rest
+                                          (bind-pattern c rest (or (:kwargs a)
+                                                                   (when spec-bodies (spec-inference-tail a))
+                                                                   t/unknown))
+                                          c)
                                       a (if (and infer-return? (= :unknown (:t (:ret a))))
                                           (let [ret (binding [*types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]
                                                       (infer-body c body))]

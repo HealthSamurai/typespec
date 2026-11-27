@@ -355,6 +355,35 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))))
 
+(deftest filtered-argument-regexes-retain-their-positional-contract
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::args (s/& (s/cat :text string? :offset (s/? int?))
+                  #(<= (get % :offset 0) (count (:text %)))))
+(s/fdef prefix :args ::args :ret string?)
+(defn prefix ([text] text) ([text offset] (subs text 0 offset)))
+(s/fdef keep-int :args (s/& int?) :ret int?)
+(defn keep-int [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/prefix \"hello\")
+(apply a/prefix [\"hello\" 2])
+(a/prefix 42)
+(a/prefix \"hello\" \"2\")
+(a/prefix)
+(a/keep-int 1)
+(a/keep-int :wrong)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 2 "TSP9002"] ["api.clj" 4 "TSP9002"]
+            ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP2554"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (str/includes? (:message (second diagnostics)) "(fn*")))
+  (let [regex (s/& (s/cat :text string? :offset (s/? int?))
+                   #(<= (get % :offset 0) (count (:text %))))]
+    (is (= [true true false false false]
+           (mapv #(s/valid? regex %) [["hello"] ["hello" 2] ["hello" 6] [42] []]))))
+  (is (s/valid? (s/& int?) [1])))
+
 (deftest nested-alternatives-and-optional-before-rest
   (let [spec (s/cat :prefix (s/? string?) :xs (s/+ int?))]
     (is (= [true true false false]

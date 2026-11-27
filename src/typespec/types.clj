@@ -893,7 +893,13 @@
       (:s/* :s/+) (when (and (= 1 (count operands)) (not (resolve-regex ctx inner)))
                     [(cond-> (assoc empty-branch :rest (parse-type ctx inner))
                        (= :s/+ operator) (assoc :rest-min 1))])
-      (:s/& :s/keys*) nil)))
+      :s/& (when (seq operands)
+             (when-let [branches (regex-branches ctx inner)]
+               ;; The remaining predicates inspect the conformed arguments.
+               ;; They can reject a match without enlarging the argument shape.
+               (run! (:fail ctx) (rest operands))
+               branches))
+      :s/keys* nil)))
 
 (defn- regex-branches [ctx form]
   (if-let [{source :context regex :form} (resolve-regex ctx form)]

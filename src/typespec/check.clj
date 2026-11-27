@@ -4660,7 +4660,7 @@
                           (or (= :all (:t ty)) (seq (:arities ty)))
                           (call-fn ctx node label ty (into prefix (spread-tail-nodes tail items))
                                    (into prefix-types items))
-                          (and (= :lit (:t ty)) (keyword? (:val ty)))
+                          (and (= :lit (:t ty)) (ident? (:val ty)))
                           (apply-key-lookup ctx node label (:val ty) (into prefix-types items))
                           :else
                           (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))

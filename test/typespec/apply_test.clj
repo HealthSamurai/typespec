@@ -74,6 +74,19 @@
   (is (nil? (apply :key [{:key nil} 42])))
   (is (thrown? clojure.lang.ArityException (apply :key []))))
 
+(deftest applies-quoted-symbols-as-map-keys
+  (let [r (checked "(apply 'field [{'field 7}])
+(apply 'field [{'field nil} :default])
+(apply 'field [{} :default])
+(apply 'field [nil :default])
+(apply 'field [])
+(inc (apply 'field [{'field \"wrong\"}]))")]
+    (is (= ["7" "nil?" ":default" ":default"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2554"] [7 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= 7 (apply 'field [{'field 7}])))
+  (is (thrown? clojure.lang.ArityException (apply 'field []))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

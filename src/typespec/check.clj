@@ -3311,7 +3311,7 @@
          :else (t/prim :string))
        nil))))
 
-(doseq [head '[qualified-keyword? simple-keyword?]]
+(doseq [head '[qualified-keyword? simple-keyword? qualified-symbol? simple-symbol?]]
   (defmethod special head [ctx node _]
     (core-unary-result
      ctx node

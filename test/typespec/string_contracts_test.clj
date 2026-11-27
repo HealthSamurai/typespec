@@ -253,6 +253,32 @@
   (is (= ["SPACE"] (mapv #(str/upper-case (namespace %)) (filter qualified-keyword? [:space/x :plain]))))
   (is (thrown? NullPointerException (str/upper-case (namespace :plain)))))
 
+(deftest symbol-qualification-carries-through-contracts-and-narrowing
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef scoped :args (s/cat) :ret qualified-symbol?)
+(defn scoped [] 'scope/value)
+(s/fdef source :args (s/cat :x simple-symbol?) :ret symbol?)
+(defn source [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(str/upper-case (namespace (api/scoped)))
+(api/source 'plain)
+(api/source 'scope/value)
+(s/fdef use-ns :args (s/cat :x symbol?) :ret (s/nilable string?))
+(defn use-ns [x] (when-not (simple-symbol? x) (str/upper-case (namespace x))))
+(qualified-symbol? 'scope/value)
+(simple-symbol? 'scope/value)
+(simple-symbol? :plain)
+(str/upper-case (namespace (api/source 'plain)))")
+        result (check/check-files [api client] {})]
+    (is (= [[4 "TSP2345"] [10 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["true" "false" "false"]
+           (mapv #(main/type-at result "client.clj" % 1) [7 8 9]))))
+  (is (qualified-symbol? 'scope/value))
+  (is (simple-symbol? 'plain))
+  (is (thrown? NullPointerException (str/upper-case (namespace 'plain)))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

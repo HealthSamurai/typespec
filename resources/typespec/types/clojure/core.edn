@@ -53,6 +53,8 @@
  clojure.core/vector?    [any? :-> boolean?]
  clojure.core/boolean?   [any? :-> boolean?]
  clojure.core/symbol?    [any? :-> boolean?]
+ clojure.core/qualified-symbol? [any? :-> boolean?]
+ clojure.core/simple-symbol? [any? :-> boolean?]
  clojure.core/instance?  [any? any? :-> boolean?]
  clojure.core/empty?     [any? :-> boolean?]
  clojure.core/contains?  [any? any? :-> boolean?]

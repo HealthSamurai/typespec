@@ -93,6 +93,8 @@
   (case predicate
     qualified-keyword? (assoc (prim :keyword) :qualified? true)
     simple-keyword? (assoc (prim :keyword) :qualified? false)
+    qualified-symbol? (assoc (prim :symbol) :qualified? true)
+    simple-symbol? (assoc (prim :symbol) :qualified? false)
     nil))
 
 (defn tuple

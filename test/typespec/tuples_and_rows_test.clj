@@ -147,6 +147,23 @@
          (clojure.set/index #{{:id 1 :name "a"}} [:id])))
   (is (thrown? IllegalArgumentException (clojure.set/index 42 [:id]))))
 
+(deftest set-union-preserves-element-types-and-cardinality-bounds
+  (let [r (checked "(first (clojure.set/union #{1} #{2}))
+(clojure.set/union #{1 2} #{2 3 4})
+(clojure.set/union nil #{})
+(clojure.set/union #{} nil)
+(clojure.set/union :single)
+(subs (first (clojure.set/union #{1} #{2})) 0)
+(clojure.set/union 42 #{1})")]
+    (is (= ["int?" "(s/coll-of int? :kind set? :min-count 3 :max-count 5)"
+            "nil?" "(s/coll-of t/never :kind set? :max-count 0)" ":single"]
+           (mapv #(type-at r %) [2 3 4 5 6])))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= #{1 2 3 4} (clojure.set/union #{1 2} #{2 3 4})))
+  (is (nil? (clojure.set/union nil #{})))
+  (is (= #{} (clojure.set/union #{} nil))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

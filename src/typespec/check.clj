@@ -6602,6 +6602,32 @@
          :v (length/with-bounds (coll-of :set element) 1 upper)}
         (min 1 lower) upper)))))
 
+(defmethod special 'clojure.set/union [ctx node _]
+  (let [args (args-of node)
+        types (mapv #(eff ctx (infer ctx %)) args)
+        env (:env ctx)]
+    (cond
+      (empty? types) (length/with-bounds (coll-of :set t/never) 0 0)
+      (some #{t/never} types) t/never
+      (= 1 (count types)) (first types)
+      (report-invalid-sequence-args! ctx 'union args types) t/unknown
+      :else
+      (let [members (mapcat #(t/members env %) types)]
+        (if (every? #(or (= t/nil-t %) (spread-set-target? [%])) members)
+          (let [parts (mapv #(sequence-summary ctx %) types)
+                lo (apply max (map :lower parts))
+                bounds (map :upper parts)
+                hi (when (every? some? bounds) (apply +' bounds))
+                element (apply t/union (map :element parts))
+                set-type (length/with-bounds (coll-of :set element) lo hi)]
+            (t/with-assumption
+             (cond
+               (= 0 hi) (if (= 2 (count types)) (first types) (peek types))
+               (and (zero? lo) (some #{t/nil-t} members)) (t/union set-type t/nil-t)
+               :else set-type)
+             (some t/assumption types)))
+          t/unknown)))))
+
 (defn- random-sample-mode [ctx ty]
   (let [probability (:val (t/resolve-t (:env ctx) ty))]
     (when (number? probability)

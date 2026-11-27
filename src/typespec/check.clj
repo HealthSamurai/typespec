@@ -4591,6 +4591,32 @@
                                candidates))
               candidates)))))))
 
+(defn- apply-arity! [ctx node label expected actual]
+  (report! ctx node "TSP2554"
+           (str label " expects " (str/join " or " expected) " argument(s), got " actual))
+  t/unknown)
+
+(defn- apply-key-lookup [ctx node label key args]
+  (let [[source not-found] args
+        not-found (or not-found t/nil-t)
+        env (:env ctx)]
+    (if-not (#{1 2} (count args))
+      (apply-arity! ctx node label [1 2] (count args))
+      (t/with-assumption
+       (apply t/union
+              (for [member (t/members env (eff ctx source))]
+                (case (:t member)
+                  :never t/never
+                  (:map :map-of) (read-literal-map-key ctx member key not-found)
+                  (:nil :lit) not-found
+                  :coll (case (:kind member)
+                          :vector not-found
+                          :set (t/union (t/remove-nil env (typed-set-call-result ctx member (t/lit key))) not-found)
+                          t/unknown)
+                  :prim (if (scalar-primitives (:name member)) not-found t/unknown)
+                  t/unknown)))
+       (some t/assumption args)))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4634,6 +4660,8 @@
                           (or (= :all (:t ty)) (seq (:arities ty)))
                           (call-fn ctx node label ty (into prefix (spread-tail-nodes tail items))
                                    (into prefix-types items))
+                          (and (= :lit (:t ty)) (keyword? (:val ty)))
+                          (apply-key-lookup ctx node label (:val ty) (into prefix-types items))
                           :else
                           (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
                               t/unknown))))

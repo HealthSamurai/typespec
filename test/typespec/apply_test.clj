@@ -59,6 +59,21 @@
   (is (= "ok" (apply str (StringBuilder. "ok"))))
   (is (thrown? IllegalArgumentException (apply + java.time.Instant/EPOCH))))
 
+(deftest applies-keywords-with-an-optional-default
+  (let [r (checked "(apply :key [{:key 7}])
+(apply :key {:key nil} [42])
+(apply :key [{:other 7} :default])
+(apply :key [42 :default])
+(apply :key [])
+(apply :key [nil :default :extra])
+(inc (apply :key [{:key \"wrong\"}]))")]
+    (is (= ["7" "nil?" ":default" ":default"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2554"] [7 "TSP2554"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= :default (apply :key [42 :default])))
+  (is (nil? (apply :key [{:key nil} 42])))
+  (is (thrown? clojure.lang.ArityException (apply :key []))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

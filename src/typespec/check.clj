@@ -6139,6 +6139,48 @@
           (report! ctx node "TSP2554" "map-indexed expects 1 or 2 arguments")
           t/unknown))))
 
+(defn- keep-result-type [ctx {:keys [lower upper]} result items]
+  (let [env (:env ctx)
+        element (t/remove-nil env result)
+        nonnil? #(= :proved (:status (t/sub-result env % t/some-t)))
+        selected (when (and items (every? #(or (= t/nil-t %) (nonnil? %)) items))
+                   (into [] (remove #{t/nil-t}) items))
+        lo (cond selected (count selected) (= t/never element) 0 (nonnil? result) lower :else 0)
+        hi (cond selected (count selected) (= t/never element) 0 :else upper)]
+    (cond-> (length/with-bounds (coll-of :seq element) lo hi)
+      selected (assoc :items selected))))
+
+(defn- check-keep [ctx node head indexed?]
+  (let [[f coll :as args] (args-of node)]
+    (case (count args)
+      1 (do (infer ctx f) t/unknown)
+      2 (let [source (eff ctx (infer ctx coll))]
+          (cond
+            (= t/never source) (do (infer ctx f) t/never)
+            (report-invalid-sequence-args! ctx head [coll] [source]) (do (infer ctx f) t/unknown)
+
+            :else
+            (let [normalized (apply t/union (map #(or (map-entry-sequence %) %) (t/members (:env ctx) source)))
+                  {:keys [element upper] :as shape} (sequence-summary ctx normalized)
+                  identity? (and (not indexed?) (= 'clojure.core/identity (guard-symbol ctx f))
+                                 (empty? (:directives f)) (not (env/tag-node f)))
+                  result (cond
+                           (= 0 upper) (infer ctx f)
+                           identity? (do (infer ctx f) element)
+                           indexed? (apply-indexed-callback ctx f element)
+                           :else (apply-fn-node ctx f [element]))]
+              (if (and (= 0 upper) (= t/never result))
+                t/never
+                (t/with-assumption (keep-result-type ctx shape (if (= 0 upper) t/nil-t (eff ctx result))
+                                                     (when identity? (:items normalized)))
+                                   (or (t/assumption source) (t/assumption result)))))))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" (str head " expects 1 or 2 arguments"))
+          t/unknown))))
+
+(defmethod special 'keep [ctx node _]
+  (check-keep ctx node 'keep false))
+
 (defn- filter-splitter [ctx f]
   (let [env (:env ctx)]
     (if-let [summary (get-in env [:guards (guard-symbol ctx f)])]

@@ -912,6 +912,25 @@
   (is (= [1 "word" :tag] (vec (interleave [1 3] ["word"] [:tag :unused]))))
   (is (thrown? ClassCastException (inc (second (interleave [1] ["word"]))))))
 
+(deftest keep-removes-nil-and-retains-false-and-known-positions
+  (let [r (checked "(first (keep identity [nil false \"word\"]))
+(second (keep identity [nil false \"word\"]))
+(keep (fn [_] \"word\") [1 2])
+(first (keep (fn [_] nil) [1 2]))
+(first (keep 42 []))
+(inc (first (keep identity [nil \"bad\"])))
+(keep inc [\"bad\"])
+(keep 42 [1])
+(keep inc 42)
+(keep)")]
+    (is (= ["false" "\"word\"" "(s/coll-of string? :kind seq? :min-count 2 :max-count 2)"
+            "nil?" "nil?"]
+           (mapv #(at r %) (range 2 7))))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [false "word"] (vec (keep identity [nil false "word"]))))
+  (is (thrown? ClassCastException (first (keep inc ["bad"])))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

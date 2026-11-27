@@ -1,5 +1,6 @@
 (ns typespec.tuples-and-rows-test
   (:require [clojure.test :refer [deftest is]]
+            [clojure.spec.alpha :as s]
             [typespec.check :as check]
             [typespec.main :as main]
             [typespec.parse :as parse]))
@@ -22,6 +23,27 @@
     (is (= ["TSP2345" "TSP330-01" "TSP330-01" "TSP210-01"] (codes r)) (pr-str (:diagnostics r)))
     (is (= #{:tuple-length} (:reasons (last (:diagnostics r)))))
     (is (= "string?" (type-at r 4)))))
+
+(deftest homogeneous-spec-checks-the-known-positions-before-their-widened-type
+  (let [api (parse/parse-string "rows.clj" "(ns rows (:require [clojure.spec.alpha :as s]))
+(s/def ::states (s/coll-of #{:ready :done} :kind vector?))
+(s/fdef states :args (s/cat :values ::states) :ret ::states)
+(defn states [values] values)
+(s/fdef labels :args (s/cat) :ret (s/coll-of qualified-ident? :kind vector?))
+(defn labels [] [:ready/code 'done/code])")
+        client (parse/parse-string "client.clj" "(ns client (:require [rows :as rows] [clojure.spec.alpha :as s]))
+(let [states [:ready :done]] (rows/states states))
+(let [states [:ready :bad]] (rows/states states))
+(s/fdef unexpected :args (s/cat) :ret (s/coll-of qualified-ident? :kind vector?))
+(defn unexpected [] [:ready/code 'plain])
+(mapv namespace (rows/labels))")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "(s/coll-of string? :kind vector?)" (main/type-at result "client.clj" 6 1))))
+  (is (s/valid? (s/coll-of #{:ready :done} :kind vector?) [:ready :done]))
+  (is (not (s/valid? (s/coll-of #{:ready :done} :kind vector?) [:ready :bad]))))
 
 (deftest positions-distinguish-absence-nil-and-defaults
   (let [r (checked "(let [[id text & rest :as pair] [1 \"text\" nil]] (nth pair 1))

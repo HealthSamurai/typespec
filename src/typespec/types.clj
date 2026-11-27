@@ -471,7 +471,9 @@
                                    :else false)
                              (and (or (nil? (:kind t)) (= (:kind s) (:kind t)))
                                   (length/subset? s t)
-                                  (or (= 0 (:max-count s)) (sub? env (:of s) (:of t)))))
+                                  (if-let [items (:items s)]
+                                    (every? #(sub? env % (:of t)) items)
+                                    (or (= 0 (:max-count s)) (sub? env (:of s) (:of t))))))
                      :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
                      :class (if-let [c (:jvm-class s)]
                               (class-sub? c (:name t))

@@ -950,6 +950,22 @@
   (is (= [false "word"] (vec (keep-indexed (fn [i x] (case i 0 nil 1 false x)) [0 1 "word"]))))
   (is (thrown? clojure.lang.ArityException (first (keep-indexed inc [1])))))
 
+(deftest dedupe-removes-only-consecutive-repeats
+  (let [r (checked "(second (dedupe [\"a\" \"a\" \"b\" \"a\"]))
+(nth (dedupe [\"a\" \"a\" \"b\" \"a\"]) 2)
+(first (dedupe [:clojure.core/none :clojure.core/none 1]))
+(first (dedupe [:clojure.core/none]))
+(second (dedupe [nil nil false false]))
+(inc (second (dedupe [\"a\" \"a\" \"b\"])))
+(dedupe 42)
+(dedupe [] :extra)")]
+    (is (= ["\"b\"" "\"a\"" "1" "nil?" "false"]
+           (mapv #(at r %) (range 2 7))))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [1 :clojure.core/none] (vec (dedupe [:clojure.core/none :clojure.core/none 1 :clojure.core/none]))))
+  (is (thrown? IllegalArgumentException (first (dedupe 42)))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

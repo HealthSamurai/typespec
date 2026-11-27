@@ -5517,6 +5517,36 @@
         (unique-sequence ctx source :seq))
       t/unknown)))
 
+(defmethod special 'dedupe [ctx node _]
+  (if (empty? (args-of node))
+    t/unknown
+    (if-let [source (unary-sequence-source ctx node 'dedupe)]
+      (t/with-assumption
+       (apply t/union
+              (for [member (t/members (:env ctx) (eff ctx source))
+                    :let [member (or (map-entry-sequence member) member)
+                          [lo hi] (sequence-member-bounds member)
+                          items (:items member)
+                          sentinel :clojure.core/none
+                          selected (when (and items (every? #(#{:lit :nil} (:t %)) items))
+                                     (second (reduce (fn [[prior result] item]
+                                                       [(:val item) (cond-> result
+                                                                      (not= prior (:val item)) (conj item))])
+                                                     [sentinel []] items)))
+                          element (member-element member)
+                          excludes-sentinel? (= :mismatch (:status (t/sub-result (:env ctx) (t/lit sentinel) element)))]]
+                (if (= t/never member)
+                  t/never
+                  (cond-> (length/with-bounds
+                           (coll-of :seq (cond selected (apply t/union selected)
+                                               (= 0 hi) t/never
+                                               :else element))
+                           (cond selected (count selected) excludes-sentinel? (min lo 1) :else 0)
+                           (if selected (count selected) hi))
+                    selected (assoc :items selected)))))
+       (t/assumption source))
+      t/unknown)))
+
 (defmethod special 'set [ctx node _]
   (if-let [source (unary-sequence-source ctx node 'set)]
     (unique-sequence ctx source :set)

@@ -4476,14 +4476,14 @@
             (let [literal-key (if (= :kw (:op k)) (:val k) (stable-map-key k))
                   env (:env ctx)
                   members (t/members env ty)
-                  keys (when (and (nil? literal-key) (every? #(#{:map :nil} (:t %)) members))
+                  keys (when (and (nil? literal-key) (every? #(#{:map :map-of :nil} (:t %)) members))
                          (finite-map-keys env (eff ctx kt)))
                   add (fn [base shape]
                         (cond
                           (and (nil? literal-key) (:map-index shape))
                           (let [domain (map-index-domain shape)] (recur domain domain))
 
-                          (= :map-of (:t shape))
+                          (and (= :map-of (:t shape)) (nil? literal-key))
                           (if (and (t/sub? env kt (:k shape)) (t/sub? env vt (:v shape)))
                             base
                             (-> shape (update :k t/union (widen kt)) (update :v t/union (widen vt))))

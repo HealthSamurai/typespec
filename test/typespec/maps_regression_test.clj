@@ -1185,6 +1185,27 @@
         (pr-str issues))
     (is (= "returns string?, but the signature says int?" (:message (first issues))))))
 
+(deftest assoc-keeps-known-writes-distinct-from-the-map-of-index
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int?))
+(s/fdef install :args (s/cat :m ::counts) :ret string?)
+(defn install [m] (get (assoc m \"status\" \"ready\") \"status\"))
+(s/fdef preserve :args (s/cat :m ::counts) :ret int?)
+(defn preserve [m] (get (assoc m \"status\" \"ready\") \"other\" 0))
+(s/fdef from-key :args (s/cat :m ::counts :key #{\"status\"}) :ret string?)
+(defn from-key [m key] (get (assoc m key \"ready\") \"status\"))
+(s/fdef from-choice :args (s/cat :m ::counts :key #{\"status\" \"other\"}) :ret string?)
+(defn from-choice [m key] (get (assoc m key \"ready\") \"status\" \"fallback\"))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/install {\"other\" 10}))
+(inc (a/preserve {\"other\" 10}))
+(str/upper-case (a/from-key {} \"status\"))
+(a/from-key {} \"other\")")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 10 "TSP2322"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest merge-required-left-optional-right
   (let [a (map-type {:x (t/prim :string)} {:z (t/prim :string)})
         b (map-type {} {:x (t/prim :int) :z t/nil-t})

@@ -6258,20 +6258,24 @@
    (fn [{:keys [lower ret]}]
      (if (and (pos? lower) (= t/never ret)) t/never t/nil-t))))
 
-(doseq [h '[group-by max-key min-key]]
+(defmethod special 'group-by [ctx node _]
+  (check-collection-callback
+   ctx node 'group-by false
+   (fn [{:keys [element lower upper ret]}]
+     (if (= t/never ret)
+       (if (pos? lower) t/never empty-map-shape)
+       {:t :map-of :k (widen ret)
+        :v (length/with-bounds (coll-of :vector element) 1 upper)}))))
+
+(doseq [h '[max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
           c (last more)]
       (if (nil? c)
         (do (infer ctx f) t/unknown)
-        (let [el (elem-type ctx (infer ctx c))
-              [ret] (apply-predicate ctx f el false)]
-          (case h
-            (max-key min-key) el
-            group-by (if (= t/never el)
-                       empty-map-shape
-                       {:t :map-of :k (widen ret)
-                        :v (length/with-bounds (coll-of :vector el) 1 nil)})))))))
+        (let [el (elem-type ctx (infer ctx c))]
+          (apply-predicate ctx f el false)
+          el)))))
 
 (defn- literal-collection-count [node]
   (cond

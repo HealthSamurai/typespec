@@ -1080,6 +1080,21 @@
         (pr-str (:diagnostics r)))
     (is (= ["nil?" "nil?" "nil?" "t/never"] (mapv #(at r %) (range 2 6))))))
 
+(deftest group-by-bounds-groups-and-skips-unreachable-callbacks
+  (let [r (checked "(group-by (fn [_] :bucket) [1 2])
+(get (group-by 42 []) :bucket :missing)
+(get (group-by (fn [_ _] true) nil) :bucket :missing)
+(group-by (fn [_] (throw (Exception.))) [1])
+(group-by identity 42)
+(group-by identity)
+(group-by 42 [1])")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/map-of keyword? (s/coll-of int? :kind vector? :min-count 1 :max-count 2))"
+            ":missing" ":missing" "t/never"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

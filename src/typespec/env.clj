@@ -229,10 +229,25 @@
       (or (t/core-name file sym) (let [resolved (resolve-sym file sym)]
                                   (when (namespace resolved) resolved))))))
 
+(defn- parameter-bindings [pattern]
+  (case (:op pattern)
+    :sym (when (not= '& (:val pattern)) [(:val pattern)])
+    :vector (mapcat parameter-bindings (:children pattern))
+    :map (mapcat (fn [[k v]]
+                   (case (when (= :kw (:op k)) (name (:val k)))
+                     "or" nil
+                     "as" (parameter-bindings v)
+                     ("keys" "strs" "syms")
+                     (for [{:keys [op val]} (:children v) :when (#{:sym :kw} op)]
+                       (symbol (name val)))
+                     (parameter-bindings k)))
+                 (partition 2 (:children pattern)))
+    nil))
+
 (defn- pre-types
   "{param-symbol type} from :pre conditions like (string? x) and (s/valid? ::spec x)."
   [file params body]
-  (let [file (assoc file :locals (into #{} (keep #(when (= :sym (:op %)) (:val %))) (:children params)))]
+  (let [file (assoc file :locals (set (parameter-bindings params)))]
     (into {}
           (for [test (pre-conditions body)
                 :let [h (precondition-head file test) [a b _ & more] (rest (:children test))]]

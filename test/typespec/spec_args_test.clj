@@ -54,6 +54,22 @@
   (let [f (fn [number? x] {:pre [(number? x)]} x)]
     (is (= "text" (f string? "text")))))
 
+(deftest preconditions-recognize-shadowing-through-parameter-destructuring
+  (let [r (checked "(defn by-key [{:keys [string?]} x] {:pre [(string? x)]} x)
+(defn by-position [[string?] x] {:pre [(string? x)]} x)
+(defn by-rest [x & {:keys [string?]}] {:pre [(string? x)]} x)
+(defn explicit [{:keys [string?]} x] {:pre [(clojure.core/string? x)]} x)
+(by-key {:string? number?} 42)
+(by-position [number?] 42)
+(by-rest 42 :string? number?)
+(explicit {:string? number?} \"text\")
+(explicit {:string? number?} 42)")]
+    (is (= [[10 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [f (fn [{:keys [string?]} x] {:pre [(string? x)]} x)]
+    (is (= 42 (f {:string? number?} 42)))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

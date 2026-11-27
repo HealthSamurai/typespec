@@ -54,13 +54,13 @@ Single-file regression on JDK 27, using the contracts mode:
 - `pg` absent before and after checking; trust counters `cast/any/ignore = 0/0/0`.
 
 The production-tree check verifies all nine hashes and **351 top-level forms**.
-It checks five errors at their exact locations. The two `pg.clj` errors
+It checks six errors at their exact locations. The two `pg.clj` errors
 are also covered by the single-file regression. `TSP2531` at
 `pg/docker.clj:72:55`, covers a failed Docker result whose absent `:output`
 can reach `str/split` as `nil`. `TSP330-02` at `dsql/pg.clj:116:8` catches
 an empty accumulator passed to `pop` in `join-vec`. Calling the pinned
 `join-vec` with empty input reproduced the exception. The check pins warning counts by diagnostic
-code (**93 total**) and verifies warnings inside the conditional step in
+code (**86 total**) and verifies warnings inside the conditional step in
 `mk-table-constraint` and the reducers in `mk-columns` and `mk-options`.
 In `pg/q`, `remove nil?` proves that the `str/starts-with?` receiver at
 `pg.clj:132:45` meets its `some?` contract.
@@ -68,6 +68,12 @@ The reducers now report five unknown arguments to `name` at their source
 locations. The inferred accumulators resolve two downstream collection
 warnings at `str/join` and `ql/fast-join`. The upstream namespaces
 remain unloaded and the trust counters stay at zero in both checks.
+
+`TSP2531` at `pg/repo.clj:100:47` follows a nullable result of `keyword`
+into `name` in `create-indexes`. The pinned function threw before JDBC
+when called with an indexed column and no table name. Supplying the
+table name produced the index query. The unary conversion accepts any
+input, which removes seven unchecked input warnings in this file.
 
 `TSP2531` at `pg/repo.clj:220:23` reflects the general return type of
 `pg/format-dsql`. `Iterator.hasNext` can return false, and `(pg/format-dsql {})`

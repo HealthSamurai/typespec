@@ -3284,20 +3284,25 @@
 (defmethod special 'quote [ctx node _]
   (quoted-type ctx (second (:children node))))
 
-(defn- core-unary-result [ctx node refine]
+(defn- core-call-result [ctx node]
   (let [head (first (:children node))
         sym (:val head)
         args (args-of node)
         {:keys [type]} (read-var ctx sym head :call)
-        inputs (infer-call-arguments ctx node args (matching-arities type (count args)))
-        fallback (call-fn ctx node (str sym) type args inputs)]
-    (if (= 1 (count args))
-      (let [input (eff ctx (first inputs))]
-        (t/with-assumption
-         (apply t/union
-                (map #(if (= t/never %) t/never (or (refine %) fallback))
-                     (t/members (:env ctx) input)))
-         (t/assumption input)))
+        inputs (infer-call-arguments ctx node args (matching-arities type (count args)))]
+    [inputs (call-fn ctx node (str sym) type args inputs)]))
+
+(defn- refine-unary-result [ctx input fallback refine]
+  (t/with-assumption
+   (apply t/union
+          (map #(if (= t/never %) t/never (or (refine %) fallback))
+               (t/members (:env ctx) (eff ctx input))))
+   (t/assumption input)))
+
+(defn- core-unary-result [ctx node refine]
+  (let [[inputs fallback] (core-call-result ctx node)]
+    (if (= 1 (count inputs))
+      (refine-unary-result ctx (first inputs) fallback refine)
       fallback)))
 
 (defmethod special 'namespace [ctx node _]
@@ -3349,6 +3354,46 @@
 
 (defmethod special 'parse-uuid [ctx node _]
   (parsed-string-result ctx node parse-uuid (constantly (t/prim :uuid))))
+
+(defn- qualified-name-type [kind qualified?]
+  (cond-> (t/prim kind) (some? qualified?) (assoc :qualified? qualified?)))
+
+(defn- named-constructor-result [ctx node kind construct single-result]
+  (let [[inputs fallback] (core-call-result ctx node)
+        env (:env ctx)
+        fallback (if (and (= :keyword kind) (= t/unknown fallback))
+                   (t/union (t/prim :keyword) t/nil-t)
+                   fallback)]
+    (case (count inputs)
+      1 (refine-unary-result ctx (first inputs) fallback single-result)
+      2 (let [[qualifier local-name] (mapv #(t/resolve-t env (eff ctx %)) inputs)
+              value (:val qualifier)
+              exact? (or (= :nil (:t qualifier)) (and (= :lit (:t qualifier)) (string? value)))]
+          (t/with-assumption
+           (cond
+             (some #{t/never} [qualifier local-name]) t/never
+             (not (guards/proves? env local-name (t/prim :string))) fallback
+             (and exact? (= :lit (:t local-name))) (t/lit (construct value (:val local-name)))
+             (= :nil (:t qualifier)) (qualified-name-type kind false)
+             (guards/proves? env qualifier (t/prim :string)) (qualified-name-type kind true)
+             :else fallback)
+           (some t/assumption inputs)))
+      fallback)))
+
+(defmethod special 'keyword [ctx node _]
+  (named-constructor-result
+   ctx node :keyword keyword
+   (fn [member]
+     (let [value (:val member)]
+       (case (:t member)
+         :lit (if (or (string? value) (ident? value)) (t/lit (keyword value)) t/nil-t)
+         (:nil :map :map-of :coll :atom) t/nil-t
+         :prim (case (:name member)
+                 (:keyword :symbol) (qualified-name-type :keyword (t/name-qualification member))
+                 :string (t/prim :keyword)
+                 :fn nil
+                 t/nil-t)
+         nil)))))
 
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 

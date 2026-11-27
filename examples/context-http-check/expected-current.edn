@@ -1,6 +1,6 @@
 {:review
  "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check. The slurp return type resolves two previously unchecked string calls. Two TSP210-01 messages reflect the some? receiver contract for string predicates. F233 checks the set and first composition in select-accept-header.",
- :counts {:warning 40},
+ :counts {:warning 38},
  :coverage
  [{:file "src/http.clj",
    :opaque-nodes 1,
@@ -182,13 +182,6 @@
    "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
    "c7adbe44e0174a67caba3a2774825f40"]
-  ["src/http.clj"
-   {:row 73, :col 73, :end-row 73, :end-col 74}
-   :warning
-   "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
-   #{:unknown}
-   "8b4554bc8436ad8be5fbf291766c4b2a"]
   ["src/http/formats.clj"
    {:row 138, :col 26, :end-row 138, :end-col 202}
    :warning
@@ -245,13 +238,6 @@
    "compatibility not checked: t/unknown to some? (unknown)"
    #{:unknown}
    "d1b85d427b27e63e0c40772114038047"]
-  ["src/http/routing.clj"
-   {:row 126, :col 46, :end-row 126, :end-col 55}
-   :warning
-   "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
-   #{:unknown}
-   "9cbfdf4621ec03e86a649d236a02e8de"]
   ["src/http/routing.clj"
    {:row 46, :col 72, :end-row 46, :end-col 75}
    :warning

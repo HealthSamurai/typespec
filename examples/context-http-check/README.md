@@ -142,7 +142,7 @@ sources. It expects both valid calls to pass and checks two type errors
 for deliberately invalid endpoint maps.
 
 F610 checks the argument of `http/register-endpoint` against the original
-`::http/endpoint`. The current snapshot has **0 errors and 43 warnings**.
+`::http/endpoint`. That snapshot had **0 errors and 43 warnings**.
 Five calls pass and the dynamic endpoint at `http.clj:172:37` yields one
 `TSP210-01`. The endpoint probe compares direct checks and macro calls
 against the same Spec.
@@ -170,6 +170,10 @@ in the original `uui/heroicons.clj`. The [atom cache probe](probe/atom-cache.clj
 reads the same Var from another namespace. It verifies the old and new
 snapshot types and rejects numeric writes through `reset-vals!`,
 `swap-vals!`, and `compare-and-set!`.
+
+The current acceptance has **0 errors and 38 warnings**. The unary
+`keyword` contract accepts every input and removes the unchecked input
+warnings at `http.clj:73:73` and `http/routing.clj:126:46`.
 
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,

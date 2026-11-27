@@ -279,6 +279,34 @@
   (is (simple-symbol? 'plain))
   (is (thrown? NullPointerException (str/upper-case (namespace 'plain)))))
 
+(deftest keyword-construction-retains-the-namespace-and-nil-result
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef tag :args (s/cat :text string?) :ret qualified-keyword?)
+(defn tag [text] (keyword \"space\" text))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.string :as str]))
+(namespace (keyword \"space/label\"))
+(namespace (keyword 'space/label))
+(namespace (keyword nil \"space/label\"))
+(name (keyword nil \"space/label\"))
+(namespace (keyword \"\" \"label\"))
+(keyword 42)
+(keyword nil)
+(str/upper-case (namespace (api/tag \"label\")))
+(str/upper-case (namespace (keyword nil \"label\")))
+(keyword 42 \"label\")
+(keyword \"label\" nil)
+(keyword)")
+        result (check/check-files [api client] {})]
+    (is (= ["\"space\"" "\"space\"" "nil?" "\"space/label\"" "\"\"" "nil?" "nil?"]
+           (mapv #(main/type-at result "client.clj" % 1) (range 2 9))))
+    (is (= [[10 "TSP2531"] [11 "TSP2345"] [12 "TSP2345"] [13 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result))))
+  (is (nil? (keyword 42)))
+  (is (nil? (namespace (keyword nil "space/label"))))
+  (is (= "" (namespace (keyword "" "label"))))
+  (is (thrown? NullPointerException (keyword "label" nil))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

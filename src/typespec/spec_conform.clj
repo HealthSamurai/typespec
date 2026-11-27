@@ -9,7 +9,7 @@
   (with-meta (t/tuple items) {::t/tuple-contract true}))
 
 (defn tagged-result
-  "Type of conform for a known s/or or an alias of it, including failure.
+  "Type of conform when the final result is tagged by a known s/or, including failure.
   Other conformers may transform values, so their output is unknown."
   [env context form]
   (let [budget (volatile! 256)]
@@ -43,6 +43,7 @@
                                            assoc ::tagged true)
                                 t/unknown))
                       :s/spec (child (first args))
+                      :s/and (child (last args))
                       (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
                       :s/nilable (t/union t/nil-t (child (first args)))
                       :s/tuple (tuple (mapv child args))

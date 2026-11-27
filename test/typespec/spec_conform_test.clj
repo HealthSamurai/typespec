@@ -52,6 +52,28 @@
           :amount (str (inc (val entry))))))))"))]
       (is (empty? (:diagnostics r)) (pr-str (:diagnostics r))))))
 
+(deftest final-spec-in-and-determines-the-conformed-value
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/and some? (s/or :word string? :count int?)))
+(s/def ::changed (s/and (s/or :word string?) (s/conformer (constantly 3))))")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s]
+ [clojure.string :as str] [domain :as d]))
+(defn label [x]
+  (let [entry (s/conform ::d/payload x)]
+    (when-not (s/invalid? entry)
+      (let [[tag value] entry]
+        (case tag :word (str/upper-case value) :count (str (inc value)))))))
+(defn bad [x]
+  (let [entry (s/conform (s/and some? (s/or :word string? :count int?)) x)]
+    (when-not (s/invalid? entry)
+      (let [[tag value] entry]
+        (case tag :word (inc value) :count (inc value))))))")
+        {:keys [env diagnostics]} (check/check-files [client domain] {})]
+    (is (= [["client.clj" 12 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (nil? (conform/tagged-result env nil :domain/changed)))))
+
 (deftest checks-payloads-in-case-branches-and-keeps-scope
   (let [r (checked "(sp/def ::payload (sp/or :text string? :amount int?))
 (defn render [x]

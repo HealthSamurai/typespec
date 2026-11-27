@@ -5829,6 +5829,34 @@
               (t/tuple [(limited-sequence ctx false member limit)
                         (skipped-sequence ctx member limit false)]))))))
 
+(defmethod special 'repeat [ctx node _]
+  (let [[amount _ :as args] (args-of node)
+        [n :as types] (mapv #(eff ctx (infer ctx %)) args)
+        arity (count types)]
+    (t/with-assumption
+     (cond
+       (not (#{1 2} arity))
+       (do (report! ctx node "TSP2554" "repeat expects 1 or 2 arguments") t/unknown)
+
+       (some #{t/never} types) t/never
+       (= 1 arity) (length/with-bounds (coll-of :seq n) 1 nil)
+
+       :else
+       (let [env (:env ctx)
+             value (:val (t/resolve-t env n))]
+         (cond
+           (= :mismatch (:status (t/sub-result env n (t/prim :number))))
+           (do (assignable! ctx amount n (t/prim :number)) t/unknown)
+
+           (number? value)
+           (if-some [size (try (max 0 (long value)) (catch IllegalArgumentException _ nil))]
+             (length/with-bounds (coll-of :seq (if (zero? size) t/never (peek types))) size size)
+             (do (report! ctx amount "TSP2345" "repeat count cannot be converted to a Java long")
+                 t/never))
+
+           :else (coll-of :seq (peek types)))))
+     (some t/assumption types))))
+
 (defn- partition-count [size step]
   (when (some? size)
     (cond

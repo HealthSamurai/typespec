@@ -18,6 +18,24 @@
 (defn- codes [r] (mapv :code (:diagnostics r)))
 (defn- at [r row] (main/type-at r "length.clj" row 1))
 
+(deftest repeat-preserves-elements-and-uses-the-jvm-long-count
+  (let [r (checked "(first (repeat \"word\"))
+(repeat 1.9 \"word\")
+(repeat 0.5 \"word\")
+(first (repeat -1 :unused))
+(inc (first (repeat 1 \"wrong\")))
+(repeat :bad :value)
+(repeat 9223372036854775808N :value)
+(repeat)")]
+    (is (= ["string?" "(s/coll-of string? :kind seq? :min-count 1 :max-count 1)"
+            "(s/coll-of t/never :kind seq? :max-count 0)" "nil?"]
+           (mapv #(at r %) (range 2 6))))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [:value] (vec (repeat 1.9 :value))))
+  (is (empty? (repeat 0.5 :value)))
+  (is (thrown? IllegalArgumentException (repeat 9223372036854775808N :value))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

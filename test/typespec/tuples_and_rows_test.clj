@@ -132,6 +132,21 @@
   (is (= #{1} (clojure.set/select number? #{1 :two})))
   (is (thrown? ClassCastException (clojure.set/select inc #{"bad"}))))
 
+(deftest relation-index-types-projected-keys-and-nonempty-groups
+  (let [r (checked "(s/fdef index :args (s/cat) :ret (s/map-of map? (s/coll-of map? :kind set? :min-count 1)))
+(defn index [] (clojure.set/index #{{:id 1 :name \"a\"}} [:id]))
+(:absent (clojure.set/index nil [:id]) :default)
+(s/fdef wrong :args (s/cat) :ret (s/map-of map? int?))
+(defn wrong [] (clojure.set/index #{{:id 1}} [:id]))
+(clojure.set/index 42 [:id])
+(clojure.set/index #{})")]
+    (is (= ":default" (type-at r 4)))
+    (is (= [[6 "TSP2322"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= {{:id 1} #{{:id 1 :name "a"}}}
+         (clojure.set/index #{{:id 1 :name "a"}} [:id])))
+  (is (thrown? IllegalArgumentException (clojure.set/index 42 [:id]))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

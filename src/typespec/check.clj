@@ -6591,6 +6591,17 @@
                   :else t/unknown)]
        (length/with-bounds (coll-of :set rows) (min 1 lower) upper)))))
 
+(defmethod special 'clojure.set/index [ctx node _]
+  (check-map-relation
+   ctx node 'index
+   (fn [{:keys [element lower upper]} selector keys]
+     (if (= 0 upper)
+       empty-map-shape
+       (length/with-bounds
+        {:t :map-of :k (projected-relation-rows ctx element selector keys)
+         :v (length/with-bounds (coll-of :set element) 1 upper)}
+        (min 1 lower) upper)))))
+
 (defn- random-sample-mode [ctx ty]
   (let [probability (:val (t/resolve-t (:env ctx) ty))]
     (when (number? probability)

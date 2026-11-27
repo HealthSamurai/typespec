@@ -209,6 +209,23 @@
   (is (nil? (parse-boolean "FALSE")))
   (is (thrown? IllegalArgumentException (parse-boolean 42))))
 
+(deftest parse-uuid-distinguishes-valid-input-before-interop
+  (let [file (parse/parse-string "parsing.clj" "(ns parsing)
+(parse-uuid \"b20c1fd0-5fe9-4ccb-81a1-51d0ad221049\")
+(parse-uuid \"1-1-1-1-1\")
+(parse-uuid \"invalid\")
+(.version (parse-uuid \"b20c1fd0-5fe9-4ccb-81a1-51d0ad221049\"))
+(.version (parse-uuid \"invalid\"))
+(parse-uuid :bad)")
+        result (check/check-files [file] {})]
+    (is (= ["uuid?" "uuid?" "nil?"]
+           (mapv #(main/type-at result "parsing.clj" % 1) [2 3 4])))
+    (is (= [[6 "TSP2531"] [7 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))))
+  (is (uuid? (parse-uuid "1-1-1-1-1")))
+  (is (nil? (parse-uuid "invalid")))
+  (is (thrown? NullPointerException (.version (parse-uuid "invalid")))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

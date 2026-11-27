@@ -3327,6 +3327,9 @@
 (defmethod special 'parse-boolean [ctx node _]
   (parsed-string-result ctx node parse-boolean t/lit))
 
+(defmethod special 'parse-uuid [ctx node _]
+  (parsed-string-result ctx node parse-uuid (constantly (t/prim :uuid))))
+
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
 (defmethod special 'time [ctx node _]

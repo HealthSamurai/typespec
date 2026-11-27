@@ -43,7 +43,8 @@
 (let [time (fn [x y] y)] (time 1 :local))")]
     (is (empty? (codes r)) (pr-str (:diagnostics r)))
     (is (= [":done" "java.util.concurrent.Future" "java.util.concurrent.Future"
-            "(s/coll-of int? :kind seq?)" "(s/coll-of t/never :kind seq?)"
+            "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"
             "(s/coll-of t/never :kind seq?)" "t/never" "keyword?"]
            (mapv #(main/type-at r "app.clj" % 1) (range 5 13))))))
 

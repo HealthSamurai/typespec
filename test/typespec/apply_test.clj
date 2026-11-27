@@ -172,6 +172,21 @@
   (is (nil? (list* [])))
   (is (thrown? IllegalArgumentException (list* :key false))))
 
+(deftest lazy-seq-preserves-the-positions-its-body-will-produce
+  (let [r (checked "(apply subs (lazy-seq [\"text\" 1]))
+(apply + (lazy-seq nil))
+(first (lazy-seq [\"word\" 2]))
+(let [_ (lazy-seq (throw (Exception.)))] :ok)
+(apply subs (lazy-seq [\"text\" \"wrong\"]))
+(apply subs (lazy-seq [\"text\"]))
+(lazy-seq 42)
+(lazy-seq java.time.Instant/EPOCH)")]
+    (is (= ["string?" "int?" "\"word\"" ":ok"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= "ext" (apply subs (lazy-seq ["text" 1]))))
+  (is (thrown? ClassCastException (apply subs (lazy-seq ["text" "wrong"])))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

@@ -4804,10 +4804,14 @@
 
 (defmethod special 'lazy-seq [ctx node _]
   (let [forms (args-of node)
-        body (infer-body (dissoc ctx :recur-types) forms)]
-    (when-let [bad (unsupported-sequence-member ctx body)]
-      (report! ctx (last forms) "TSP2345" (str "lazy-seq cannot realize a sequence from " (t/show bad))))
-    (coll-of :seq (if (= t/never body) t/never (elem-type ctx body)))))
+        body (eff ctx (infer-body (dissoc ctx :recur-types) forms))
+        bad (or (unsupported-sequence-member ctx body)
+                (impossible-spread-member (t/members (:env ctx) body)))]
+    (cond
+      bad (do (report! ctx (last forms) "TSP2345" (str "lazy-seq cannot realize a sequence from " (t/show bad)))
+              (coll-of :seq t/unknown))
+      (= t/never body) (coll-of :seq t/never)
+      :else (sequence-tail ctx body 0 false))))
 
 (doseq [[h i] {'first 0 'second 1}]
   (defmethod special h [ctx node _]

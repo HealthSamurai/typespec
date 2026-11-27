@@ -1054,6 +1054,19 @@
         (pr-str (:diagnostics r)))
     (is (= ["true" "true" "false" "false" "true"] (mapv #(at r %) (range 2 7))))))
 
+(deftest not-every-checks-the-predicate-and-negates-its-result
+  (let [r (checked "(not-every? 42 [])
+(not-every? string? [\"one\"])
+(not-every? string? [1 2])
+(not-every? (fn [_] nil) [1])
+(not-every? string? 42)
+(not-every? string?)
+(not-every? 42 [1])")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["false" "false" "true" "true"] (mapv #(at r %) (range 2 6))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

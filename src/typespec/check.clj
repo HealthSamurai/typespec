@@ -6233,6 +6233,13 @@
 (defmethod special 'every? [ctx node _]
   (check-collection-callback ctx node 'every? (partial every-result (:env ctx))))
 
+(defmethod special 'not-every? [ctx node _]
+  (check-collection-callback
+   ctx node 'not-every?
+   (fn [shape]
+     (let [result (every-result (:env ctx) shape)]
+       (if (= :lit (:t result)) (t/lit (not (:val result))) result)))))
+
 (defmethod special 'not-any? [ctx node _]
   (let [env (:env ctx)]
     (check-collection-callback

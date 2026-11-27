@@ -1478,13 +1478,13 @@
       :else (with-meta (t/union (dissoc hint :platform) nil-member)
               (select-keys (meta original) [:null-return ::t/assumption])))))
 
-(defn- invalid-vector-pattern-input? [rest? member]
+(defn- invalid-position-input? [seq-input? member]
   (case (:t member)
-    (:map :map-of) (not rest?)
-    :coll (and (= :set (:kind member)) (not rest?))
+    (:map :map-of) (not seq-input?)
+    :coll (and (= :set (:kind member)) (not seq-input?))
     :lit (not (string? (:val member)))
     :prim (or (#{:int :double :boolean :keyword :symbol :uuid} (:name member))
-              (and (not rest?) (#{:map :set} (:name member))))
+              (and (not seq-input?) (#{:map :set} (:name member))))
     false))
 
 (defn- vector-pattern-operation [pattern]
@@ -1494,7 +1494,7 @@
 
 (defn- check-vector-pattern-input! [ctx pattern members operation]
   (when operation
-    (when-let [bad (first (filter #(invalid-vector-pattern-input? (= :seq operation) %) members))]
+    (when-let [bad (first (filter #(invalid-position-input? (= :seq operation) %) members))]
       (report! ctx pattern "TSP2345"
                (str "vector destructuring uses " (name operation)
                     ", which does not accept " (t/show bad))))))
@@ -5091,6 +5091,7 @@
                (cond
                  (= :never (:t member)) t/never
                  (= :nil (:t member)) (or default-type t/nil-t)
+                 (and default-type (neg? i) (invalid-position-input? false member)) default-type
                  (= :absent presence) (or default-type t/never)
                  (:items member) (nth (:items member) i)
                  (= :present presence) (:of member)
@@ -5104,7 +5105,13 @@
         default-type (when default (infer ctx default))
         env (:env ctx)
         members (t/members env ty)
-        indices (t/members env it)]
+        indices (t/members env it)
+        literal-indices (when (every? #(and (= :lit (:t %)) (number? (:val %))) indices)
+                          (vec (distinct (map :val indices))))
+        accesses-source? (or (nil? literal-indices)
+                             (some #(or (nil? default) (not (neg? %)))
+                                   (keep checked-int-index literal-indices)))
+        bad-source (when accesses-source? (first (filter #(invalid-position-input? false %) members)))]
     (cond
       (or (nil? index) (seq extra))
       (do (run! #(infer ctx %) extra)
@@ -5117,17 +5124,20 @@
 
       (some #{t/never} [ty it default-type]) t/never
 
-      (every? #(and (= :lit (:t %)) (number? (:val %))) indices)
-      (t/with-assumption
-       (infer-nth-positions ctx index members (vec (distinct (map :val indices))) default-type)
-       (or (t/assumption ty) (t/assumption it)))
-
-      :else (apply t/union (or default-type t/never)
-                   (map (fn [m]
-                          (cond (= :nil (:t m)) (or default-type t/nil-t)
-                                (and (= :coll (:t m)) (= 0 (second (length/bounds m)))) t/never
-                                :else (elem-type ctx m)))
-                        members)))))
+      :else
+      (do
+        (when bad-source
+          (report! ctx c "TSP2345" (str "nth does not accept " (t/show bad-source))))
+        (if literal-indices
+          (t/with-assumption
+           (infer-nth-positions ctx index members literal-indices default-type)
+           (or (t/assumption ty) (t/assumption it)))
+          (apply t/union (or default-type t/never)
+                 (map (fn [m]
+                        (cond (= :nil (:t m)) (or default-type t/nil-t)
+                              (and (= :coll (:t m)) (= 0 (second (length/bounds m)))) t/never
+                              :else (elem-type ctx m)))
+                      members)))))))
 
 (defn- array-argument-status [ty]
   (case (:t ty)

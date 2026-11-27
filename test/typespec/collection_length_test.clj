@@ -326,6 +326,33 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest nth-rejects-inputs-without-positional-access
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef id :args (s/cat :row (s/tuple string? int?)) :ret int?)
+(defn id [row] (nth row 1))
+(s/fdef bad :args (s/cat :row int?) :ret any?)
+(defn bad [row] (nth row 0 :missing))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/id [\"valid\" 1])
+(a/id [\"invalid\" \"1\"])
+(nth {:a 1} 0 nil)
+(nth #{1} 0 nil)
+(nth 42 -1 :fallback)
+(nth 42 -1)
+(nth \"abc\" 0)
+(nth nil 0 :missing)
+(nth (first {:a 1}) 1)
+(nth (int-array [1]) 0)")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 5 "TSP2345"] ["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ":fallback" (main/type-at result "client.clj" 6 1))))
+  (is (= :fallback (nth 42 -1 :fallback)))
+  (is (thrown? UnsupportedOperationException (nth 42 -1)))
+  (is (thrown? UnsupportedOperationException (nth {:a 1} 0 nil))))
+
 (deftest nth-guards-with-nil-default-refine-vectors-across-namespaces
   (let [issues (vector-guard-diagnostics
                  "(s/fdef from-nth :args (s/cat :v ::api/nums :i #{2}) :ret int?)

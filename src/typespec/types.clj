@@ -703,23 +703,60 @@
 
 (defn- flat-keys [x] (cond (keyword? x) [x] (seq? x) (mapcat flat-keys (rest x)) :else []))
 
+(defn- bounded-branches [branches]
+  (let [limit 64
+        result (vec (take (inc limit) (distinct branches)))]
+    (when (<= (count result) limit) result)))
+
+(defn- conjunctive-keys [groups]
+  (reduce (fn [prefix suffix]
+            (or (bounded-branches (for [a prefix b suffix] (into a b)))
+                (reduced nil)))
+          [#{}] groups))
+
+(defn- key-group-branches [key-name form]
+  (cond
+    (keyword? form) [#{(key-name form)}]
+    (seq? form)
+    (let [[op & children] form
+          branches (mapv #(key-group-branches key-name %) children)]
+      (when (and (seq children) (every? some? branches))
+        (case op
+          and (conjunctive-keys branches)
+          or (bounded-branches (mapcat identity branches))
+          nil)))))
+
 (defn- parse-keys [args]
   (let [{:keys [req opt req-un opt-un]} (apply hash-map args)
-        un (fn [ks] (map (fn [k] [(keyword (name k)) (ref-t k)]) ks))
+        short-key (comp keyword name)
+        un (fn [ks] (map (fn [k] [(short-key k) (ref-t k)]) ks))
         q (fn [ks] (map (fn [k] [k (ref-t k)]) ks))
         plain #(filter keyword? %)
-        grouped #(mapcat flat-keys (filter seq? %))
+        [qualified-groups unqualified-groups] (map #(filter seq? %) [req req-un])
         required (concat (q (plain req)) (un (plain req-un)))
-        optional (concat (q (concat opt (grouped req))) (un (concat opt-un (grouped req-un))))
+        optional (concat (q (concat opt (mapcat flat-keys qualified-groups)))
+                         (un (concat opt-un (mapcat flat-keys unqualified-groups))))
         req-map (into (array-map) required)
         opt-map (into (array-map) optional)
         conflicts (into (set (filter req-map (keys opt-map)))
                         (keep (fn [[k entries]] (when (next (distinct entries)) k)))
-                        (group-by first (concat required optional)))]
-    (with-meta {:t :map :req req-map :opt opt-map}
-      (cond-> {}
-        (seq conflicts) (assoc ::shape-conflicts (sort-by pr-str conflicts))
-        (some seq? (concat req req-un)) (assoc ::shape-form 's/keys)))))
+                        (group-by first (concat required optional)))
+        grouped? (or (seq qualified-groups) (seq unqualified-groups))
+        groups (concat (map #(key-group-branches identity %) qualified-groups)
+                       (map #(key-group-branches short-key %) unqualified-groups))
+        row {:t :map :req req-map :opt opt-map}
+        result (if grouped?
+                 (if-let [branches (when (every? some? groups) (conjunctive-keys groups))]
+                   (apply union (for [ks branches]
+                                  (let [selected (select-keys opt-map (sort-by pr-str ks))]
+                                    {:t :map :req (merge selected req-map)
+                                     :opt (apply dissoc opt-map ks)})))
+                   (vary-meta row assoc ::unchecked-contract true))
+                 row)]
+    (vary-meta result merge
+               (cond-> {}
+                 (seq conflicts) (assoc ::shape-conflicts (sort-by pr-str conflicts))
+                 grouped? (assoc ::shape-form 's/keys)))))
 
 (defn- parse-operator [ctx operator form]
   (let [[_ source & keys] form
@@ -764,11 +801,6 @@
                           :active-regex-specs (conj (:active-regex-specs ctx) form))
                    spec-form)))))))
 
-(defn- bounded-arities [arities]
-  (let [limit 64
-        branches (vec (take (inc limit) (distinct arities)))]
-    (when (<= (count branches) limit) branches)))
-
 (declare regex-branches)
 
 (defn- regex-form-branches [ctx form]
@@ -785,11 +817,11 @@
           (when (every? some? branches)
             (if (= :s/alt operator)
               (when (not-any? :rest (mapcat identity branches))
-                (bounded-arities (mapcat identity branches)))
+                (bounded-branches (mapcat identity branches)))
               (reduce (fn [prefix suffix]
                         (if (and (some :rest prefix) (some #(or (:rest %) (seq (:params %))) suffix))
                           (reduced nil)
-                          (or (bounded-arities
+                          (or (bounded-branches
                                (for [p prefix s suffix]
                                  (merge p (if (:rest p) (dissoc s :rest) s)
                                         {:params (into (:params p) (:params s))})))
@@ -799,7 +831,7 @@
       :s/? (when (= 1 (count operands))
              (when-let [branches (regex-branches ctx inner)]
                (when-not (some :rest branches)
-                 (bounded-arities (cons empty-branch branches)))))
+                 (bounded-branches (cons empty-branch branches)))))
       (:s/* :s/+) (when (and (= 1 (count operands)) (not (resolve-regex ctx inner)))
                     [(cond-> (assoc empty-branch :rest (parse-type ctx inner))
                        (= :s/+ operator) (assoc :rest-min 1))])

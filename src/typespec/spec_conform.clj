@@ -46,11 +46,11 @@
                       (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
                       :s/nilable (t/union t/nil-t (child (first args)))
                       :s/tuple (tuple (mapv child args))
-                      :s/keys (let [shape (t/parse-type (assoc context :fail (constantly nil)) form)
+                      :s/keys (let [shapes (t/members env (t/parse-type (assoc context :fail (constantly nil)) form))
                                     fields (fn [row]
                                              (update-vals row #(child (:name %))))]
-                                (if (= :map (:t shape))
-                                  (-> shape (update :req fields) (update :opt fields))
+                                (if (every? #(= :map (:t %)) shapes)
+                                  (apply t/union (map #(-> % (update :req fields) (update :opt fields)) shapes))
                                   t/unknown))
                       t/unknown))
                   :else t/unknown)))]

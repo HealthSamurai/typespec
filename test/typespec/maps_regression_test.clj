@@ -53,6 +53,41 @@
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest spec-required-key-groups-check-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::tenant keyword?)
+(s/def ::region keyword?)
+(s/def ::id int?)
+(s/def ::first-name string?)
+(s/def ::last-name string?)
+(s/def ::person (s/keys :req [(and ::tenant ::region)]
+                         :req-un [(or ::id (and ::first-name ::last-name))]))
+(s/fdef identify :args (s/cat :person ::person) :ret keyword?)
+(defn identify [{::keys [tenant]}] tenant)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/identify {::api/tenant :a ::api/region :eu :id 1})
+(api/identify {::api/tenant :a ::api/region :eu :first-name \"Ada\" :last-name \"Lovelace\"})
+(api/identify {::api/tenant :a ::api/region :eu :id 1 :first-name \"Ada\"})
+(api/identify {::api/tenant :a ::api/region :eu})
+(api/identify {::api/tenant :a ::api/region :eu :first-name \"Ada\"})
+(api/identify {::api/tenant :a :id 1})
+(api/identify {::api/tenant :a ::api/region :eu :id 1 :first-name 2})")
+        result (check/check-files [client api] {:strict-nil true})]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
+(deftest spec-required-key-group-expansion-is-bounded
+  (let [spec (list 's/keys :req [:schema/base] :req-un
+                   (mapv (fn [i] (list 'or (keyword "schema" (str "left" i))
+                                       (keyword "schema" (str "right" i))))
+                         (range 7)))
+        type (t/parse-type {:fail #(throw (ex-info "Unexpected opaque form" {:form %}))} spec)]
+    (is (= {:schema/base (t/ref-t :schema/base)} (:req type)))
+    (is (= 14 (count (:opt type))))
+    (is (::t/unchecked-contract (meta type)))))
+
 (deftest get-uses-the-map-of-domain-for-computed-keys
   (let [by-name {:t :map-of :k (t/prim :string) :v (t/prim :int)}
         by-tag {:t :map-of :k (t/prim :keyword) :v (t/prim :boolean)}

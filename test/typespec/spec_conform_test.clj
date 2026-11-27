@@ -5,7 +5,9 @@
             [typespec.check :as check]
             [typespec.main :as main]
             [typespec.parse :as parse]
-            [typespec.project-contracts :as contracts]))
+            [typespec.project-contracts :as contracts]
+            [typespec.spec-conform :as conform]
+            [typespec.types :as t]))
 
 (defn- checked [source]
   (check/check-files [(parse/parse-string "conformed.clj"
@@ -82,6 +84,17 @@
                      (when-not (sp/invalid? entry)
                        (let [[_ value] entry] (str/upper-case value))))")]
     (is (= ["TSP210-01"] (mapv :code (:diagnostics r))) (pr-str (:diagnostics r)))))
+
+(deftest conformed-maps-preserve-required-key-groups
+  (let [r (checked "(sp/def ::id int?)
+(sp/def ::label string?)
+(sp/def ::payload (sp/or :entry (sp/keys :req-un [(or ::id ::label)])))")
+        env (:env r)
+        output (conform/tagged-result env nil :conformed/payload)
+        payload (some #(get-in % [:items 1]) (t/members env output))]
+    (is (empty? (:diagnostics r)))
+    (is (= #{{:id (t/prim :int)} {:label (t/prim :string)}}
+           (set (map :req (t/members env payload)))))))
 
 (deftest tag-and-payload-changes-reach-other-namespaces
   (let [schema (fn [tag field-type]

@@ -228,31 +228,41 @@
                " may be nil, expected " (show-ref ctx expected))
      {:type-path path}]))
 
+(defn- fresh-field-problems [ctx actual fields]
+  (for [[k v] (:req actual)
+        :let [expected (get fields k)
+              result (when expected (t/sub-result (:env ctx) v expected))]
+        :when (and expected (not= :proved (:status result)))]
+    (if (= :inconclusive (:status result))
+      (conj (incomplete-problem ctx v expected result) [:value k])
+      ["TSP2322" (str "value of " k ": " (t/show (eff ctx v)) " is not assignable to " (show-ref ctx expected)) nil [:value k]])))
+
 (defn- fresh-problems [ctx actual expected]
   (let [env (:env ctx)
         ms (remove #(= :nil (:t %)) (t/members env expected))]
-    (when (and (:fresh actual) (= 1 (count ms)) (= :map (:t (first ms))))
-      (let [m (first ms)
+    (when (and (:fresh actual) (seq ms) (every? #(= :map (:t %)) ms))
+      (let [fields #(merge (:opt %) (:req %))
+            m (first ms)
             known (concat (keys (:req m)) (keys (:opt m)))]
-        (concat
-         (for [k (keys (:req m)) :when (not (contains? (:req actual) k))]
-           ["TSP2741" (str "required key " k " of " (t/show expected) " is missing")])
-         (for [[k v] (:req actual)
-               :let [exp (or (get (:req m) k) (get (:opt m) k))
-                     result (when exp (t/sub-result env v exp))]
-               :when (and exp (not= :proved (:status result)))]
-           (if (= :inconclusive (:status result))
-             (conj (incomplete-problem ctx v exp result) [:value k])
-             ["TSP2322" (str "value of " k ": " (t/show (eff ctx v)) " is not assignable to " (show-ref ctx exp)) nil [:value k]]))
-         ;; An open inferred shape only describes the keys we have seen.
-         (when (or (not (:inferred m)) (:complete-keys? m))
-           (for [k (keys (:req actual))
-                 :when (and (not (some #{k} known))
-                            (not (and (qualified-keyword? k) (get-in env [:specs k])))
-                            ;; a qualified key with no spec is already reported as TSP2304
-                            (not (and (qualified-keyword? k) (contains? (:key-nss env) (namespace k))))
-                            (or (qualified-keyword? k) (similar k known)))]
-             ["TSP2353" (str "unknown key " k " in a literal of " (t/show expected) (hint-suffix k known)) nil [:key k]])))))))
+        (if (next ms)
+          ;; A value that fails the same field contract in every alternative
+          ;; can be reported at that field even when the required keys vary.
+          (let [others (map fields (rest ms))
+                shared (into {} (filter (fn [[k v]] (every? #(= v (get % k)) others))) (fields m))]
+            (filter #(= "TSP2322" (first %)) (fresh-field-problems ctx actual shared)))
+          (concat
+           (for [k (keys (:req m)) :when (not (contains? (:req actual) k))]
+             ["TSP2741" (str "required key " k " of " (t/show expected) " is missing")])
+           (fresh-field-problems ctx actual (fields m))
+           ;; An open inferred shape only describes the keys we have seen.
+           (when (or (not (:inferred m)) (:complete-keys? m))
+             (for [k (keys (:req actual))
+                   :when (and (not (some #{k} known))
+                              (not (and (qualified-keyword? k) (get-in env [:specs k])))
+                              ;; a qualified key with no spec is already reported as TSP2304
+                              (not (and (qualified-keyword? k) (contains? (:key-nss env) (namespace k))))
+                              (or (qualified-keyword? k) (similar k known)))]
+               ["TSP2353" (str "unknown key " k " in a literal of " (t/show expected) (hint-suffix k known)) nil [:key k]]))))))))
 
 (defn- missing-req
   "[key optional-there?] when `actual` is a map type that lacks a required key of `expected`."

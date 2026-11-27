@@ -912,8 +912,7 @@
 
       :s/? (when (= 1 (count operands))
              (when-let [branches (regex-branches ctx inner)]
-               (when-not (some :rest branches)
-                 (bounded-branches (cons empty-branch branches)))))
+               (bounded-branches (cons empty-branch branches))))
       (:s/* :s/+) (when (and (= 1 (count operands)) (not (resolve-regex ctx inner)))
                     [(cond-> (assoc empty-branch :rest (parse-type ctx inner))
                        (= :s/+ operator) (assoc :rest-min 1))])

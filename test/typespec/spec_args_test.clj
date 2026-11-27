@@ -410,6 +410,27 @@
     (is (= [true true false false]
            (mapv #(s/valid? regex %) [["alone"] [1 2] ["alone" 2] []])))))
 
+(deftest optional-variadic-regexes-retain-the-absent-branch
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::options (s/cat :format keyword? :widths (s/+ int?)))
+(s/fdef columns :args (s/cat :name string? :opts (s/? ::options)) :ret string?)
+(defn columns [name & _] name)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/columns \"name\")
+(a/columns \"name\" :format 1 2)
+(apply a/columns [\"name\" :format 1])
+(a/columns \"name\" :format)
+(a/columns \"name\" :format \"bad\")
+(a/columns 42)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 2 "TSP9002"] ["client.clj" 5 "TSP2554"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (let [regex (s/cat :name string? :opts (s/? (s/cat :format keyword? :widths (s/+ int?))))]
+    (is (= [true true false]
+           (mapv #(s/valid? regex %) [["name"] ["name" :format 1] ["name" :format]])))))
+
 (deftest nested-alternatives-and-optional-before-rest
   (let [spec (s/cat :prefix (s/? string?) :xs (s/+ int?))]
     (is (= [true true false false]

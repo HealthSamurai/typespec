@@ -152,6 +152,23 @@
   (is (thrown? UnsupportedOperationException (let [[x] {:a 1}] x)))
   (is (thrown? IllegalArgumentException (let [[& xs] 42] xs))))
 
+(deftest vector-destructuring-with-rest-types-map-entries
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef first-value :args (s/cat :index (s/map-of string? int?)) :ret int?)
+(defn first-value [[[k v] & more :as values]] (if-some [n v] (inc n) 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/first-value {\"one\" 1})
+(a/first-value {})
+(a/first-value {\"one\" \"wrong\"})
+(let [[[k v] & tail] {\"name\" 42}] (inc v))
+(let [[[k v] & tail] {\"name\" \"bad\"}] (inc v))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (str/includes? (:message (last issues)) "\"bad\" is not assignable")))
+  (is (= ["name" 42] (let [[[k v] & tail] {"name" 42}] [k v]))))
+
 (deftest computed-selectors-check-the-expression-and-bind-the-selected-field
   (let [issues (diagnostics "(let [key :n {n key} {:n 2}] (inc n))
 (let [key \"n\" {n key} {\"n\" \"bad\"}] (inc n))

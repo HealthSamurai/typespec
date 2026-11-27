@@ -1487,14 +1487,17 @@
               (and (not rest?) (#{:map :set} (:name member))))
     false))
 
-(defn- check-vector-pattern-input! [ctx pattern members]
-  (let [positional (take-while #(not (and (= :kw (:op %)) (= :as (:val %)))) (:children pattern))
-        rest? (some #(and (= :sym (:op %)) (= '& (:val %))) positional)]
+(defn- vector-pattern-operation [pattern]
+  (let [positional (take-while #(not (and (= :kw (:op %)) (= :as (:val %)))) (:children pattern))]
     (when (seq positional)
-      (when-let [bad (first (filter #(invalid-vector-pattern-input? rest? %) members))]
-        (report! ctx pattern "TSP2345"
-                 (str "vector destructuring uses " (if rest? "seq" "nth")
-                      ", which does not accept " (t/show bad)))))))
+      (if (some #(and (= :sym (:op %)) (= '& (:val %))) positional) :seq :nth))))
+
+(defn- check-vector-pattern-input! [ctx pattern members operation]
+  (when operation
+    (when-let [bad (first (filter #(invalid-vector-pattern-input? (= :seq operation) %) members))]
+      (report! ctx pattern "TSP2345"
+               (str "vector destructuring uses " (name operation)
+                    ", which does not accept " (t/show bad))))))
 
 (defn bind-pattern
   ([ctx pattern ty] (bind-pattern ctx pattern ty nil))
@@ -1517,7 +1520,12 @@
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
      :vector (let [members (t/members (:env ctx) ty)
-                   _ (check-vector-pattern-input! ctx pattern members)
+                   operation (vector-pattern-operation pattern)
+                   _ (check-vector-pattern-input! ctx pattern members operation)
+                   position-members (if (= :seq operation)
+                                      (mapv #(or (and (#{:map :map-of} (:t %)) (map-entry-sequence %)) %)
+                                            members)
+                                      members)
                    sequence-positions? (every? #(or (#{:vector :seq} (:kind %)) (= :nil (:t %))) members)
                    [ctx origin path] (if (or sequence-positions? (every? :items members))
                                        (track-path ctx (or projection {:path [] :type ty}))
@@ -1532,7 +1540,7 @@
                        :else
                        (let [step (cond (every? #(contains? (:items %) i) members) i
                                         sequence-positions? {:seq-index i})]
-                         (recur (bind-pattern ctx p (positional-type ctx ty i) nil
+                         (recur (bind-pattern ctx p (positional-type ctx ty i position-members) nil
                                               (when step (project (conj path step))))
                                 (inc i) more)))))
      ctx)))

@@ -244,6 +244,20 @@
   (is (= {'title 2} (array-map 'title 1 'title 2)))
   (is (thrown? IllegalArgumentException (apply array-map [:unpaired]))))
 
+(deftest hash-set-infers-elements-and-counts-duplicate-values-once
+  (let [r (checked "(first (hash-set \"text\"))
+(bounded-count 0 (apply hash-set [:a :a :b]))
+(bounded-count 0 (hash-set nil nil false))
+(first (apply hash-set []))
+(inc (first (seq (apply hash-set [1 2]))))
+(subs (first (hash-set 1)) 0)
+(subs (first (apply hash-set [1])) 0)")]
+    (is (= ["string?" "2" "2" "nil?"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= #{:a :b} (apply hash-set [:a :a :b])))
+  (is (thrown? ClassCastException (subs (first (hash-set 1)) 0))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

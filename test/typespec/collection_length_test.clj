@@ -1067,6 +1067,19 @@
         (pr-str (:diagnostics r)))
     (is (= ["false" "false" "true" "true"] (mapv #(at r %) (range 2 6))))))
 
+(deftest run-checks-callbacks-only-when-an-element-is-present
+  (let [r (checked "(run! 42 [])
+(run! (fn [_ _] true) nil)
+(run! inc [1 2])
+(run! (fn [_] (throw (Exception.))) [1])
+(run! 42 [1])
+(run! inc 42)
+(run! inc)")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["nil?" "nil?" "nil?" "t/never"] (mapv #(at r %) (range 2 6))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

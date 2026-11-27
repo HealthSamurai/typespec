@@ -265,6 +265,16 @@
                 (#{:int :double} (:name ty)) nil
                 :else ty))))))))
 
+(declare condition-facts)
+
+(defn- disjunction-fact [file test args]
+  (let [branches (mapv #(condition-facts file %) args)]
+    (when (and (seq branches) (every? #(= 1 (bounded-count 2 %)) branches))
+      (let [facts (mapv first branches)
+            param (ffirst facts)]
+        (when (every? #(= param (first %)) facts)
+          [[param (apply t/union (map second facts)) test]])))))
+
 (defn- condition-facts [file test]
   (let [head (precondition-head file test)
         args (rest (:children test))
@@ -273,6 +283,7 @@
         class (when (and (= 'instance? head) b (nil? form)) (precondition-class file a))]
     (cond
       (= 'and head) (mapcat #(condition-facts file %) args)
+      (= 'or head) (disjunction-fact file test args)
       (and type (= :sym (:op a))) [[(:val a) type test]]
       (and class (= :sym (:op b))) [[(:val b) class test]]
       (and (= 'clojure.spec.alpha/valid? head) (= :kw (:op a)) (= :sym (:op b)) (empty? more))

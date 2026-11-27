@@ -155,6 +155,31 @@
     (is (= "text" (f "text")))
     (is (thrown? AssertionError (f 42)))))
 
+(deftest preconditions-infer-unions-only-with-a-fact-for-each-alternative
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn label [x] {:pre [(or (string? x) (keyword? x))]} (name x))
+(defn nil-or-positive [x] {:pre [(or (nil? x) (and (number? x) (pos? x)))]} x)
+(defn mixed [x y] {:pre [(or (string? x) (number? y))]} x)
+(defn opaque [x] {:pre [(or (string? x) (identity x))]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/label \"text\")
+(api/label :ok)
+(api/label 42)
+(api/nil-or-positive nil)
+(api/nil-or-positive 42)
+(api/nil-or-positive :wrong)
+(api/mixed :ok 42)
+(api/opaque 42)")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [f (fn [x] {:pre [(or (nil? x) (and (number? x) (pos? x)))]} x)]
+    (is (nil? (f nil)))
+    (is (= 42 (f 42)))
+    (is (thrown? AssertionError (f -1)))
+    (is (thrown? AssertionError (f :wrong)))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

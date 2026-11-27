@@ -2,6 +2,7 @@
   (:require [clojure.test :refer :all]
             [clojure.string :as str]
             [typespec.check :as check]
+            [typespec.main :as main]
             [typespec.parse :as parse]
             [typespec.externs-regression-test :refer [project]]))
 
@@ -120,6 +121,24 @@
     (is (= "example" (namespace named))))
   (is (thrown? ClassCastException (name 42)))
   (is (thrown? ClassCastException (namespace "plain"))))
+
+(deftest namespace-uses-known-keyword-and-symbol-qualification
+  (let [file (parse/parse-string "names.clj" "(ns names (:require [clojure.string :as str]))
+(namespace :space/key)
+(namespace 'space/symbol)
+(clojure.core/namespace :unqualified)
+(str/upper-case (namespace :space/key))
+(str/upper-case (namespace 'unqualified))
+(namespace true)
+(namespace)")
+        result (check/check-files [file] {})]
+    (is (= ["\"space\"" "\"space\"" "nil?"]
+           (mapv #(main/type-at result "names.clj" % 1) [2 3 4])))
+    (is (= [[6 "TSP2531"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))))
+  (is (= "space" (namespace 'space/symbol)))
+  (is (nil? (namespace :unqualified)))
+  (is (thrown? NullPointerException (str/upper-case (namespace :unqualified)))))
 
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))

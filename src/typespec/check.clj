@@ -3270,12 +3270,35 @@
 
 (defn- quoted-type [ctx node]
   (case (:op node)
-    :sym (t/prim :symbol)
+    :sym (t/lit (:val node))
     :list (quoted-data-type ctx node)
     t/unknown))
 
 (defmethod special 'quote [ctx node _]
   (quoted-type ctx (second (:children node))))
+
+(defn- core-unary-result [ctx node refine]
+  (let [head (first (:children node))
+        sym (:val head)
+        args (args-of node)
+        {:keys [type]} (read-var ctx sym head :call)
+        inputs (infer-call-arguments ctx node args (matching-arities type (count args)))
+        fallback (call-fn ctx node (str sym) type args inputs)]
+    (if (= 1 (count args))
+      (let [input (eff ctx (first inputs))]
+        (t/with-assumption
+         (apply t/union
+                (map #(if (= t/never %) t/never (or (refine %) fallback))
+                     (t/members (:env ctx) input)))
+         (t/assumption input)))
+      fallback)))
+
+(defmethod special 'namespace [ctx node _]
+  (core-unary-result
+   ctx node
+   (fn [member]
+     (when (and (= :lit (:t member)) (ident? (:val member)))
+       (if-some [value (namespace (:val member))] (t/lit value) t/nil-t)))))
 
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 

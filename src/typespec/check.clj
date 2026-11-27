@@ -8451,10 +8451,10 @@
                          (:tail declared) (bind-pattern ctx' rest (:tail declared))
                          (:rest declared) (bind-pattern ctx' rest (t/union {:t :coll :kind :seq :of (:rest declared)} t/nil-t))
                          :else (bind-pattern ctx' rest t/unknown))
-              ret-hint (env/hint-type file params)]
+              {ret-tag :tag ret-hint :type} (env/return-hint file nm params)]
           (when (and ret-hint (not (#{:unknown :any} (:t (:ret declared))))
                      (not (t/sub? env ret-hint (:ret declared))) (not (t/sub? env (:ret declared) ret-hint)))
-            (report! ctx (env/tag-node params) "TSP2322"
+            (report! ctx ret-tag "TSP2322"
                      (str "hint " (t/show ret-hint) " contradicts the signature: " (t/show (:ret declared)))))
           (let [facts (when (#{:sig :fdef} (:source v)) (seq (env/pre-facts file params body)))
                 forms (if facts

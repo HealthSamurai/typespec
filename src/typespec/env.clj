@@ -53,6 +53,15 @@
     (when-let [c (hint-class file tag)]
       (t/platform (t/class-type c) (str (:val tag))))))
 
+(defn return-hint [file name params]
+  (if-let [type (hint-type file params)]
+    {:tag (tag-node params) :type type}
+    (let [tag (tag-node name)]
+      ;; A primitive tag on the name does not define the arity's return.
+      (when-not (some-> tag :val str t/primitives)
+        (when-let [type (hint-type file name)]
+          {:tag tag :type type})))))
+
 (defn- function-arities [forms]
   (let [arity (fn [[params & body]] {:params params :body (vec body)})]
     (if (= :vector (:op (first forms)))
@@ -384,11 +393,7 @@
                    (cond-> {:params (mapv #(or (when (= :sym (:op %)) (get pre (:val %)))
                                                (pattern-type env file %))
                                           fixed)
-                            :ret (or (hint-type file params)
-                                     ;; a class hint on the name is a return hint too; a primitive one is a mistake
-                                     (when-not (some-> (tag-node (:name parts)) :val str t/primitives)
-                                       (hint-type file (:name parts)))
-                                     t/unknown)}
+                            :ret (or (:type (return-hint file (:name parts) params)) t/unknown)}
                      (= :map (:op rest)) (assoc :kwargs (pattern-type env file rest))
                      (and rest (not= :map (:op rest))) (assoc :rest t/unknown))))})
 

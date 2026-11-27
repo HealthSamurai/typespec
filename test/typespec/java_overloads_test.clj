@@ -27,6 +27,24 @@
         (pr-str (:diagnostics result)))
     (is (= "String" (main/type-at result "client.clj" 2 1)))))
 
+(deftest return-hints-on-defn-names-must-agree-with-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef label :args (s/cat) :ret int?)
+(defn ^String label [] 42)
+(s/fdef good :args (s/cat) :ret string?)
+(defn ^String good [] \"text\")
+(s/fdef per-arity :args (s/cat) :ret int?)
+(defn ^String per-arity ^long [] 42)
+(defn ^String declared {:t/sig '[:-> int?]} [] 42)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/label))
+(.length (a/good))
+(.length (a/label))")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 3 7 "TSP2322"] ["api.clj" 8 7 "TSP2322"] ["client.clj" 4 2 "TSP2339"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
 (deftest clojure-functions-adapt-to-java-interfaces-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef make-future :args (s/cat) :ret java.util.concurrent.CompletableFuture)

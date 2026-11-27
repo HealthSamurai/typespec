@@ -968,19 +968,24 @@
 
 (defn- resolve-regex [ctx form]
   (loop [ctx ctx form form]
-    (if (regex-op ctx form)
+    (cond
+      (regex-op ctx form)
       {:context ctx :form form}
-      (when (qualified-keyword? form)
-        (when-let [{:keys [spec-form spec-context]} (get-in ctx [:spec-definitions form])]
-          (if (or (contains? (:active-regex-specs ctx) form)
-                  (neg? (vswap! (:regex-expansion-budget ctx) dec)))
-            {:opaque? true}
-            (recur (assoc spec-context
-                          :fail (:fail ctx)
-                          :spec-definitions (:spec-definitions ctx)
-                          :regex-expansion-budget (:regex-expansion-budget ctx)
-                          :active-regex-specs (conj (:active-regex-specs ctx) form))
-                   spec-form)))))))
+
+      (and (seq? form) (= :s/with-gen (type-form-op ctx (first form))) (= 3 (count form)))
+      (recur ctx (second form))
+
+      (qualified-keyword? form)
+      (when-let [{:keys [spec-form spec-context]} (get-in ctx [:spec-definitions form])]
+        (if (or (contains? (:active-regex-specs ctx) form)
+                (neg? (vswap! (:regex-expansion-budget ctx) dec)))
+          {:opaque? true}
+          (recur (assoc spec-context
+                        :fail (:fail ctx)
+                        :spec-definitions (:spec-definitions ctx)
+                        :regex-expansion-budget (:regex-expansion-budget ctx)
+                        :active-regex-specs (conj (:active-regex-specs ctx) form))
+                 spec-form))))))
 
 (declare regex-branches)
 

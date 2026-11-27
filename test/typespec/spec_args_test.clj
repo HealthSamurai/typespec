@@ -665,3 +665,26 @@
 (sp/fdef malformed :args (sp/alt :missing) :ret any?)")]
     (is (= ["TSP9002" "TSP9002" "TSP9002"] (diagnostic-codes r))
         (pr-str (:diagnostics r)))))
+
+(deftest generating-a-regex-does-not-change-its-arity
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/with-gen (s/cat :label string? :count (s/? int?))
+                       #(throw (ex-info \"generator not invoked\" {}))))
+(defn render ([label] label) ([label n] (str label n)))
+(s/fdef format-data :args (s/cat :label string? :tail (s/with-gen (s/+ int?) identity)))
+(defn format-data [label & data] (str label (count data)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render \"a\")
+(a/render \"a\" 2)
+(a/render \"a\" \"2\")
+(a/render)
+(a/format-data \"a\" 1 2)
+(a/format-data \"a\" \"1\")
+(a/format-data \"a\")
+(apply a/format-data \"a\" [1 2])
+(apply a/format-data \"a\" [\"wrong\"])")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2554"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2554"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))

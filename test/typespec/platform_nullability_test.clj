@@ -69,6 +69,26 @@
            (mapv (juxt :file (comp :row :pos) :code :message) diagnostics))
         (pr-str diagnostics))))
 
+(deftest local-and-receiver-hints-preserve-known-nil
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef label :args (s/cat :flag boolean?) :ret (s/nilable java.lang.CharSequence))
+(defn label [flag] (when flag \"hello\"))")
+        client (parse/parse-string "client.clj"
+                 "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef local :args (s/cat :flag boolean?) :ret int?)
+(defn local [flag] (let [^String text (a/label flag)] (.length text)))
+(s/fdef receiver :args (s/cat :flag boolean?) :ret int?)
+(defn receiver [flag] (let [text (a/label flag)] (.length ^String text)))
+(s/fdef guarded :args (s/cat :flag boolean?) :ret int?)
+(defn guarded [flag]
+  (if-some [^String text (a/label flag)] (.length text) 0))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2531"] ["client.clj" 5 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (every? #(str/includes? (:message %) "a/label returns (s/nilable java.lang.CharSequence)")
+                diagnostics))))
+
 (deftest platform-values-in-maps-and-tuples-are-checked-across-namespaces
   (let [client "(api/consume {:parent (.getParentFile (java.io.File. \"file\"))})
 (api/consume-pair [1 (.getParentFile (java.io.File. \"file\"))])

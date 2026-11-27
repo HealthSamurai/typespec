@@ -1467,6 +1467,17 @@
                  (str "hint " (t/show h) " contradicts the " what ": " (t/show (dissoc actual :platform))))))
     h))
 
+(defn- hinted-value-type [env original hint]
+  (let [members (t/members env original)
+        nil-member (or (first (filter #(= :nil (:t %)) members))
+                       ;; An opaque Java return type can absorb nil in a union.
+                       (when (:null-return (meta original)) t/nil-t))]
+    (cond
+      (nil? nil-member) hint
+      (every? #(= :nil (:t %)) members) nil-member
+      :else (with-meta (t/union (dissoc hint :platform) nil-member)
+              (select-keys (meta original) [:null-return ::t/assumption])))))
+
 (defn- invalid-vector-pattern-input? [rest? member]
   (case (:t member)
     (:map :map-of) (not rest?)
@@ -1496,9 +1507,13 @@
                 ;; the compiler believes the hint; keep the inferred type only when it agrees and says more
                 use-hint? (and h (or (#{:unknown :any} (:t (t/resolve-t env ty)))
                                      (not (t/sub? env (t/remove-nil env (eff ctx ty)) h))))
+                value-type (if use-hint? (hinted-value-type env ty h) ty)
                 [c origin path] (if (and projection (not use-hint?)) (track-path ctx projection) [ctx])]
-            (cond-> (bind c (:val pattern) (if use-hint? h ty)
-                          :why (when-not use-hint? why) :hinted (boolean h) :compiler-class compiler-class)
+            (cond-> (bind c (:val pattern) value-type
+                          :why (when (or (not use-hint?)
+                                         (and why (t/nilable? (dissoc env :strict-nil) ty)))
+                                 why)
+                          :hinted (boolean h) :compiler-class compiler-class)
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
      :vector (let [members (t/members (:env ctx) ty)
@@ -3132,7 +3147,7 @@
     (eff ctx (if (and hinted
                       (or (#{:unknown :any} (:t actual))
                           (not (t/sub? env (t/remove-nil env actual) hinted))))
-               hinted actual))))
+               (hinted-value-type env actual hinted) actual))))
 
 (defn- check-nil-receiver! [ctx target ty]
   (when (t/nilable? (:env ctx) ty)
@@ -9050,16 +9065,7 @@
               (if callback-arity (infer-callback ctx node callback-arity) (infer* ctx node)))
          ty (if-let [h (and (not= :sym (:op node)) (env/hint-type (:file ctx) node))]
               (do (check-hint! ctx node ty "type of the expression")
-                  (let [members (t/members (:env ctx) ty)
-                        nil-member (or (first (filter #(= :nil (:t %)) members))
-                                       ;; A nullable Java method may have an opaque
-                                       ;; value type, which absorbs nil in a union.
-                                       (when (:null-return (meta ty)) t/nil-t))]
-                    (cond
-                      (nil? nil-member) h
-                      (every? #(= :nil (:t %)) members) nil-member
-                      :else (with-meta (t/union (dissoc h :platform) nil-member)
-                              (select-keys (meta ty) [:null-return ::t/assumption])))))
+                  (hinted-value-type (:env ctx) ty h))
               ty)
          ty (if-let [cast (find-d 't/cast)]
               (do (record-escape! ctx cast :cast)

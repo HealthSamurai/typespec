@@ -2493,13 +2493,15 @@
    'parse-boolean (partial parsed-string-member parse-boolean t/lit)
    'parse-uuid (partial parsed-string-member parse-uuid (constantly (t/prim :uuid)))})
 
-(defn- core-callback-refiner [ctx node]
+(defn- core-callback-head [ctx node supported]
   (when (= :sym (:op node))
     (let [head (t/core-name (:file ctx) (:val node))]
-      (when-let [refine (unary-callback-refiners head)]
-        (when (and (empty? (:directives node)) (not (env/tag-node node))
-                   (= (symbol "clojure.core" (name head)) (guard-symbol ctx node)))
-          refine)))))
+      (when (and (supported head) (empty? (:directives node)) (not (env/tag-node node))
+                 (= (symbol "clojure.core" (name head)) (guard-symbol ctx node)))
+        head))))
+
+(defn- core-callback-refiner [ctx node]
+  (some-> (core-callback-head ctx node unary-callback-refiners) unary-callback-refiners))
 
 (defn apply-fn-node [ctx fnode arg-types & [require-match?]]
   (case (:op fnode)
@@ -4680,6 +4682,17 @@
                         :else (or (:of vector) t/unknown)))]
           (t/with-assumption (apply t/union parts) (t/assumption index)))))))
 
+(defn- constructed-vector [ctx types]
+  (if (some #{t/never} types)
+    t/never
+    (let [items (mapv #(dissoc % :fresh) types)]
+      (t/with-assumption
+       (t/tuple items (literal-element-type ctx items))
+       (some t/assumption types)))))
+
+(defmethod special 'vector [ctx node _]
+  (constructed-vector ctx (mapv #(infer ctx %) (args-of node))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4694,6 +4707,7 @@
             spreads (spread-tail-types ctx tail tail-members)
             known-spreads (finite-spreads spreads tail-members)
             exact? (some? known-spreads)
+            constructor (when exact? (core-callback-head ctx f #{'vector}))
             callback? (and exact? (callback-node? ctx f))
             spread-context (fn [items] (direct-callback-context (into prefix-types items) false))
             ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
@@ -4723,6 +4737,7 @@
                             members (t/members (:env ctx) ty)]
                         (cond
                           (= :never (:t ty)) t/never
+                          (= 'vector constructor) (constructed-vector ctx types)
                           (or (= :all (:t ty)) (seq (:arities ty)))
                           (call-fn ctx node label ty nodes types)
                           (and (= :lit (:t ty)) (ident? (:val ty)))

@@ -187,6 +187,20 @@
   (is (= "ext" (apply subs (lazy-seq ["text" 1]))))
   (is (thrown? ClassCastException (apply subs (lazy-seq ["text" "wrong"])))))
 
+(deftest vector-construction-preserves-positions-directly-and-through-apply
+  (let [r (checked "(first (vector \"text\" 2))
+(second (apply vector \"text\" [2]))
+(first (apply clojure.core/vector []))
+(apply subs (apply vector [\"text\" 1]))
+(apply subs (vector \"text\" \"wrong\"))
+(nth (apply vector [\"text\"]) 1)
+(let [vector (fn [& _] :local)] (apply vector []))")]
+    (is (= ["\"text\"" "2" "nil?" "string?" ":local"] (mapv #(type-at r %) [2 3 4 5 8])))
+    (is (= [[6 "TSP2345"] [7 "TSP330-02"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= ["text" 2] (apply vector "text" [2])))
+  (is (thrown? ClassCastException (apply subs (vector "text" "wrong")))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

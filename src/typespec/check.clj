@@ -645,16 +645,22 @@
    'boolean? [:boolean boolean?]})
 
 (defn- truth-part [env ty truthy?]
-  (if (and truthy?
-           (not-any? #(or (= % (t/lit false)) (= % (t/prim :boolean))
-                          (#{:unknown :any} (:t %))) (t/members env ty)))
-    (t/remove-nil env ty)
-    (apply t/union
-         (for [m (t/members env ty)
-               :let [falsy? (or (= :nil (:t m)) (= m (t/lit false)))
-                     boolean? (= m (t/prim :boolean))]
-               :when (or (#{:unknown :any} (:t m)) boolean? (= truthy? (not falsy?)))]
-           (if boolean? (t/lit truthy?) m)))))
+  (let [members (t/members env ty)
+        opaque? #(#{:unknown :any :var :rigid :ivar} (:t %))
+        boolean? #(and (= :prim (:t %)) (= :boolean (:name %)))
+        false-literal? #(and (= :lit (:t %)) (false? (:val %)))]
+    (if (and truthy?
+             (not-any? #(or (false-literal? %) (boolean? %) (opaque? %) (= :some (:t %))) members))
+      (t/remove-nil env ty)
+      (apply t/union
+             (for [m members
+                   :let [falsy? (or (= :nil (:t m)) (false-literal? m))]
+                   :when (or (opaque? m) (boolean? m) (= :some (:t m))
+                             (= truthy? (not falsy?)))]
+               (cond
+                 (boolean? m) (t/lit truthy?)
+                 (and (= :some (:t m)) (not truthy?)) (t/lit false)
+                 :else m))))))
 
 (defn- nil-part [env ty]
   (if (some t/may-be-nil-leaf? (t/members env ty)) t/nil-t t/never))
@@ -6186,7 +6192,38 @@
              (length/with-bounds (coll-of :seq (if (= 0 upper) t/never (member-element member)))
                                  lower upper))))))))
 
-(doseq [h '[group-by some every? not-any? run! max-key min-key]]
+(defn- check-collection-callback [ctx node head finish]
+  (let [[f source :as args] (args-of node)]
+    (if (not= 2 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" (str head " expects two arguments"))
+          t/unknown)
+      (let [ty (eff ctx (infer ctx source))]
+        (cond
+          (= t/never ty) (do (infer ctx f) t/never)
+          (report-invalid-sequence-args! ctx head [source] [ty]) (do (infer ctx f) t/unknown)
+          :else
+          (let [normalized (apply t/union
+                                  (map #(or (map-entry-sequence %) %) (t/members (:env ctx) ty)))
+                {:keys [upper element] :as shape} (sequence-summary ctx normalized)]
+            (if (= 0 upper)
+              (if (= t/never (infer ctx f)) t/never
+                  (t/with-assumption (finish (assoc shape :ret t/never)) (t/assumption ty)))
+              (let [[ret yes no] (apply-predicate ctx f element true)
+                    result (finish (assoc shape :ret (eff ctx ret) :yes yes :no no))]
+                (t/with-assumption result (or (t/assumption ty) (t/assumption ret)))))))))))
+
+(defn- some-result [env {:keys [lower ret yes no]}]
+  (let [value (if (= t/never yes) t/never (truth-part env ret true))]
+    (if (and (pos? lower)
+             (or (= t/never no) (= t/never (truth-part env ret false))))
+      value
+      (t/union value t/nil-t))))
+
+(defmethod special 'some [ctx node _]
+  (check-collection-callback ctx node 'some (partial some-result (:env ctx))))
+
+(doseq [h '[group-by every? not-any? run! max-key min-key]]
   (defmethod special h [ctx node _]
     (let [[f & more] (args-of node)
           c (last more)]
@@ -6196,7 +6233,6 @@
               [ret] (apply-predicate ctx f el false)]
           (case h
             (every? not-any?) (t/prim :boolean)
-            some (t/union (t/remove-nil (:env ctx) ret) t/nil-t)
             run! t/nil-t
             (max-key min-key) el
             group-by (if (= t/never el)

@@ -59,13 +59,14 @@
                (main/type-at tree "upstream/src/pg.clj" 137 67))
       (expect! "whole-tree trust counters" {:cast 0 :any 0 :ignore 0} (:trust coverage))
       (expect! "whole-tree diagnostic counts"
-               {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 1 [:error "TSP330-02"] 1
+               {[:error "TSP2322"] 1 [:error "TSP2345"] 1 [:error "TSP2531"] 2 [:error "TSP330-02"] 1
                 [:warning "TSP210-01"] 79 [:warning "TSP7020"] 10
                 [:warning "TSP7023"] 1 [:warning "TSP7031"] 3}
                (:codes coverage))
       (expect! "whole-tree error locations"
                (frequencies (conj (vec (filter #(= :error (first %)) expected))
                                   [:error "TSP2531" "upstream/src/pg/docker.clj" 72 55]
+                                  [:error "TSP2531" "upstream/src/pg/repo.clj" 220 23]
                                   [:error "TSP330-02" "upstream/src/dsql/pg.clj" 116 8]))
                (frequencies (map location (filter #(= :error (:severity %)) (:diagnostics tree)))))
       (expect! "checked conditional step in mk-table-constraint" true
@@ -102,7 +103,7 @@
       (expect! "conj counts the closing fragment in pg/coalesce"
                "(s/coll-of t/unknown :kind vector? :min-count 1)"
                (main/type-at tree "upstream/src/dsql/pg.clj" 1038 7))
-      (println "PASS: all 9 pinned pg production sources (351 forms, 4 expected errors, 93 warnings).")
+      (println "PASS: all 9 pinned pg production sources (351 forms, 5 expected errors, 93 warnings).")
       (let [edit (fn [path source]
                    (if (= path "pg/docker.clj")
                      (str/replace-first source "[socket (java.net.ServerSocket. 0)]"

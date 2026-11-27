@@ -1006,6 +1006,26 @@
     (is (= [":name" "\"Ada\"" "nil?" "nil?" "string?" "\"Ada\""]
            (mapv #(main/type-at r "client.clj" % 1) (range 2 8))))))
 
+(deftest some-returns-the-first-truthy-result
+  (let [r (checked "(some (fn [_] \"found\") [1 2])
+(some (fn [_] false) [1])
+(some 42 [])
+(some string? [\"known\"])
+(some string? [1])
+(str/upper-case (some (fn [_] \"found\") [1]))
+(some 42 [1])
+(some inc 42)
+(some string?)
+(s/fdef non-nil :args (s/cat :x any?) :ret some?)
+(defn non-nil [_] false)
+(some non-nil [1])")]
+    (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"found\"" "nil?" "nil?" "true" "nil?" "string?"]
+           (mapv #(at r %) (range 2 8))))
+    (is (= "(s/nilable some?)" (at r 13)))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

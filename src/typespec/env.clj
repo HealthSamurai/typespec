@@ -275,6 +275,15 @@
         (when (every? #(= param (first %)) facts)
           [[param (apply t/union (map second facts)) test]])))))
 
+(defn- negated-nil-fact [file test predicate]
+  (let [[_ arg & more] (:children predicate)
+        complement (case (precondition-head file predicate)
+                     nil? t/some-t
+                     some? t/nil-t
+                     nil)]
+    (when (and complement (= :sym (:op arg)) (empty? more))
+      [[(:val arg) complement test]])))
+
 (defn- condition-facts [file test]
   (let [head (precondition-head file test)
         args (rest (:children test))
@@ -284,6 +293,7 @@
     (cond
       (= 'and head) (mapcat #(condition-facts file %) args)
       (= 'or head) (disjunction-fact file test args)
+      (and (= 'not head) a (nil? b)) (negated-nil-fact file test a)
       (and type (= :sym (:op a))) [[(:val a) type test]]
       (and class (= :sym (:op b))) [[(:val b) class test]]
       (and (= 'clojure.spec.alpha/valid? head) (= :kw (:op a)) (= :sym (:op b)) (empty? more))

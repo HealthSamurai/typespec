@@ -118,6 +118,30 @@
     (is (false? (present false)))
     (is (thrown? AssertionError (present nil)))))
 
+(deftest preconditions-complement-direct-nil-tests
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn present [x] {:pre [(not (nil? x))]} x)
+(defn absent [x] {:pre [(not (some? x))]} x)
+(defn shadowed [nil? x] {:pre [(not (nil? x))]} x)
+(defn compound [x] {:pre [(not (and (nil? x) false))]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/present false)
+(api/present nil)
+(api/absent nil)
+(api/absent false)
+(api/shadowed (constantly false) nil)
+(api/compound nil)")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [present (fn [x] {:pre [(not (nil? x))]} x)
+        absent (fn [x] {:pre [(not (some? x))]} x)]
+    (is (false? (present false)))
+    (is (nil? (absent nil)))
+    (is (thrown? AssertionError (present nil)))
+    (is (thrown? AssertionError (absent false)))))
+
 (deftest preconditions-infer-resolved-instance-contracts
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.io File]))
 (defn file-name [x] {:pre [(instance? File x)]} (.getName x))

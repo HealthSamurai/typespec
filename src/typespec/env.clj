@@ -265,23 +265,24 @@
                 (#{:int :double} (:name ty)) nil
                 :else ty))))))))
 
+(defn- condition-facts [file test]
+  (let [head (precondition-head file test)
+        args (rest (:children test))
+        [a b form & more] args
+        type (when (nil? b) (precondition-predicate-type head))
+        class (when (and (= 'instance? head) b (nil? form)) (precondition-class file a))]
+    (cond
+      (= 'and head) (mapcat #(condition-facts file %) args)
+      (and type (= :sym (:op a))) [[(:val a) type test]]
+      (and class (= :sym (:op b))) [[(:val b) class test]]
+      (and (= 'clojure.spec.alpha/valid? head) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
+      [[(:val b) (t/ref-t (:val a)) test]])))
+
 (defn- pre-facts
   "Facts with their source conditions from the supported :pre forms."
   [file params body]
   (let [file (assoc file :locals (set (parameter-bindings params)))]
-    (keep (fn [test]
-            (let [h (precondition-head file test)
-                  [a b form & more] (rest (:children test))
-                  type (when (nil? b) (precondition-predicate-type h))
-                  class (when (and (= 'instance? h) b (nil? form)) (precondition-class file a))]
-              (cond
-                (and type (= :sym (:op a)))
-                [(:val a) type test]
-                (and class (= :sym (:op b)))
-                [(:val b) class test]
-                (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
-                [(:val b) (t/ref-t (:val a)) test])))
-          (pre-conditions body))))
+    (mapcat #(condition-facts file %) (pre-conditions body))))
 
 (defn- precondition-domain [ty]
   (case (:t ty)

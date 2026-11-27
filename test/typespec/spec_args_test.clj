@@ -136,6 +136,25 @@
     (is (= "text" (f (java.io.File. "text"))))
     (is (thrown? AssertionError (f "text")))))
 
+(deftest preconditions-extract-facts-from-conjunctions
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn text [x] {:pre [(and (string? x) (seq x))]} x)
+(defn index [x] {:pre [(and (number? x) (and (int? x)))]} x)
+(defn shadowed [and x] {:pre [(and (string? x))]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/text \"text\")
+(api/text 42)
+(api/index 0)
+(api/index 1.5)
+(api/shadowed not 42)")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [f (fn [x] {:pre [(and (string? x) (seq x))]} x)]
+    (is (= "text" (f "text")))
+    (is (thrown? AssertionError (f 42)))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

@@ -286,6 +286,24 @@
   (is (= 42 (apply val [(find {:amount 42} :amount)])))
   (is (thrown? ClassCastException (apply val [[:amount 42]]))))
 
+(deftest applied-unary-builtins-preserve-known-results
+  (let [api (parse/parse-string "labels.clj" "(ns labels (:require [clojure.spec.alpha :as s]))
+(s/fdef label :args (s/cat) :ret qualified-keyword?)
+(defn label [] :scope/label)")
+        client (parse/parse-string "client.clj" "(ns client (:require [labels :as api] [clojure.string :as str]))
+(str/upper-case (apply namespace [(api/label)]))
+(str/upper-case (apply namespace [:label]))
+(apply parse-long [\"42\"])
+(inc (apply parse-long [\"bad\"]))
+(apply parse-boolean [\"false\"])
+(apply parse-long [])")
+        r (check/check-files [api client] {})]
+    (is (= [[3 "TSP2531"] [5 "TSP2531"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r))))
+    (is (= ["42" "false"] (mapv #(main/type-at r "client.clj" % 1) [4 6]))))
+  (is (= 42 (apply parse-long ["42"])))
+  (is (nil? (apply namespace [:label]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

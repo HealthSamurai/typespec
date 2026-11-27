@@ -463,7 +463,7 @@
     (when (and (= :kw (:op k)) body)
       [(:val k) {:file (:file file) :pos (:pos k)
                  :spec-form (parse/node->data body)
-                 :spec-context (dissoc (type-ctx file nil) :fail)}])))
+                 :spec-context (assoc (dissoc (type-ctx file nil) :fail) :spec? true)}])))
 
 (defn- collect-file [acc file regex-specs diags]
   (reduce
@@ -485,7 +485,7 @@
          (= 'clojure.spec.alpha/fdef h)
          (let [[_ nm & opts] (:children form)
                {:keys [args ret]} (apply hash-map (parse/node->data {:op :list :children opts}))
-               ctx (assoc (type-ctx file (opaque form)) :regex-specs regex-specs)
+               ctx (assoc (type-ctx file (opaque form)) :regex-specs regex-specs :spec? true)
                r (if ret (t/parse-type ctx ret) t/unknown)
                ars (t/spec-args->arities ctx args r)]
            (if (= :sym (:op nm))

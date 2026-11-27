@@ -1,7 +1,6 @@
 (ns typespec.spec-conform
   "Static output types of tagged Spec conformation."
   (:require [clojure.string :as str]
-            [typespec.env :as env]
             [typespec.types :as t]))
 
 (def invalid-key :clojure.spec.alpha/invalid)
@@ -25,13 +24,10 @@
                       t/unknown))
 
                   (symbol? form)
-                  (let [sym (env/resolve-sym context form)]
-                    (if (and (str/ends-with? (name sym) "?")
-                             (or (= "clojure.core" (namespace sym))
-                                 (and (simple-symbol? sym)
-                                      (not (contains? (:locals context) sym))
-                                      (not (contains? (get-in env [:ns-defs (:ns context)]) sym)))))
-                      (t/parse-type (assoc context :fail (constantly nil)) sym)
+                  (let [context (assoc context :defined-symbols (get-in env [:ns-defs (:ns context)]))
+                        predicate (t/core-name context form)]
+                    (if (and predicate (str/ends-with? (name predicate) "?"))
+                      (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
                       t/unknown))
 
                   (set? form) (t/parse-type (assoc context :fail (constantly nil)) form)

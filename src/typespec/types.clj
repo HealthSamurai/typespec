@@ -653,14 +653,17 @@
              (not (contains? (:defined-symbols ctx) head)))
     (let [sym (get (:refers ctx) head head)
           n (namespace sym)
-          {:keys [only exclude rename] :as refers} (:refer-clojure ctx)]
+          {:keys [only exclude rename] :as refers} (:refer-clojure ctx)
+          original (when-not n
+                     (or (some (fn [[from to]] (when (= sym to) from)) rename)
+                         (when-not (contains? rename sym) sym)))]
       (cond
         (and n (= 'clojure.core (get (:aliases ctx) (symbol n) (symbol n))))
         (symbol (name sym))
 
-        (and (nil? n) (not (some #{sym} exclude)) (not (contains? rename sym))
-             (or (not (contains? refers :only)) (some #{sym} only)))
-        sym))))
+        (and original (not (some #{original} exclude))
+             (or (not (contains? refers :only)) (some #{original} only)))
+        original))))
 
 (defn- literal-set-member? [value]
   (or (nil? value) (string? value) (keyword? value) (number? value) (boolean? value)))
@@ -683,7 +686,7 @@
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
                    (contains? '#{list? vector? map? set? string? keyword? symbol? boolean? nil? any?} op))
-          (parse-type (dissoc ctx :type-vars) op))))))
+          (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 
 (defn predicate-spec-type
   "Type of a recognized unary Spec predicate, or nil for an opaque expression."
@@ -904,17 +907,20 @@
     (cond
       (keyword? form) (if (namespace form) (ref-t form) (fail))
       (symbol? form) (let [nm (if (= "clojure.core" (namespace form)) (symbol (name form)) form)
-                           qualification (qualification-target (core-name ctx form))]
+                           core (core-name ctx form)
+                           predicate (if (:spec? ctx) core nm)
+                           qualification (qualification-target core)]
                        (cond (get (:type-vars ctx) nm) (get (:type-vars ctx) nm)
                              qualification qualification
-                             (pred-prims nm) (cond-> (prim (pred-prims nm))
-                                               (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'sequential? 'fn?} nm)
-                                               (with-meta {::unchecked-contract true}))
-                             (= 'any? nm) any
-                             (= 'some? nm) some-t
-                             (= 'nil? nm) nil-t
-                             (= 'list? nm) (class-type "clojure.lang.IPersistentList")
-                             (#{'true? 'false?} nm) (with-meta (prim :boolean) {::unchecked-contract true})
+                             (pred-prims predicate)
+                             (cond-> (prim (pred-prims predicate))
+                               (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'sequential? 'fn?} predicate)
+                               (with-meta {::unchecked-contract true}))
+                             (= 'any? predicate) any
+                             (= 'some? predicate) some-t
+                             (= 'nil? predicate) nil-t
+                             (= 'list? predicate) (class-type "clojure.lang.IPersistentList")
+                             (#{'true? 'false?} predicate) (with-meta (prim :boolean) {::unchecked-contract true})
                              (= 't/unknown nm) unknown
                              (= 't/never nm) never
                              (:inside-all ctx) (fail)

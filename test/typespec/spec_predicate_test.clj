@@ -84,6 +84,42 @@
            (mapv (juxt :file (comp :row :pos) :code) issues)) (pr-str issues))
     (is (= #{:ok} (into #{} (map :val) (t/members (:env result) (t/ref-t :schema/qualified)))))))
 
+(deftest spec-predicates-resolve-through-namespace-mappings
+  (let [custom (parse/parse-string "custom.clj"
+                                  "(ns custom (:refer-clojure :exclude [string?]))
+(defn string? [x] (keyword? x))")
+        api (parse/parse-string "api.clj"
+                               "(ns api (:refer-clojure :rename {string? text?})
+  (:require [clojure.spec.alpha :as sp] [custom :refer [string?]]))
+(sp/def ::category string?)
+(sp/def ::title text?)
+(sp/def ::summary #(text? %))
+(sp/def ::entry (sp/keys :req-un [::title]))
+(sp/fdef category :args (sp/cat :x ::category) :ret any?)
+(sp/fdef entry :args (sp/cat :x ::entry :summary ::summary) :ret any?)
+(defn category [x] x)
+(defn entry [x summary] x)
+(defn explicit {:t/sig '[string? :-> string?]} [x] x)
+(sp/def ::tagged (sp/or :text text? :other string?))")
+        client (parse/parse-string "client.clj"
+                                  "(ns client (:require [api :as a]))
+(a/category :valid)
+(a/entry {:title \"valid\"} \"summary\")
+(a/entry {:title 42} \"summary\")
+(a/entry {:title \"valid\"} 42)
+(a/explicit \"valid\")
+(a/explicit :wrong)")
+        {:keys [diagnostics env]} (check/check-files [client api custom] {})
+        output (conform/tagged-result env nil :api/tagged)
+        payloads (into {} (keep (fn [part]
+                                 (when-let [[tag payload] (:items part)]
+                                   [(:val tag) payload]))) (t/members env output))]
+    (is (= [["api.clj" 3 "TSP9002"] ["api.clj" 12 "TSP9002"]
+            ["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= {:text (t/prim :string) :other t/unknown} payloads))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

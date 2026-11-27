@@ -6826,6 +6826,31 @@
        {:t :map-of :k (widen ret)
         :v (length/with-bounds (coll-of :vector element) 1 upper)}))))
 
+(defmethod special 'frequencies [ctx node _]
+  (let [[coll :as args] (args-of node)]
+    (if (not= 1 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "frequencies expects one argument")
+          t/unknown)
+      (let [source (eff ctx (infer ctx coll))]
+        (if (report-invalid-sequence-args! ctx 'frequencies [coll] [source])
+          t/unknown
+          (t/with-assumption
+           (apply t/union
+                  (for [member (t/members (:env ctx) source)
+                        :let [member (or (map-entry-sequence member) member)
+                              [lo hi] (sequence-member-bounds member)
+                              items (:items member)]]
+                    (cond
+                      (= t/never member) t/never
+                      (= 0 hi) empty-map-shape
+                      (and items (every? literal-map-key-type? items))
+                      (reduce-kv (fn [shape k n] (assoc-map-key shape k (t/lit n)))
+                                 empty-map-shape (frequencies (map :val items)))
+                      :else (length/with-bounds {:t :map-of :k (member-element member) :v (t/prim :int)}
+                                               (min 1 lo) hi))))
+           (t/assumption source)))))))
+
 (defn- check-key-extremum [ctx node head]
   (let [[f & values] (args-of node)
         candidates (mapv #(infer ctx %) values)]

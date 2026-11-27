@@ -129,6 +129,22 @@
   (is (nil? (not-empty [])))
   (is (thrown? IllegalArgumentException (not-empty true))))
 
+(deftest frequencies-types-known-counts-and-generic-map-keys
+  (let [r (checked "(get (frequencies [:a :a :b]) :a)
+(get (frequencies (list \"a\" \"a\")) \"a\")
+(get (frequencies [:a :a :b]) :missing :none)
+(get (frequencies nil) :missing 0)
+(s/fdef tally :args (s/cat :xs (s/coll-of string?)) :ret (s/map-of string? int?))
+(defn tally [xs] (frequencies xs))
+(subs (get (frequencies [:a]) :a) 0)
+(frequencies 42)
+(frequencies [:a] :extra)")]
+    (is (= ["2" "2" ":none" "0"] (mapv #(at r %) (range 2 6))))
+    (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= {:a 2 :b 1} (frequencies [:a :a :b])))
+  (is (thrown? ClassCastException (subs (:a (frequencies [:a])) 0))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

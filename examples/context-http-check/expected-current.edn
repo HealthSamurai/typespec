@@ -340,9 +340,9 @@
    {:row 31, :col 22, :end-row 31, :end-col 28}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (t/or string? keyword? symbol?) (unknown)"
+   "compatibility not checked: t/unknown to (t/or string? keyword? symbol? clojure.lang.Var) (unknown)"
    #{:unknown}
-   "1cd393b452c15c55cee5d5c5cc8b0200"]
+   "497e4dcfd83e56362f9695f3f0372135"]
   ["src/uui.clj"
    {:row 98, :col 36, :end-row 98, :end-col 44}
    :warning

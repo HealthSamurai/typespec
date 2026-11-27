@@ -307,6 +307,29 @@
   (is (= "" (namespace (keyword "" "label"))))
   (is (thrown? NullPointerException (keyword "label" nil))))
 
+(deftest symbol-construction-retains-names-and-supports-vars
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef make-name :args (s/cat :scope string? :text string?) :ret qualified-symbol?)
+(defn make-name [scope text] (symbol scope text))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.string :as str]))
+(namespace (symbol :space/local))
+(name (symbol \"space/local\"))
+(namespace (symbol nil \"space/local\"))
+(namespace (symbol #'api/make-name))
+(str/upper-case (namespace (api/make-name \"scope\" \"name\")))
+(str/upper-case (namespace (symbol nil \"plain\")))
+(symbol 42)
+(symbol)")
+        result (check/check-files [api client] {})]
+    (is (= ["\"space\"" "\"local\"" "nil?" "string?"]
+           (mapv #(main/type-at result "client.clj" % 1) (range 2 6))))
+    (is (= [[7 "TSP2531"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result))))
+  (is (= 'clojure.core/inc (symbol #'inc)))
+  (is (nil? (namespace (symbol nil "space/local"))))
+  (is (thrown? IllegalArgumentException (symbol 42))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

@@ -3395,6 +3395,18 @@
                  t/nil-t)
          nil)))))
 
+(defmethod special 'symbol [ctx node _]
+  (named-constructor-result
+   ctx node :symbol symbol
+   (fn [member]
+     (let [value (:val member)]
+       (cond
+         (and (= :lit (:t member)) (or (string? value) (ident? value))) (t/lit (symbol value))
+         (and (= :prim (:t member)) (#{:keyword :symbol} (:name member)))
+         (qualified-name-type :symbol (t/name-qualification member))
+         (and (= :class (:t member)) (= "clojure.lang.Var" (:name member)))
+         (qualified-name-type :symbol true))))))
+
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
 (defmethod special 'time [ctx node _]

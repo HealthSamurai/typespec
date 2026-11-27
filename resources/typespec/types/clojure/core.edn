@@ -36,7 +36,8 @@
  clojure.core/keyword    ([(t/or string? keyword? symbol?) :-> keyword?]
                           [any? :-> (s/nilable keyword?)]
                           [(s/nilable string?) string? :-> keyword?])
- clojure.core/symbol     ([(t/or string? keyword? symbol?) :-> symbol?] [(s/nilable string?) string? :-> symbol?])
+ clojure.core/symbol     ([(t/or string? keyword? symbol? clojure.lang.Var) :-> symbol?]
+                          [(s/nilable string?) string? :-> symbol?])
  clojure.core/parse-long [string? :-> (s/nilable int?)]
  clojure.core/parse-double [string? :-> (s/nilable double?)]
  clojure.core/parse-boolean [string? :-> (s/nilable boolean?)]

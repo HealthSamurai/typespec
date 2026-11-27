@@ -658,6 +658,24 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest argument-only-spec-keeps-fixed-positions-in-variadic-destructuring
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef choose :args (s/cat :label string? :amount (s/? int?)))
+(defn choose [label & [amount]] (or amount label))
+(s/fdef override :args (s/cat :label string? :amount (s/? int?)))
+(defn override ([label] 7) ([label & [amount]] (or amount label)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/choose \"valid\"))
+(inc (a/choose \"valid\" 2))
+(inc (a/choose \"invalid\"))
+(str/upper-case (a/choose \"invalid\" 2))
+(inc (a/override \"valid\"))
+(str/upper-case (a/override \"invalid\"))")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest collection-spec-options-keep-checking-the-project
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

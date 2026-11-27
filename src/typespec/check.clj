@@ -2135,17 +2135,24 @@
                                (let [{:keys [fixed rest]} (env/split-params params)]
                                  [[(count fixed) (boolean rest)] body])))
                      (get-in entry [:parts :arities]))
-        fixed (keep (fn [[n variadic?]] (when-not variadic? n)) (keys bodies))]
+        fixed (keep (fn [[n variadic?]] (when-not variadic? n)) (keys bodies))
+        [variadic-prefix variadic-body] (some (fn [[[n variadic?] body]] (when variadic? [n body])) bodies)]
     (mapv (fn [{:keys [params rest kwargs] :as arity}]
-            (when-not (or kwargs (and rest (some #(t/arity-fits? arity %) fixed)))
-              (get bodies [(count params) (boolean rest)])))
+            (when-not kwargs
+              (let [n (count params)]
+                (if rest
+                  (when (and (= n variadic-prefix) (not-any? #(t/arity-fits? arity %) fixed)) variadic-body)
+                  (or (get bodies [n false]) (when (and variadic-prefix (<= variadic-prefix n)) variadic-body))))))
           arities)))
 
-(defn- spec-inference-tail [{:keys [rest rest-min]}]
-  (when rest
+(defn- spec-inference-tail [prefix {:keys [params rest rest-min]}]
+  (if rest
     (let [minimum (or rest-min 0)
           tail {:t :coll :kind :seq :of rest :min-count (max 1 minimum)}]
-      (if (zero? minimum) (t/union t/nil-t tail) tail))))
+      (if (zero? minimum) (t/union t/nil-t tail) tail))
+    (if (= prefix (count params))
+      t/nil-t
+      (assoc (t/tuple (subvec params prefix)) :kind :seq))))
 
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
@@ -2179,7 +2186,7 @@
                                       c (reduce (fn [c [p ty]] (bind-pattern c p ty)) fctx (map vector fixed (:params a)))
                                       c (if rest
                                           (bind-pattern c rest (or (:kwargs a)
-                                                                   (when spec-bodies (spec-inference-tail a))
+                                                                   (when spec-bodies (spec-inference-tail (count fixed) a))
                                                                    t/unknown))
                                           c)
                                       a (if (and infer-return? (= :unknown (:t (:ret a))))

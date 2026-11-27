@@ -74,6 +74,27 @@
         (pr-str diagnostics))
     (is (nil? (conform/tagged-result env nil :domain/changed)))))
 
+(deftest generator-wrappers-do-not-change-conformed-tags
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/with-gen (s/or :word string? :count int?) #(throw (ex-info \"generator not invoked\" {}))))")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s]
+ [clojure.string :as str] [domain :as d]))
+(defn show [x]
+  (let [entry (s/conform ::d/payload x)]
+    (when-not (s/invalid? entry)
+      (let [[tag value] entry]
+        (case tag :word (str/upper-case value) :count (str (inc value)))))))
+(defn bad [x]
+  (let [entry (s/conform (s/with-gen (s/or :word string? :count int?) identity) x)]
+    (when-not (s/invalid? entry)
+      (let [[tag value] entry]
+        (case tag :word (inc value) :count (inc value))))))")
+        r (check/check-files [client domain] {})]
+    (is (= [["client.clj" 12 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (str/includes? (main/type-at r "client.clj" 4 16) ":clojure.spec.alpha/invalid"))))
+
 (deftest checks-payloads-in-case-branches-and-keeps-scope
   (let [r (checked "(sp/def ::payload (sp/or :text string? :amount int?))
 (defn render [x]

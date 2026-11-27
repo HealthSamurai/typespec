@@ -3416,7 +3416,8 @@
   (let [[spec value :as args] (args-of node)]
     (if (= 2 (count args))
       (let [form (when (or (and (= :kw (:op spec)) (literal-node? spec))
-                           (#{'clojure.spec.alpha/or 'clojure.spec.alpha/spec 'clojure.spec.alpha/and}
+                           (#{'clojure.spec.alpha/or 'clojure.spec.alpha/spec
+                              'clojure.spec.alpha/and 'clojure.spec.alpha/with-gen}
                             (builtin-head ctx spec)))
                    (parse/node->data spec))
             result (when form

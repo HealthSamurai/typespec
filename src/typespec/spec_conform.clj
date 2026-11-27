@@ -43,6 +43,7 @@
                                            assoc ::tagged true)
                                 t/unknown))
                       :s/spec (child (first args))
+                      :s/with-gen (if (= 2 (count args)) (child (first args)) t/unknown)
                       :s/and (child (last args))
                       (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
                       :s/nilable (t/union t/nil-t (child (first args)))

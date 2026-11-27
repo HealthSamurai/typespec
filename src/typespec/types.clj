@@ -887,9 +887,21 @@
           or (bounded-branches (mapcat identity branches))
           nil)))))
 
-(defn- parse-keys [args]
-  (let [{:keys [req opt req-un opt-un]} (apply hash-map args)
-        short-key (comp keyword name)
+(defn spec-option-map
+  "Reads keyword argument pairs with an optional trailing map."
+  [options]
+  (if (even? (count options))
+    (apply hash-map options)
+    (when (map? (last options))
+      (into (apply hash-map (butlast options)) (last options)))))
+
+(defn- spec-keys-options [args]
+  (when-let [{:keys [req opt req-un opt-un] :as options} (spec-option-map args)]
+    (when (every? #(or (nil? %) (sequential? %)) [req opt req-un opt-un])
+      options)))
+
+(defn- parse-keys [{:keys [req opt req-un opt-un]}]
+  (let [short-key (comp keyword name)
         un (fn [ks] (map (fn [k] [(short-key k) (ref-t k)]) ks))
         q (fn [ks] (map (fn [k] [k (ref-t k)]) ks))
         plain #(filter keyword? %)
@@ -1003,8 +1015,8 @@
                ;; They can reject a match without enlarging the argument shape.
                (run! (:fail ctx) (rest operands))
                branches))
-      :s/keys* (when (and (even? (count operands)) (every? keyword? (take-nth 2 operands)))
-                 [(assoc empty-branch :kwargs (parse-keys operands) :keyword-regex? true)]))))
+      :s/keys* (when-let [options (spec-keys-options operands)]
+                 [(assoc empty-branch :kwargs (parse-keys options) :keyword-regex? true)]))))
 
 (defn- regex-branches [ctx form]
   (if-let [{source :context regex :form} (resolve-regex ctx form)]
@@ -1018,14 +1030,6 @@
       (if-let [branches (when regex (regex-form-branches source regex))]
         (mapv #(assoc % :ret ret) branches)
         (do ((:fail ctx) args) nil)))))
-
-(defn spec-option-map
-  "Reads keyword argument pairs with an optional trailing map."
-  [options]
-  (if (even? (count options))
-    (apply hash-map options)
-    (when (map? (last options))
-      (into (apply hash-map (butlast options)) (last options)))))
 
 (defn parse-sig
   "[A B :-> R], [A & B :-> R], or a list of such vectors."
@@ -1085,7 +1089,7 @@
                        ty)))]
     (or (= a b) (= (normalize a) (normalize b)))))
 
-(defn- collection-type [ctx [_ inner & {:keys [kind min-count max-count count] :as opts} :as form]]
+(defn- collection-type [ctx [_ inner :as form] {:keys [kind min-count max-count count] :as opts}]
   (let [kinds '{vector? :vector set? :set list? :seq seq? :seq}
         kind-name (if (and (symbol? kind) (= "clojure.core" (namespace kind)))
                     (symbol (name kind))
@@ -1148,10 +1152,14 @@
                           assoc ::shape-form (first form) ::unchecked-contract true)
         (:t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
         :s/spec (p (second form))
-        :s/keys (if (even? (count (rest form))) (parse-keys (rest form)) (fail))
+        :s/keys (if-let [options (spec-keys-options (rest form))] (parse-keys options) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
-        (:s/coll-of :s/every) (collection-type ctx form)
-        :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
+        (:s/coll-of :s/every) (if-let [options (when (next form) (spec-option-map (drop 2 form)))]
+                               (collection-type ctx form options)
+                               (fail))
+        :s/map-of (if (and (nnext form) (spec-option-map (drop 3 form)))
+                    {:t :map-of :k (p (second form)) :v (p (nth form 2))}
+                    (fail))
         :s/tuple (with-meta (tuple (mapv p (rest form))) {::tuple-contract true})
         :s/fspec (if-let [{:keys [args ret]} (when-not (:inside-all ctx) (spec-option-map (rest form)))]
                    (let [r (if ret (p ret) unknown)]

@@ -566,6 +566,36 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest collection-spec-options-keep-checking-the-project
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::row (s/keys {:req-un [::id]}))
+(s/def ::broken-keys (s/keys :req-un ::id))
+(s/def ::broken-map (s/map-of int?))
+(s/def ::broken-coll (s/coll-of int? :kind))
+(s/fdef lookup :args (s/cat :row ::row) :ret int?)
+(defn lookup [row] (get row :id 0))
+(s/fdef build :args (s/keys* {:req-un [::id]}) :ret int?)
+(defn build [& {:keys [id]}] id)
+(s/fdef bad-build :args (s/keys* :req-un ::id) :ret int?)
+(s/fdef sizes :args (s/cat :rows (s/map-of string? int?) :ns (s/coll-of int? {:kind vector?})) :ret int?)
+(defn sizes [rows ns] (+ (count rows) (count ns)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/lookup {:id 1})
+(a/lookup {:id \"wrong\"})
+(a/lookup {})
+(a/build :id 2)
+(a/build :id \"wrong\")
+(a/sizes {\"n\" 1} [2])
+(a/sizes {\"n\" \"wrong\"} [2])
+(a/sizes {\"n\" 1} [\"wrong\"])")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 4 "TSP9002"] ["api.clj" 5 "TSP9002"] ["api.clj" 6 "TSP9002"]
+            ["api.clj" 11 "TSP9002"] ["client.clj" 3 "TSP2322"] ["client.clj" 4 "TSP2741"]
+            ["client.clj" 6 "TSP2322"] ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest unsupported-regexes-are-reported
   (let [r (checked "(sp/fdef nonterminal :args (sp/cat :xs (sp/+ int?) :last string?) :ret any?)
 (sp/fdef repeated-alt :args (sp/+ (sp/alt :one int? :other string?)) :ret any?)

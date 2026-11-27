@@ -1026,6 +1026,20 @@
            (mapv #(at r %) (range 2 8))))
     (is (= "(s/nilable some?)" (at r 13)))))
 
+(deftest every-distinguishes-empty-and-proved-predicate-results
+  (let [r (checked "(every? 42 [])
+(every? string? [\"one\" \"two\"])
+(every? string? [1])
+(every? (fn [_] nil) [1])
+(every? (fn [_] true) [])
+(every? inc 42)
+(every? string?)
+(every? 42 [1])")]
+    (is (= [[7 "TSP2345"] [8 "TSP2554"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["true" "true" "false" "false" "true"] (mapv #(at r %) (range 2 7))))))
+
 (deftest first-and-second-check-direct-and-callback-invocations
   (let [r (checked "(first [1])
 (second [:head \"tail\"])

@@ -5444,7 +5444,7 @@
         (unique-sequence ctx source :seq))
       t/unknown)))
 
-(doseq [h '[shuffle set]]
+(doseq [h '[set]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)
           el (elem-type ctx (infer ctx c))]
@@ -6018,6 +6018,29 @@
               (assoc result :items (reorder-items items))
               result)))
    (t/assumption source)))
+
+(defmethod special 'shuffle [ctx node _]
+  (let [[arg :as args] (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 1 (count types))
+      (do (report! ctx node "TSP2554" "shuffle expects one argument") t/unknown)
+
+      (= t/never source) t/never
+
+      :else
+      (let [env (:env ctx)
+            expected (t/class-type "java.util.Collection")
+            bad (some (fn [member]
+                        (when (and (not (and (= :prim (:t member)) (= :coll (:name member))))
+                                   (not (and (= :coll (:t member)) (nil? (:kind member))))
+                                   (= :mismatch (:status (t/sub-result env member expected))))
+                          member))
+                      (t/members env source))]
+        (if bad
+          (do (report! ctx arg "TSP2345" (str "shuffle needs a java.util.Collection, got " (t/show bad)))
+              t/unknown)
+          (sequence-with-kind ctx source :vector nil))))))
 
 (defmethod special 'vec [ctx node _]
   (let [args (args-of node)

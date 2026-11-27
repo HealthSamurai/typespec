@@ -841,6 +841,25 @@
             "(s/coll-of t/never :kind seq? :max-count 0)"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest shuffle-returns-a-vector-with-the-input-cardinality
+  (let [r (checked "(shuffle [1 2 3])
+(second (shuffle [:only]))
+(shuffle [])
+(shuffle nil)
+(shuffle {:x 1})
+(shuffle \"abc\")
+(shuffle (int-array [1]))
+(shuffle 42)
+(shuffle [] :extra)
+(mapv inc (shuffle [\"wrong\"]))")]
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2345"]
+            [10 "TSP2554"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of int? :kind vector? :min-count 3 :max-count 3)" "nil?"
+            "(s/coll-of t/never :kind vector? :max-count 0)"]
+           (mapv #(at r %) (range 2 5))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

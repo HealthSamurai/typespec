@@ -86,6 +86,9 @@
                       (if (and (= 1 (count args)) (argument? scope a))
                         (cond
                           (#{'clojure.core/some? 'clojure.core/nil?} head) [:nil (= head 'clojure.core/nil?)]
+                          (and (= "clojure.core" (some-> head namespace))
+                               (t/qualification-target (symbol (name head))))
+                          [:qualification (t/qualification-target (symbol (name head)))]
                           (predicates head) [:predicate head]
                           (callable? head) [:call head]
                           :else [:opaque])
@@ -101,7 +104,7 @@
         (tree-seq vector? seq plan)))
 
 (defn useful? [plan]
-  (boolean (some #(and (vector? %) (#{:truth :nil :predicate :equal :class :spec :call} (first %)))
+  (boolean (some #(and (vector? %) (#{:truth :nil :predicate :qualification :equal :class :spec :call} (first %)))
                  (tree-seq vector? seq plan))))
 
 (defn evidence-type?
@@ -180,6 +183,19 @@
       (definitely-disjoint? leaf target) [t/never leaf]
       :else [target leaf])))
 
+(defn qualification-parts [env target leaf]
+  (let [base (dissoc target :qualified?)
+        qualified? (:qualified? target)]
+    (cond
+      (= t/never leaf) [t/never t/never]
+      (#{:lit :nil} (:t leaf)) (if (t/sub? env leaf target) [leaf t/never] [t/never leaf])
+      (definitely-disjoint? leaf base) [t/never leaf]
+      (proves? env leaf base)
+      (if-some [known (t/name-qualification leaf)]
+        (if (= qualified? known) [leaf t/never] [t/never leaf])
+        [target (assoc base :qualified? (not qualified?))])
+      :else [target leaf])))
+
 (defn- class-split [env leaf class]
   (let [target (t/class-type class)]
     (cond
@@ -203,6 +219,7 @@
     :nil (let [parts [(t/non-nil-leaf leaf) (if (t/may-be-nil-leaf? leaf) t/nil-t t/never)]]
            (if value (vec (reverse parts)) parts))
     :predicate (predicate-split env leaf (predicates value) value)
+    :qualification (qualification-parts env value leaf)
     :class (class-split env leaf value)
     :equal (literal-split env leaf value)
     :spec (let [ref (t/ref-t value)]

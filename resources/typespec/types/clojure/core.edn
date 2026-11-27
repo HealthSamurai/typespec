@@ -47,6 +47,8 @@
  clojure.core/number?    [any? :-> boolean?]
  clojure.core/int?       [any? :-> boolean?]
  clojure.core/keyword?   [any? :-> boolean?]
+ clojure.core/qualified-keyword? [any? :-> boolean?]
+ clojure.core/simple-keyword? [any? :-> boolean?]
  clojure.core/map?       [any? :-> boolean?]
  clojure.core/vector?    [any? :-> boolean?]
  clojure.core/boolean?   [any? :-> boolean?]

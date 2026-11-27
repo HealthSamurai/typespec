@@ -226,6 +226,33 @@
   (is (nil? (parse-uuid "invalid")))
   (is (thrown? NullPointerException (.version (parse-uuid "invalid")))))
 
+(deftest keyword-qualification-carries-through-specs-guards-and-filter
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef ns-of :args (s/cat :x qualified-keyword?) :ret string?)
+(defn ns-of [x] (namespace x))
+(s/fdef words :args (s/cat) :ret (s/coll-of keyword? :kind vector?))
+(defn words [] [:space/x :plain])")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(api/ns-of :space/key)
+(api/ns-of :plain)
+(s/fdef label :args (s/cat :x keyword?) :ret (s/nilable string?))
+(defn label [x] (let [ok (qualified-keyword? x)] (when ok (str/upper-case (namespace x)))))
+(mapv #(str/upper-case (namespace %)) (filter qualified-keyword? (api/words)))
+(s/fdef mistake :args (s/cat :x keyword?) :ret (s/nilable string?))
+(defn mistake [x] (when (simple-keyword? x) (str/upper-case (namespace x))))
+(qualified-keyword? :space/key)
+(qualified-keyword? :plain)
+(simple-keyword? :plain)
+(qualified-keyword? :a :b)")
+        result (check/check-files [api client] {})]
+    (is (= [[3 "TSP2345"] [8 "TSP2531"] [12 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["true" "false" "true"]
+           (mapv #(main/type-at result "client.clj" % 1) [9 10 11]))))
+  (is (= ["SPACE"] (mapv #(str/upper-case (namespace %)) (filter qualified-keyword? [:space/x :plain]))))
+  (is (thrown? NullPointerException (str/upper-case (namespace :plain)))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

@@ -83,6 +83,18 @@
   (prim (cond (string? v) :string (keyword? v) :keyword (integer? v) :int
               (number? v) :double (boolean? v) :boolean :else :symbol)))
 
+(defn name-qualification [ty]
+  (case (:t ty)
+    :lit (when (ident? (:val ty)) (some? (namespace (:val ty))))
+    :prim (:qualified? ty)
+    nil))
+
+(defn qualification-target [predicate]
+  (case predicate
+    qualified-keyword? (assoc (prim :keyword) :qualified? true)
+    simple-keyword? (assoc (prim :keyword) :qualified? false)
+    nil))
+
 (defn tuple
   ([items] (tuple items (apply union items)))
   ([items element] {:t :coll :kind :vector :items items :of element}))
@@ -388,10 +400,16 @@
       (= :nil st) (boolean (:platform t))
       (= :some tt) true
       (= :nil tt) false
-      (= :lit st) (if (= :lit tt) (= (:val s) (:val t)) (sub1? env (lit-prim (:val s)) t))
+      (= :lit st) (if (= :lit tt)
+                    (= (:val s) (:val t))
+                    (sub1? env (cond-> (lit-prim (:val s))
+                                 (contains? t :qualified?) (assoc :qualified? (name-qualification s)))
+                           t))
       (= :lit tt) false
       (= :prim st) (case tt
-                     :prim (prim-sub? (:name s) (:name t))
+                     :prim (and (prim-sub? (:name s) (:name t))
+                                (or (not (contains? t :qualified?))
+                                    (= (:qualified? s) (:qualified? t))))
                      :class (prim-is-class? (:name s) (:name t))
                      ;; A known kind never fits a different :kind (set? is not a vector).
                      :coll (and (contains? #{:vector :set :seq :coll} (:name s))
@@ -554,7 +572,9 @@
                                       (if (= :unknown (:t bound)) (str name)
                                         (str "(" name " :< " (show bound) ")"))) (:binders t)))
                 "] " (show (:body t)) ")")
-      :prim (str (name (:name t)) "?")
+      :prim (str (when (contains? t :qualified?)
+                   (if (:qualified? t) "qualified-" "simple-"))
+                 (name (:name t)) "?")
       :lit (pr-str (:val t))
       :ref (show-kw (:name t))
       :class (:name t)
@@ -598,7 +618,7 @@
 (def ^:private pred-prims
   '{string? :string int? :int integer? :int pos-int? :int nat-int? :int neg-int? :int
     double? :double float? :double number? :number pos? :number
-    keyword? :keyword simple-keyword? :keyword qualified-keyword? :keyword
+    keyword? :keyword
     symbol? :symbol boolean? :boolean uuid? :uuid inst? :inst
     map? :map vector? :vector set? :set seq? :seq sequential? :coll coll? :coll
     fn? :fn ifn? :fn})
@@ -852,9 +872,9 @@
       (keyword? form) (if (namespace form) (ref-t form) (fail))
       (symbol? form) (let [nm (if (= "clojure.core" (namespace form)) (symbol (name form)) form)]
                        (cond (get (:type-vars ctx) nm) (get (:type-vars ctx) nm)
+                             (qualification-target nm) (qualification-target nm)
                              (pred-prims nm) (cond-> (prim (pred-prims nm))
-                                               (#{'pos-int? 'nat-int? 'neg-int? 'pos?
-                                                  'simple-keyword? 'qualified-keyword? 'sequential? 'fn?} nm)
+                                               (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'sequential? 'fn?} nm)
                                                (with-meta {::unchecked-contract true}))
                              (= 'any? nm) any
                              (= 'some? nm) some-t

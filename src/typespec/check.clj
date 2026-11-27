@@ -902,6 +902,7 @@
 (defn- condition-capture [ctx node]
   (let [head (builtin-head ctx node)]
     (when (or (primitive-predicates head)
+              (t/qualification-target head)
               (guard-call ctx node)
               (#{'some? 'nil? 'seq 'empty? 'not 'and 'or '= 'not= '< '<= '> '>= 'contains? 'find 'instance?
                  'clojure.spec.alpha/valid? 'clojure.spec.alpha/invalid?} head))
@@ -1020,6 +1021,12 @@
       (and (primitive-predicates h) (= 1 (count args)))
       (let [target (t/prim (first (primitive-predicates h)))]
         (or (refine-path ctx a #(predicate-parts ctx h target %)) [ctx ctx]))
+
+      (and (= 1 (count args)) (t/qualification-target h))
+      (let [target (t/qualification-target h)]
+        (or (refine-path ctx a #(mapv (fn [ty] (when-not (= t/never ty) ty))
+                                    (guards/qualification-parts env target %)))
+            [ctx ctx]))
 
       :else (or (when-let [summary (guard-call ctx test)]
                   (refine-path ctx a #(mapv (fn [ty] (when-not (= t/never ty) ty))
@@ -3297,8 +3304,21 @@
   (core-unary-result
    ctx node
    (fn [member]
-     (when (and (= :lit (:t member)) (ident? (:val member)))
-       (if-some [value (namespace (:val member))] (t/lit value) t/nil-t)))))
+     (if-some [qualified? (t/name-qualification member)]
+       (cond
+         (not qualified?) t/nil-t
+         (= :lit (:t member)) (t/lit (namespace (:val member)))
+         :else (t/prim :string))
+       nil))))
+
+(doseq [head '[qualified-keyword? simple-keyword?]]
+  (defmethod special head [ctx node _]
+    (core-unary-result
+     ctx node
+     (fn [member]
+       (let [[yes no] (guards/qualification-parts (:env ctx) (t/qualification-target head) member)]
+         (cond (= t/never yes) (t/lit false)
+               (= t/never no) (t/lit true)))))))
 
 (defmethod special 'name [ctx node _]
   (core-unary-result

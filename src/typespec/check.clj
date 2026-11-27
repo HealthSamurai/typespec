@@ -2453,6 +2453,25 @@
     :union (every? noncallable-scalar? (:types ty))
     false))
 
+(defn- refine-unary-result [ctx input fallback refine]
+  (t/with-assumption
+   (apply t/union
+          (map #(if (= t/never %) t/never (or (refine %) fallback))
+               (t/members (:env ctx) (eff ctx input))))
+   (t/assumption input)))
+
+(defn- namespace-member-result [member]
+  (when-some [qualified? (t/name-qualification member)]
+    (cond
+      (not qualified?) t/nil-t
+      (= :lit (:t member)) (t/lit (namespace (:val member)))
+      :else (t/prim :string))))
+
+(defn- core-callback? [ctx node head]
+  (and (= :sym (:op node)) (empty? (:directives node)) (not (env/tag-node node))
+       (= head (t/core-name (:file ctx) (:val node)))
+       (= (symbol "clojure.core" (name head)) (guard-symbol ctx node))))
+
 (defn apply-fn-node [ctx fnode arg-types & [require-match?]]
   (case (:op fnode)
     :kw (read-key ctx (first arg-types) (:val fnode) fnode)
@@ -2481,7 +2500,11 @@
         (do (report! ctx fnode "TSP2345" (str "callback expects a callable value, got " (t/show ty)))
             t/unknown)
 
-        :else (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)))))
+        :else
+        (let [result (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)]
+          (if (and (= 1 (count arg-types)) (core-callback? ctx fnode 'namespace))
+            (refine-unary-result ctx (first arg-types) result namespace-member-result)
+            result))))))
 
 (defn- function-shape [ctx ty]
   (let [ty (t/resolve-t (:env ctx) (eff ctx ty))]
@@ -3292,13 +3315,6 @@
         inputs (infer-call-arguments ctx node args (matching-arities type (count args)))]
     [inputs (call-fn ctx node (str sym) type args inputs)]))
 
-(defn- refine-unary-result [ctx input fallback refine]
-  (t/with-assumption
-   (apply t/union
-          (map #(if (= t/never %) t/never (or (refine %) fallback))
-               (t/members (:env ctx) (eff ctx input))))
-   (t/assumption input)))
-
 (defn- core-unary-result [ctx node refine]
   (let [[inputs fallback] (core-call-result ctx node)]
     (if (= 1 (count inputs))
@@ -3306,15 +3322,7 @@
       fallback)))
 
 (defmethod special 'namespace [ctx node _]
-  (core-unary-result
-   ctx node
-   (fn [member]
-     (if-some [qualified? (t/name-qualification member)]
-       (cond
-         (not qualified?) t/nil-t
-         (= :lit (:t member)) (t/lit (namespace (:val member)))
-         :else (t/prim :string))
-       nil))))
+  (core-unary-result ctx node namespace-member-result))
 
 (doseq [head '[qualified-keyword? simple-keyword? qualified-symbol? simple-symbol?
                qualified-ident? simple-ident? ident?]]

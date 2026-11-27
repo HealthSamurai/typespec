@@ -401,6 +401,29 @@
   (is (every? ident? ['value :key]))
   (is (not-any? ident? ["value" 42 nil])))
 
+(deftest namespace-as-a-callback-keeps-qualification-from-the-input-spec
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef tags :args (s/cat) :ret (s/coll-of qualified-ident? :kind vector?))
+(defn tags [] [])
+(s/fdef plain :args (s/cat) :ret (s/coll-of simple-ident? :kind vector?))
+(defn plain [] [])")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api] [clojure.string :as str]))
+(mapv clojure.core/namespace (api/tags))
+(mapv namespace (api/plain))
+(mapv str/upper-case (mapv namespace (api/tags)))
+(mapv str/upper-case (mapv namespace (api/plain)))
+(mapv namespace [42])
+(let [namespace (fn [_] 42)] (mapv namespace (api/tags)))")
+        result (check/check-files [api client] {})]
+    (is (= [[5 "TSP2531"] [6 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["(s/coll-of string? :kind vector?)" "(s/coll-of nil? :kind vector?)"
+            "(s/coll-of int? :kind vector?)"]
+           (mapv #(main/type-at result "client.clj" % 1) [2 3 7]))))
+  (is (= ["space" "scope"] (mapv namespace [:space/key 'scope/key])))
+  (is (thrown? ClassCastException (mapv namespace [42]))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

@@ -1581,27 +1581,37 @@
   (some (fn [[declared ty]] (when (= (name declared) (name k)) ty))
         (concat (:req m) (:opt m))))
 
+(defn- keyword-pair-problems [ctx expected pairs keys call-node]
+  (let [given (into (array-map) (map (fn [key [_ value]] [key value]) keys pairs))
+        actual {:t :map :req (update-vals given second) :opt {} :fresh true :complete-keys? true}
+        shapes (map-members ctx expected)]
+    (concat
+     (for [[code _ _ field :as problem] (problems ctx call-node actual expected)
+           :when (not= "TSP2353" code)]
+       [(or (when (= :value (first field)) (first (get given (second field)))) call-node) problem])
+     (for [[key [node type]] given
+           :when (and (qualified-keyword? key) (get-in ctx [:env :specs key])
+                      (not-every? #(or (contains? (:req %) key) (contains? (:opt %) key)) shapes))
+           problem (problems ctx node type (t/ref-t key))]
+       [node problem]))))
+
 (defn- keyword-regex-problems [ctx expected extra call-node]
   (if (odd? (count extra))
     [[call-node ["TSP2554" "s/keys* expects complete keyword/value pairs"]]]
     (let [pairs (partition 2 extra)
-          keys (mapv (fn [[[_ type]]]
-                       (let [value (t/resolve-t (:env ctx) (eff ctx type))]
-                         (when (and (= :lit (:t value)) (keyword? (:val value))) (:val value))))
-                     pairs)]
-      (if (every? some? keys)
-        (let [given (into (array-map) (map (fn [key [_ value]] [key value]) keys pairs))
-              actual {:t :map :req (update-vals given second) :opt {} :fresh true :complete-keys? true}
-              shapes (map-members ctx expected)]
-          (concat
-           (for [[code _ _ field :as problem] (problems ctx call-node actual expected)
-                 :when (not= "TSP2353" code)]
-             [(or (when (= :value (first field)) (first (get given (second field)))) call-node) problem])
-           (for [[key [node type]] given
-                 :when (and (qualified-keyword? key) (get-in ctx [:env :specs key])
-                            (not-every? #(or (contains? (:req %) key) (contains? (:opt %) key)) shapes))
-                 problem (problems ctx node type (t/ref-t key))]
-             [node problem])))
+          slots (mapv (fn [i [[node _]]] (or (plain-local ctx node) i)) (range) pairs)
+          domains (into {} (map (fn [slot [[_ type]]]
+                                 [slot (finite-map-keys (:env ctx) (eff ctx type))])
+                               slots pairs))
+          identities (vec (distinct slots))
+          choices (mapv domains identities)
+          variants (when (and (every? seq choices) (every? keyword? (mapcat identity choices)))
+                     (bounded-combinations [choices]))]
+      (if variants
+        (distinct (mapcat (fn [choice]
+                            (let [by-slot (zipmap identities choice)]
+                              (keyword-pair-problems ctx expected pairs (map by-slot slots) call-node)))
+                          variants))
         (let [key-errors (for [[[node type]] pairs
                                problem (problems ctx node type (t/prim :keyword))]
                            [node problem])]

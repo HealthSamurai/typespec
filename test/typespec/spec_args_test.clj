@@ -459,6 +459,29 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest spec-keys-regex-checks-finite-computed-options
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::timeout int?)
+(s/def ::limit int?)
+(s/def ::selector #{:timeout :limit})
+(s/fdef connect :args (s/keys* :req-un [(or ::timeout ::limit)]) :ret int?)
+(defn connect [& {:keys [timeout limit]}] (or timeout limit 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef valid :args (s/cat :option ::a/selector) :ret int?)
+(defn valid [option] (a/connect option 1))
+(s/fdef repeated :args (s/cat :option ::a/selector) :ret int?)
+(defn repeated [option] (apply a/connect [option \"ignored\" option 1]))
+(s/fdef wrong :args (s/cat :option ::a/selector) :ret int?)
+(defn wrong [option] (a/connect option \"1\"))
+(s/fdef missing :args (s/cat :option #{:timeout :different}) :ret int?)
+(defn missing [option] (a/connect option 1))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[7 "TSP2322"] [7 "TSP2322"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues)) (pr-str issues))
+    (is (= #{"value of :limit: \"1\" is not assignable to :api/limit (int?)"
+             "value of :timeout: \"1\" is not assignable to :api/timeout (int?)"}
+           (set (map :message (take 2 issues)))))))
+
 (deftest spec-keys-regex-checks-the-implementation-arity
   (let [result (checked "(sp/def ::timeout int?)
 (sp/fdef variadic :args (sp/cat :name string? :opts (sp/keys* :req-un [::timeout])) :ret string?)

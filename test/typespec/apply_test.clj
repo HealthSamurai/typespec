@@ -201,6 +201,18 @@
   (is (= ["text" 2] (apply vector "text" [2])))
   (is (thrown? ClassCastException (apply subs (vector "text" "wrong")))))
 
+(deftest applied-list-preserves-positions-for-a-subsequent-apply
+  (let [r (checked "(apply subs (apply list [\"text\" 1]))
+(second (apply list \"text\" [2]))
+(first (apply clojure.core/list []))
+(apply subs (apply list [\"text\" \"wrong\"]))
+(apply subs (apply list [\"text\"]))")]
+    (is (= ["string?" "2" "nil?"] (mapv #(type-at r %) [2 3 4])))
+    (is (= [[5 "TSP2345"] [6 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= "ext" (apply subs (apply list ["text" 1]))))
+  (is (thrown? ClassCastException (apply subs (apply list ["text" "wrong"])))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

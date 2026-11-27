@@ -4693,6 +4693,12 @@
 (defmethod special 'vector [ctx node _]
   (constructed-vector ctx (mapv #(infer ctx %) (args-of node))))
 
+(defn- constructed-list [ctx types]
+  (if (some #{t/never} types)
+    t/never
+    (t/with-assumption (list-value-type ctx (mapv #(dissoc % :fresh) types))
+                       (some t/assumption types))))
+
 (defmethod special 'apply [ctx node _]
   (let [[f & args] (args-of node)]
     (if (empty? args)
@@ -4707,7 +4713,7 @@
             spreads (spread-tail-types ctx tail tail-members)
             known-spreads (finite-spreads spreads tail-members)
             exact? (some? known-spreads)
-            constructor (when exact? (core-callback-head ctx f #{'vector}))
+            constructor (when exact? (core-callback-head ctx f #{'vector 'list}))
             callback? (and exact? (callback-node? ctx f))
             spread-context (fn [items] (direct-callback-context (into prefix-types items) false))
             ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
@@ -4738,6 +4744,7 @@
                         (cond
                           (= :never (:t ty)) t/never
                           (= 'vector constructor) (constructed-vector ctx types)
+                          (= 'list constructor) (constructed-list ctx types)
                           (or (= :all (:t ty)) (seq (:arities ty)))
                           (call-fn ctx node label ty nodes types)
                           (and (= :lit (:t ty)) (ident? (:val ty)))
@@ -5821,10 +5828,7 @@
            (t/assumption source)))))))
 
 (defmethod special 'list [ctx node _]
-  (let [items (mapv #(dissoc (infer ctx %) :fresh) (args-of node))]
-    (if (some #{t/never} items)
-      t/never
-      (list-value-type ctx items))))
+  (constructed-list ctx (mapv #(infer ctx %) (args-of node))))
 
 (defn- distinct-positions [items]
   (when (and items (every? #(#{:lit :nil} (:t %)) items))

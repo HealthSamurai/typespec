@@ -1457,13 +1457,23 @@
 (defn- positional-rest [ctx ty i]
   (sequence-tail ctx ty i true))
 
+(defn- interface-type? [{:keys [t name]}]
+  (and (= :class t)
+       (some-> ^Class (t/load-class name) .isInterface)))
+
+(defn- hint-conflicts? [env actual hint]
+  (and (not (t/sub? env actual hint))
+       (not (t/sub? env hint actual))
+       ;; A value may implement both unrelated interfaces.
+       (not (and (interface-type? hint) (some interface-type? (t/members env actual))))))
+
 (defn- check-hint!
   "A hint that cannot be true for the value it is put on."
   [ctx node actual what]
   (when-let [h (env/hint-type (:file ctx) node)]
     (let [env (:env ctx) a (t/remove-nil env (eff ctx actual))]
       (when (and (not (#{:never :unknown :any} (:t (t/resolve-t env a))))
-                 (not (t/sub? env a h)) (not (t/sub? env h a)))
+                 (hint-conflicts? env a h))
         (report! ctx (env/tag-node node) "TSP2322"
                  (str "hint " (t/show h) " contradicts the " what ": " (t/show (dissoc actual :platform))))))
     h))
@@ -8637,7 +8647,7 @@
                          :else (bind-pattern ctx' rest t/unknown))
               {ret-tag :tag ret-hint :type} (env/return-hint file nm params)]
           (when (and ret-hint (not (#{:unknown :any} (:t (:ret declared))))
-                     (not (t/sub? env ret-hint (:ret declared))) (not (t/sub? env (:ret declared) ret-hint)))
+                     (hint-conflicts? env (:ret declared) ret-hint))
             (report! ctx ret-tag "TSP2322"
                      (str "hint " (t/show ret-hint) " contradicts the signature: " (t/show (:ret declared)))))
           (let [facts (when (#{:sig :fdef} (:source v)) (seq (env/pre-facts file params body)))

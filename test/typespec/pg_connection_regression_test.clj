@@ -1,13 +1,17 @@
 (ns typespec.pg-connection-regression-test
   "Regression from context-clj/pg aa8ea0eb565e7f70f80f3248e6a83198628e1047,
-  pg.clj:56-58. Uses JDBC DataSource instead of Hikari to avoid a test dependency.
-  This checks the extracted body, not the full upstream namespace or live database."
+  pg.clj:56-58. A concrete JDBC DataSource fixture keeps the class distinction
+  visible while checking the extracted body without a database."
   (:require [clojure.test :refer [deftest is]]
             [typespec.externs-regression-test :refer [project]]))
 
-(def contracts
-  "{pg/datasource [map? :-> javax.sql.DataSource]
-    pg/connection [map? :-> java.sql.Connection]}")
+(def ^:private contracts
+  (let [loader (.getContextClassLoader (Thread/currentThread))
+        source (java.lang.reflect.Proxy/newProxyInstance
+                loader (into-array Class [javax.sql.DataSource])
+                (reify java.lang.reflect.InvocationHandler (invoke [_ _ _ _] nil)))]
+    (str "{pg/datasource [map? :-> " (.getName (class source)) "]
+          pg/connection [map? :-> java.sql.Connection]}")))
 
 (defn source [acquire]
   (str "(ns app (:require [pg]) (:import [java.sql Connection]))

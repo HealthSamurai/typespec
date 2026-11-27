@@ -45,6 +45,23 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))))
 
+(deftest unrelated-jvm-interfaces-can-overlap-in-type-hints
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::resource (partial instance? java.io.Closeable))
+(s/fdef run-with :args (s/cat :resource ::resource) :ret any?)
+(defn run-with [^Runnable resource] (.run resource))
+(s/fdef return-worker :args (s/cat :resource ::resource) :ret ::resource)
+(defn return-worker ^Runnable [x] x)
+(s/fdef broken :args (s/cat :resource ::resource) :ret any?)
+(defn broken [^String resource] (.length resource))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(defn start [^java.io.Closeable worker] (a/run-with worker))
+(a/run-with \"wrong\")")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 8 "TSP2322"] ["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
 (deftest clojure-functions-adapt-to-java-interfaces-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef make-future :args (s/cat) :ret java.util.concurrent.CompletableFuture)

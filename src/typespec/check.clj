@@ -5444,11 +5444,10 @@
         (unique-sequence ctx source :seq))
       t/unknown)))
 
-(doseq [h '[set]]
-  (defmethod special h [ctx node _]
-    (let [[c] (args-of node)
-          el (elem-type ctx (infer ctx c))]
-      (coll-of (if (= 'set h) :set :seq) el))))
+(defmethod special 'set [ctx node _]
+  (if-let [source (unary-sequence-source ctx node 'set)]
+    (unique-sequence ctx source :set)
+    t/unknown))
 
 (defn- slice-limit [ctx amount]
   (let [value (:val (t/resolve-t (:env ctx) amount))]

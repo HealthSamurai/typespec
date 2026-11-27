@@ -860,6 +860,20 @@
             "(s/coll-of t/never :kind vector? :max-count 0)"]
            (mapv #(at r %) (range 2 5))))))
 
+(deftest set-counts-distinct-values-without-retaining-positions
+  (let [r (checked "(set [\"a\" \"a\" \"b\"])
+(set [nil nil false])
+(set #{1 2})
+(set nil)
+(set 42)
+(set)
+(mapv inc (set [\"bad\"]))")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["(s/coll-of string? :kind set? :min-count 2 :max-count 2)" "(s/coll-of (s/nilable boolean?) :kind set? :min-count 2 :max-count 2)" "(s/coll-of int? :kind set? :min-count 2 :max-count 2)" "(s/coll-of t/never :kind set? :max-count 0)"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

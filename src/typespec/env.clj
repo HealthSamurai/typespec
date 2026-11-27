@@ -317,17 +317,30 @@
               :else (let [a (precondition-domain left) b (precondition-domain right)]
                       (boolean (and a b (not= a b))))))))
 
+(defn- intersect-precondition [env previous type]
+  (cond
+    (t/sub? env type previous) type
+
+    (or (= :union (:t previous)) (= :union (:t type)))
+    (let [[alternatives other] (if (= :union (:t previous))
+                                 [(:types previous) type]
+                                 [(:types type) previous])
+          possible (apply t/union (remove #(incompatible-preconditions? env % other) alternatives))]
+      (if (t/sub? env possible previous) possible previous))
+
+    (incompatible-preconditions? env previous type) t/never
+    :else previous))
+
 (defn- pre-types [env file params body conflict!]
   (reduce (fn [facts [param type test]]
-            (let [previous (get facts param)]
-              (assoc facts param
-                     (cond
-                       (nil? previous) type
-                       (= t/never previous) previous
-                       (t/sub? env type previous) type
-                       (incompatible-preconditions? env previous type)
-                       (do (conflict! test param previous type) t/never)
-                       :else previous))))
+            (let [previous (get facts param)
+                  next-type (cond
+                              (nil? previous) type
+                              (= t/never previous) previous
+                              :else (intersect-precondition env previous type))]
+              (when (and previous (= t/never next-type) (not= t/never previous))
+                (conflict! test param previous type))
+              (assoc facts param next-type)))
           {} (pre-facts file params body)))
 
 (defn pattern-type

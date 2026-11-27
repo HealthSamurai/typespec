@@ -180,6 +180,37 @@
     (is (thrown? AssertionError (f -1)))
     (is (thrown? AssertionError (f :wrong)))))
 
+(deftest later-preconditions-eliminate-disjoint-union-alternatives
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn choose [x]
+  {:pre [(or (string? x) (number? x))
+         (or (string? x) (keyword? x))
+         (number? x)]}
+  x)
+(defn available [x]
+  {:pre [(or (string? x) (number? x))
+         (or (string? x) (keyword? x))]}
+  x)
+(defn present [x]
+  {:pre [(some? x) (or (nil? x) (string? x))]}
+  x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/choose 42)
+(api/available \"text\")
+(api/available 42)
+(api/present \"text\")
+(api/present false)")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 5 "TSP114-01"] ["client.clj" 2 "TSP2345"]
+            ["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["string?" "string?"] (mapv #(main/type-at r "client.clj" % 1) [3 5]))))
+  (let [f (fn [x] {:pre [(or (string? x) (number? x))
+                         (or (string? x) (keyword? x))]} x)]
+    (is (= "text" (f "text")))
+    (is (thrown? AssertionError (f 42)))))
+
 (deftest explicit-contracts-keep-their-call-types-and-refine-function-bodies
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef text :args (s/cat :x (s/nilable string?)) :ret string?)

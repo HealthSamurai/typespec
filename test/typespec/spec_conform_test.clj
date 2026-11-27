@@ -95,6 +95,24 @@
         (pr-str (:diagnostics r)))
     (is (str/includes? (main/type-at r "client.clj" 4 16) ":clojure.spec.alpha/invalid"))))
 
+(deftest nonconforming-returns-original-values-for-known-specs
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::mode (s/nonconforming (s/or :start #{:ready} :stop #{:halted})))")
+        client (parse/parse-string "client.clj" "(ns client (:require [clojure.spec.alpha :as s] [domain :as d]))
+(defn display [x]
+  (let [mode (s/conform ::d/mode x)]
+    (when-not (s/invalid? mode) (name mode))))
+(defn broken [x]
+  (let [mode (s/conform (s/nonconforming (s/or :start #{:ready} :stop #{:halted})) x)]
+    (when-not (s/invalid? mode) (inc mode))))")
+        r (check/check-files [client domain] {})]
+    (is (= [["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= #{:ready :halted conform/invalid-key}
+           (into #{} (map :val) (t/members (:env r) (conform/value-result (:env r) nil :domain/mode)))))
+    (is (nil? (conform/tagged-result (:env r) nil :domain/mode)))))
+
 (deftest checks-payloads-in-case-branches-and-keeps-scope
   (let [r (checked "(sp/def ::payload (sp/or :text string? :amount int?))
 (defn render [x]

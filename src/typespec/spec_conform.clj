@@ -1,5 +1,5 @@
 (ns typespec.spec-conform
-  "Static output types of tagged Spec conformation."
+  "Static output types of supported Spec conformation."
   (:require [clojure.string :as str]
             [typespec.types :as t]))
 
@@ -8,10 +8,7 @@
 (defn- tuple [items]
   (with-meta (t/tuple items) {::t/tuple-contract true}))
 
-(defn tagged-result
-  "Type of conform when the final result is tagged by a known s/or, including failure.
-  Other conformers may transform values, so their output is unknown."
-  [env context form]
+(defn- conform-result [env context form supported?]
   (let [budget (volatile! 256)]
     (letfn [(output [context form active]
               (if (neg? (vswap! budget dec))
@@ -45,6 +42,11 @@
                       :s/spec (child (first args))
                       :s/with-gen (if (= 2 (count args)) (child (first args)) t/unknown)
                       :s/and (child (last args))
+                      :s/nonconforming (if (= 1 (count args))
+                                        (vary-meta (t/parse-type (assoc context :fail (constantly nil) :spec? true)
+                                                                 (first args))
+                                                   assoc ::original-value true)
+                                        t/unknown)
                       (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
                       :s/nilable (t/union t/nil-t (child (first args)))
                       :s/tuple (tuple (mapv child args))
@@ -57,5 +59,15 @@
                       t/unknown))
                   :else t/unknown)))]
       (let [result (output context form #{})]
-        (when (::tagged (meta result))
+        (when (and (not= t/unknown result) (supported? (meta result)))
           (t/union result (t/lit invalid-key)))))))
+
+(defn tagged-result
+  "Type of conform when the final result is tagged by a known s/or, including failure."
+  [env context form]
+  (conform-result env context form ::tagged))
+
+(defn value-result
+  "Type of conform for a supported tagged or nonconforming spec, including failure."
+  [env context form]
+  (conform-result env context form #(or (::tagged %) (::original-value %))))

@@ -23,10 +23,21 @@
 (defn- array-descriptor-node? [node]
   (and (= :str (:op node)) (.startsWith ^String (:val node) "[")))
 
+(defn attr-get [attr k]
+  (some (fn [[kn vn]] (when (= k (:val kn)) vn)) (partition 2 (:children attr))))
+
 (defn tag-node
-  "The type hint of a node, including string-valued JVM array descriptors."
+  "The supported type hint from reader metadata, with outer metadata taking precedence."
   [node]
-  (first (filter #(or (= :sym (:op %)) (array-descriptor-node? %)) (:meta node))))
+  (let [tag (some (fn [m]
+                    (case (:op m)
+                      (:sym :str) m
+                      :map (attr-get m :tag)
+                      :kw (when (= :tag (:val m)) m)
+                      nil))
+                  (:meta node))]
+    (when (or (= :sym (:op tag)) (array-descriptor-node? tag))
+      tag)))
 
 (def ^:private array-hint-classes
   {'booleans "[Z" 'bytes "[B" 'chars "[C" 'shorts "[S" 'ints "[I"
@@ -188,9 +199,6 @@
      :ns-defs (reduce (fn [acc sym]
                        (update acc (symbol (namespace sym)) (fnil conj #{}) (symbol (name sym))))
                      top-level (keys declarations))}))
-
-(defn attr-get [attr k]
-  (some (fn [[kn vn]] (when (= k (:val kn)) vn)) (partition 2 (:children attr))))
 
 (defn type-ctx [file fail]
   (assoc (select-keys file [:ns :aliases :refers :imports :refer-clojure :defined-symbols]) :fail fail))

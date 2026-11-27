@@ -4,6 +4,29 @@
             [typespec.main :as main]
             [typespec.parse :as parse]))
 
+(deftest metadata-map-tags-participate-in-interop-and-project-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn upper ^{:tag String} [^{:tag String} ^Long text]
+  (.toUpperCase text))
+(defn wrong-return ^{:tag String} [] 42)
+(defn local []
+  (let [^{:tag String} text (identity 42)]
+    (.toUpperCase text)))
+(defn cleared [^{:tag nil} ^String x] x)
+(defn label-count [^{:tag \"[Ljava.lang.String;\"} labels] (alength labels))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/upper \"good\")
+(api/upper 42)
+(api/cleared 42)
+(api/label-count (into-array String [\"good\"]))
+(api/label-count (int-array [42]))")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 4 "TSP2322"] ["api.clj" 6 "TSP2322"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "String" (main/type-at result "client.clj" 2 1)))))
+
 (deftest clojure-functions-adapt-to-java-interfaces-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef make-future :args (s/cat) :ret java.util.concurrent.CompletableFuture)

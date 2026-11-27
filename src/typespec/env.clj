@@ -224,9 +224,10 @@
   [file body]
   (into {}
         (for [test (pre-conditions body)
-              :let [h (head file test) [a b] (rest (:children test))]]
-          (cond (and (pre-preds h) (= :sym (:op a))) [(:val a) (t/prim (pre-preds h))]
-                (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b))) [(:val b) (t/ref-t (:val a))]
+              :let [h (head file test) [a b _ & more] (rest (:children test))]]
+          (cond (and (pre-preds h) (= :sym (:op a)) (nil? b)) [(:val a) (t/prim (pre-preds h))]
+                (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
+                [(:val b) (t/ref-t (:val a))]
                 :else nil))))
 
 (defn pattern-type

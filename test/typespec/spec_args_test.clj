@@ -13,6 +13,29 @@
 (defn- diagnostic-codes [result]
   (mapv :code (:diagnostics result)))
 
+(deftest precondition-contracts-require-the-predicate-arity
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::text string?)
+(defn valid [x] {:pre [(string? x)]} x)
+(defn valid-spec [x] {:pre [(s/valid? ::text x)]} x)
+(defn malformed [x] {:pre [(string? x 1)]} x)
+(defn malformed-spec [x] {:pre [(s/valid? ::text x 1 true)]} x)
+(defn spec-with-form [x] {:pre [(s/valid? ::text x 'text)]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/valid \"text\")
+(api/valid 42)
+(api/valid-spec \"text\")
+(api/valid-spec 42)
+(api/malformed 42)
+(api/malformed-spec 42)
+(api/spec-with-form \"text\")
+(api/spec-with-form 42)")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 5 "TSP2554"] ["api.clj" 6 "TSP2554"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

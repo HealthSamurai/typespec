@@ -948,6 +948,7 @@
 
 (defn- some-contexts [ctx node]
   (or (find-contexts ctx node)
+      (namespace-contexts ctx node)
       (refine-path ctx node (fn [leaf]
                              (let [present (t/non-nil-leaf leaf)]
                                [(when-not (= t/never present) present)

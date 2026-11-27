@@ -460,6 +460,21 @@
     (is (thrown? NullPointerException
                  (when (namespace unstable) (str/upper-case (namespace unstable)))))))
 
+(deftest nil-tests-on-namespace-refine-the-original-identifier
+  (let [file (parse/parse-string "guard.clj" "(ns guard (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef bound :args (s/cat :x ident?) :ret (s/nilable string?))
+(defn bound [x] (when-some [ns (namespace x)] (str ns (str/upper-case (namespace x)))))
+(s/fdef selected :args (s/cat :x ident?) :ret string?)
+(defn selected [x] (if (nil? (namespace x)) \"\" (str/upper-case (namespace x))))
+(s/fdef wrong :args (s/cat :x ident?) :ret (s/nilable string?))
+(defn wrong [x] (when-not (some? (namespace x)) (str/upper-case (namespace x))))")
+        result (check/check-files [file] {})]
+    (is (= [[7 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result))))
+  (is (= "spaceSPACE" (when-some [ns (namespace :space/key)] (str ns (str/upper-case (namespace :space/key))))))
+  (is (thrown? NullPointerException (when-not (some? (namespace :plain)) (str/upper-case (namespace :plain))))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

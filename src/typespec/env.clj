@@ -157,6 +157,22 @@
         nil)
       nil)))
 
+(defn- scalar-constant [target initializer]
+  (let [flag (some (fn [metadata]
+                     (if (and (= :kw (:op metadata)) (= :const (:val metadata)))
+                       {:val true}
+                       (attr-get metadata :const)))
+                   (:meta target))]
+    (when (and (true? (:val flag)) (empty? (:directives initializer)) (not (tag-node initializer)))
+      (let [value (:val initializer)
+            type (case (:op initializer)
+                   (:kw :str :num :bool) (t/lit value)
+                   :char (t/class-type "java.lang.Character")
+                   :nil t/nil-t
+                   nil)]
+        (when type
+          {:type type :class (some-> value class .getName)})))))
+
 (defn- var-declarations [files macros]
   (letfn [(collect [by-name file form at-load?]
             (let [[head-node target] (:children form)
@@ -175,8 +191,10 @@
                   init? (and at-load?
                              (or (seq factories) (#{'defn 'defn-} operator) data-initializer))
                   hint (when data-initializer (hint-type file target))
+                  constant (when data-initializer (scalar-constant target (definition-initializer form)))
                   initializer (cond-> {:file (:file file) :pos (:pos form)}
-                                hint (assoc :hint {:type hint :class (hint-class file (tag-node target))}))
+                                hint (assoc :hint {:type hint :class (hint-class file (tag-node target))})
+                                constant (assoc :constant constant))
                   by-name (reduce (fn [acc sym]
                                     (cond-> acc
                                       data? (assoc-in [sym :tracks-root?] true)
@@ -192,9 +210,9 @@
                       by-name (expression-children form operator))))]
     (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files)))
 
-(defn var-root-hint [env sym]
+(defn unique-var-initializer [env sym]
   (let [[initializer & others] (get-in env [:var-declarations sym :initializers])]
-    (when-not (seq others) (:hint initializer))))
+    (when-not (seq others) initializer)))
 
 (declare ^:private protocol-methods)
 

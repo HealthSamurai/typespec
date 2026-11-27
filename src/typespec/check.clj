@@ -1979,8 +1979,9 @@
   (when-not (contains? (:locals ctx) sym)
     (let [file (:file ctx)
           resolved (env/resolve-sym file sym)
-          full (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))]
-      (:class (env/var-root-hint (:env ctx) full)))))
+          full (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))
+          {:keys [constant hint]} (env/unique-var-initializer (:env ctx) full)]
+      (or (:class constant) (:class hint)))))
 
 (defn- java-field-type [class-name]
   (let [value-class (if (= "char" class-name) "java.lang.Character" class-name)]
@@ -2149,7 +2150,8 @@
               (let [ty (quietly {:env (:env ctx) :file file :opts (:opts ctx) :locals {} :load-time? true} node)]
                 (swap! *rets* assoc sym ty)
                 ty)))
-      (:type (env/var-root-hint (:env ctx) sym)))))
+      (let [{:keys [constant hint]} (env/unique-var-initializer (:env ctx) sym)]
+        (or (:type constant) (:type hint))))))
 
 (defn- why-of [ctx init ty]
   (cond

@@ -72,6 +72,30 @@
         (pr-str diagnostics))
     (is (= "t/unknown" (main/type-at result "consumer.clj" 5 1)))))
 
+(deftest scalar-const-vars-preserve-literal-types-at-consumers
+  (let [result (checked "(def ^:const mode :auto)
+(def ^{:const true} wrong \"123\")
+(def ^:const absent nil)
+(def ^:const label \"ready\")
+(def ^{:const false} ^:const ordinary :manual)
+(def ^:const reassigned :auto)
+(def reassigned :manual)"
+                        "(clojure.spec.alpha/fdef choose :args (clojure.spec.alpha/cat :mode #{:auto :manual}))
+(defn choose [mode] mode)
+(choose p/mode)
+(choose p/wrong)
+(choose p/absent)
+(.length p/label)
+p/ordinary
+p/reassigned")
+        diagnostics (:diagnostics result)]
+    (is (= [["consumer.clj" 5 "TSP2345"] ["consumer.clj" 6 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [":auto" "nil?" "t/unknown" "t/unknown"]
+           (mapv (fn [[row col]] (main/type-at result "consumer.clj" row col))
+                 [[4 9] [6 9] [8 1] [9 1]])))))
+
 (deftest follows-local-sequences-without-assuming-calls-to-initializers
   (let [result (checked "(declare root)
                          (def snapshot root)

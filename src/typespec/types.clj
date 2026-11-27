@@ -745,12 +745,30 @@
   (when (seq? form)
     (spec-regex-ops (type-form-op ctx (first form)))))
 
+(defn- resolve-regex [ctx form]
+  (loop [ctx ctx form form]
+    (if (regex-op ctx form)
+      {:context ctx :form form}
+      (when (qualified-keyword? form)
+        (when-let [{:keys [spec-form spec-context]} (get-in ctx [:regex-specs form])]
+          (if (or (contains? (:active-regex-specs ctx) form)
+                  (neg? (vswap! (:regex-expansion-budget ctx) dec)))
+            {:opaque? true}
+            (recur (assoc spec-context
+                          :fail (:fail ctx)
+                          :regex-specs (:regex-specs ctx)
+                          :regex-expansion-budget (:regex-expansion-budget ctx)
+                          :active-regex-specs (conj (:active-regex-specs ctx) form))
+                   spec-form)))))))
+
 (defn- bounded-arities [arities]
   (let [limit 64
         branches (vec (take (inc limit) (distinct arities)))]
     (when (<= (count branches) limit) branches)))
 
-(defn- regex-branches [ctx form]
+(declare regex-branches)
+
+(defn- regex-form-branches [ctx form]
   (let [empty-branch {:params [] :rest nil}
         operator (regex-op ctx form)
         operands (when operator (rest form))
@@ -779,17 +797,23 @@
              (when-let [branches (regex-branches ctx inner)]
                (when-not (some :rest branches)
                  (bounded-arities (cons empty-branch branches)))))
-      (:s/* :s/+) (when (and (= 1 (count operands)) (not (regex-op ctx inner)))
+      (:s/* :s/+) (when (and (= 1 (count operands)) (not (resolve-regex ctx inner)))
                     [(cond-> (assoc empty-branch :rest (parse-type ctx inner))
                        (= :s/+ operator) (assoc :rest-min 1))])
-      (:s/& :s/keys*) nil
-      [(assoc empty-branch :params [(parse-type ctx form)])])))
+      (:s/& :s/keys*) nil)))
+
+(defn- regex-branches [ctx form]
+  (if-let [{source :context regex :form} (resolve-regex ctx form)]
+    (when regex (regex-form-branches source regex))
+    [{:params [(parse-type ctx form)] :rest nil}]))
 
 (defn spec-args->arities [ctx args ret]
   (when (some? args)
-    (if-let [branches (when (regex-op ctx args) (regex-branches ctx args))]
-      (mapv #(assoc % :ret ret) branches)
-      (do ((:fail ctx) args) nil))))
+    (let [ctx (assoc ctx :active-regex-specs #{} :regex-expansion-budget (volatile! 256))
+          {source :context regex :form} (resolve-regex ctx args)]
+      (if-let [branches (when regex (regex-form-branches source regex))]
+        (mapv #(assoc % :ret ret) branches)
+        (do ((:fail ctx) args) nil)))))
 
 (defn parse-sig
   "[A B :-> R], [A & B :-> R], or a list of such vectors."

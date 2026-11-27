@@ -312,6 +312,49 @@
         (pr-str (:diagnostics r)))
     (is (= ["string?" "string?"] (mapv #(main/type-at r "client.clj" % 1) [2 3])))))
 
+(deftest named-argument-regexes-use-their-declaring-namespace
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as spec]))
+(spec/def ::pair (spec/cat :text string? :n int?))
+(spec/def ::kind (spec/? keyword?))
+(spec/def ::count int?)")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/fdef render :args ::alias :ret string?)
+(s/def ::alias ::args)
+(s/def ::args (s/cat :pair ::d/pair :kind ::d/kind))
+(defn render ([text n] (render text n :normal)) ([text n kind] (str text n kind)))
+(s/fdef total :args (s/cat :counts (s/+ ::d/count)) :ret int?)
+(defn total [& counts] (reduce + counts))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render \"hi\" 2)
+(apply a/render [\"hi\" 2 :fast])
+(a/render 2 \"hi\")
+(a/render \"hi\" 2 \"fast\")
+(a/render \"hi\")
+(a/total 2 3)
+(a/total :wrong)
+(a/total)")
+        result (check/check-files [client api domain] {})]
+    (is (= [["api.clj" 4 "TSP9002"]
+            ["client.clj" 4 "TSP2345"] ["client.clj" 4 "TSP2345"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2554"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2554"]
+            ["domain.clj" 2 "TSP9002"] ["domain.clj" 3 "TSP9002"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
+(deftest named-argument-regexes-preserve-unsupported-cases
+  (let [result (checked "(sp/def ::ordinary int?)
+(sp/def ::part (sp/cat :x int? :y int?))
+(sp/def ::recursive (sp/cat :next ::recursive))
+(sp/fdef ordinary :args ::ordinary)
+(sp/fdef repeated :args (sp/cat :parts (sp/+ ::part)))
+(sp/fdef recursive :args ::recursive)
+(sp/fdef missing :args ::missing)")]
+    (is (= [[3 "TSP9002"] [4 "TSP9002"] [5 "TSP9002"] [6 "TSP9002"]
+            [7 "TSP9002"] [8 "TSP9002"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
 (deftest nested-alternatives-and-optional-before-rest
   (let [spec (s/cat :prefix (s/? string?) :xs (s/+ int?))]
     (is (= [true true false false]

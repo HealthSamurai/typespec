@@ -458,7 +458,14 @@
               (str "conflicting spec declarations for " sym ", also declared in " (:file earlier))))))
   (assoc-in acc [bucket sym] entry))
 
-(defn- collect-file [acc file diags]
+(defn- spec-definition [file form]
+  (let [[_ k body] (:children form)]
+    (when (and (= :kw (:op k)) body)
+      [(:val k) {:file (:file file) :pos (:pos k)
+                 :spec-form (parse/node->data body)
+                 :spec-context (dissoc (type-ctx file nil) :fail)}])))
+
+(defn- collect-file [acc file regex-specs diags]
   (reduce
    (fn [acc form]
      (let [h (head file form)
@@ -469,20 +476,16 @@
            qualify (fn [s] (let [r (resolve-sym file s)] (if (namespace r) r (symbol (str (:ns file)) (name r)))))]
        (cond
          (= 'clojure.spec.alpha/def h)
-         (let [[_ k body] (:children form)]
-           (if (and (= :kw (:op k)) body)
-             (let [spec-form (parse/node->data body)]
-               (register-spec acc :specs (:val k)
-                              {:file (:file file) :pos (:pos k)
-                               :type (t/parse-type (type-ctx file (opaque body)) spec-form)
-                               :spec-form spec-form :spec-context (dissoc (type-ctx file nil) :fail)}
-                              diags))
-             acc))
+         (if-let [[k {:keys [spec-form spec-context] :as entry}] (spec-definition file form)]
+           (let [body (nth (:children form) 2)
+                 ctx (assoc spec-context :regex-specs regex-specs :fail (opaque body))]
+             (register-spec acc :specs k (assoc entry :type (t/parse-type ctx spec-form)) diags))
+           acc)
 
          (= 'clojure.spec.alpha/fdef h)
          (let [[_ nm & opts] (:children form)
                {:keys [args ret]} (apply hash-map (parse/node->data {:op :list :children opts}))
-               ctx (type-ctx file (opaque form))
+               ctx (assoc (type-ctx file (opaque form)) :regex-specs regex-specs)
                r (if ret (t/parse-type ctx ret) t/unknown)
                ars (t/spec-args->arities ctx args r)]
            (if (= :sym (:op nm))
@@ -622,8 +625,13 @@
                                :when sym]
                            sym))
         names (namespace-vars files macros)
-        acc (reduce (fn [acc file]
-                      (collect-file acc (assoc file :defined-symbols (get-in names [:ns-defs (:ns file)])) diags))
+        files (mapv #(assoc % :defined-symbols (get-in names [:ns-defs (:ns %)])) files)
+        regex-specs (into {} (for [file files form (declaration-forms file)
+                                   :when (= 'clojure.spec.alpha/def (head file form))
+                                   :let [entry (spec-definition file form)]
+                                   :when entry]
+                               entry))
+        acc (reduce (fn [acc file] (collect-file acc file regex-specs diags))
                     {:specs {} :fdefs {} :defns {} :protocols {}} files)
         contracts (externs/normalize-contracts (:specs acc) contracts)
         operator-env {:specs (merge (:specs contracts) (:specs acc))}

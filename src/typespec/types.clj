@@ -874,8 +874,7 @@
         (let [branches (mapv #(regex-branches ctx %) (take-nth 2 (next operands)))]
           (when (every? some? branches)
             (if (= :s/alt operator)
-              (when (not-any? :rest (mapcat identity branches))
-                (bounded-branches (mapcat identity branches)))
+              (bounded-branches (mapcat identity branches))
               (reduce (fn [prefix suffix]
                         (if (and (some :rest prefix) (some #(or (:rest %) (seq (:params %))) suffix))
                           (reduced nil)

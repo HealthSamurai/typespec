@@ -384,6 +384,32 @@
            (mapv #(s/valid? regex %) [["hello"] ["hello" 2] ["hello" 6] [42] []]))))
   (is (s/valid? (s/& int?) [1])))
 
+(deftest variadic-regex-alternatives-check-each-branch
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/alt :label (s/cat :text string?) :ids (s/+ int?)) :ret string?)
+(defn render [& args] (str args))
+(s/fdef retain :args (s/cat :kind keyword?
+                            :values (s/alt :numbers (s/+ int?) :labels (s/+ string?))) :ret any?)
+(defn retain [kind & values] values)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render \"alone\")
+(apply a/render [1 2])
+(a/render \"alone\" 2)
+(a/render :wrong)
+(a/render)
+(a/retain :k 1 2)
+(a/retain :k \"a\" \"b\")
+(a/retain :k 1 \"b\")
+(apply a/retain [:k])")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2554"]
+            ["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (let [regex (s/alt :label (s/cat :text string?) :ids (s/+ int?))]
+    (is (= [true true false false]
+           (mapv #(s/valid? regex %) [["alone"] [1 2] ["alone" 2] []])))))
+
 (deftest nested-alternatives-and-optional-before-rest
   (let [spec (s/cat :prefix (s/? string?) :xs (s/+ int?))]
     (is (= [true true false false]
@@ -430,7 +456,7 @@
 
 (deftest unsupported-regexes-are-reported
   (let [r (checked "(sp/fdef nonterminal :args (sp/cat :xs (sp/+ int?) :last string?) :ret any?)
-(sp/fdef unbounded-alt :args (sp/alt :one int? :more (sp/+ string?)) :ret any?)
+(sp/fdef repeated-alt :args (sp/+ (sp/alt :one int? :other string?)) :ret any?)
 (sp/fdef malformed :args (sp/alt :missing) :ret any?)")]
     (is (= ["TSP9002" "TSP9002" "TSP9002"] (diagnostic-codes r))
         (pr-str (:diagnostics r)))))

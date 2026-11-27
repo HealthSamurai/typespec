@@ -219,6 +219,12 @@
   '{string? :string int? :int integer? :int number? :number keyword? :keyword boolean? :boolean
     map? :map vector? :vector uuid? :uuid})
 
+(defn- precondition-predicate-type [head]
+  (case head
+    some? t/some-t
+    nil? t/nil-t
+    (when-let [primitive (pre-preds head)] (t/prim primitive))))
+
 (defn- precondition-head [file test]
   (let [operator (first (:children test))
         sym (:val operator)]
@@ -250,10 +256,11 @@
   (let [file (assoc file :locals (set (parameter-bindings params)))]
     (keep (fn [test]
             (let [h (precondition-head file test)
-                  [a b _ & more] (rest (:children test))]
+                  [a b _ & more] (rest (:children test))
+                  type (when (nil? b) (precondition-predicate-type h))]
               (cond
-                (and (pre-preds h) (= :sym (:op a)) (nil? b))
-                [(:val a) (t/prim (pre-preds h)) test]
+                (and type (= :sym (:op a)))
+                [(:val a) type test]
                 (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
                 [(:val b) (t/ref-t (:val a)) test])))
           (pre-conditions body))))
@@ -269,10 +276,14 @@
     nil))
 
 (defn- incompatible-preconditions? [env left right]
-  (every? (fn [[a b]] (and a b (not= a b)))
+  (every? true?
           (for [left (t/members env left)
                 right (t/members env right)]
-            [(precondition-domain left) (precondition-domain right)])))
+            (cond
+              (= :nil (:t left)) (not (t/may-be-nil-leaf? right))
+              (= :nil (:t right)) (not (t/may-be-nil-leaf? left))
+              :else (let [a (precondition-domain left) b (precondition-domain right)]
+                      (boolean (and a b (not= a b))))))))
 
 (defn- pre-types [env file params body conflict!]
   (let [fixed (into #{} (keep #(when (= :sym (:op %)) (:val %))) (:fixed (split-params params)))]

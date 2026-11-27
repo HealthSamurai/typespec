@@ -101,6 +101,23 @@
     (is (thrown? AssertionError (f 42)))
     (is (thrown? AssertionError (f "text")))))
 
+(deftest precondition-nil-tests-preserve-false-and-detect-missing-values
+  (let [r (checked "(defn present [x] {:pre [(some? x)]} x)
+(defn absent [x] {:pre [(nil? x)]} x)
+(present false)
+(absent nil)
+(present nil)
+(absent false)
+(defn impossible [x] {:pre [(some? x) (nil? x)]} x)")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP114-01"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["some?" "nil?"]
+           (mapv #(main/type-at r "spec_args.clj" % 1) [4 5]))))
+  (let [present (fn [x] {:pre [(some? x)]} x)]
+    (is (false? (present false)))
+    (is (thrown? AssertionError (present nil)))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

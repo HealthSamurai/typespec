@@ -1943,6 +1943,13 @@
   (when-let [cname (java-static? ctx sym)]
     (java/field-class cname (name sym) true)))
 
+(defn- compiler-var-class [ctx sym]
+  (when-not (contains? (:locals ctx) sym)
+    (let [file (:file ctx)
+          resolved (env/resolve-sym file sym)
+          full (if (qualified-symbol? resolved) resolved (symbol (str (:ns file)) (name resolved)))]
+      (:class (env/var-root-hint (:env ctx) full)))))
+
 (defn- java-field-type [class-name]
   (let [value-class (if (= "char" class-name) "java.lang.Character" class-name)]
     (t/platform (t/class-type value-class) (java/short-name class-name))))
@@ -2104,12 +2111,13 @@
                   ty (assoc (:type v) :arities ars)]
               (swap! *rets* assoc sym ty)
               ty))))
-    (when-let [{:keys [file node]} (get-in ctx [:env :atom-initializers sym])]
+    (if-let [{:keys [file node]} (get-in ctx [:env :atom-initializers sym])]
       (or (get @*rets* sym)
           (do (swap! *rets* assoc sym t/unknown)
               (let [ty (quietly {:env (:env ctx) :file file :opts (:opts ctx) :locals {} :load-time? true} node)]
                 (swap! *rets* assoc sym ty)
-                ty))))))
+                ty)))
+      (:type (env/var-root-hint (:env ctx) sym)))))
 
 (defn- why-of [ctx init ty]
   (cond
@@ -2133,7 +2141,8 @@
        (#{:str :num :bool} (:op node))
        (and (= :sym (:op node))
             (or (contains? (:hinted ctx) (:val node))
-                (compiler-static-field-class ctx (:val node))))
+                (compiler-static-field-class ctx (:val node))
+                (compiler-var-class ctx (:val node))))
        (when (= :list (:op node))
          (let [h (first (:children node))]
            (when (= :sym (:op h))
@@ -2163,7 +2172,8 @@
     (env/hint-class (:file ctx) tag)
     (if (= :sym (:op node))
       (or (get-in ctx [:compiler-local-classes (:val node)])
-          (compiler-static-field-class ctx (:val node)))
+          (compiler-static-field-class ctx (:val node))
+          (compiler-var-class ctx (:val node)))
       (let [head (builtin-head ctx node)]
         (if (and (= 'aclone head) (= 2 (count (:children node))))
           (clone-compiler-class (compiler-value-class ctx (second (:children node))))

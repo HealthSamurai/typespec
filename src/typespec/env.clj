@@ -170,13 +170,18 @@
                           (seq factories) (map first factories)
                           (and data? (= 'declare operator)) (keep #(var-name file %) (rest (:children form)))
                           (and name (or data? (and at-load? (#{'defn 'defn-} operator)))) [name])
+                  data-initializer (when (and at-load? (#{'def 'defonce} operator))
+                                     (initialized-var file form))
                   init? (and at-load?
-                             (or (seq factories) (#{'defn 'defn-} operator) (initialized-var file form)))
+                             (or (seq factories) (#{'defn 'defn-} operator) data-initializer))
+                  hint (when data-initializer (hint-type file target))
+                  initializer (cond-> {:file (:file file) :pos (:pos form)}
+                                hint (assoc :hint {:type hint :class (hint-class file (tag-node target))}))
                   by-name (reduce (fn [acc sym]
                                     (cond-> acc
                                       data? (assoc-in [sym :tracks-root?] true)
                                       init? (update-in [sym :initializers] (fnil conj [])
-                                                       {:file (:file file) :pos (:pos form)})))
+                                                       initializer)))
                                   by-name names)]
               (reduce (fn [acc child]
                         (collect acc file child
@@ -186,6 +191,10 @@
                                                (identical? child target))))))
                       by-name (expression-children form operator))))]
     (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files)))
+
+(defn var-root-hint [env sym]
+  (let [[initializer & others] (get-in env [:var-declarations sym :initializers])]
+    (when-not (seq others) (:hint initializer))))
 
 (declare ^:private protocol-methods)
 

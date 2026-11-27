@@ -57,6 +57,21 @@
     (is (= "hint String contradicts the type of the initializer: 42"
            (:message (second diagnostics))))))
 
+(deftest initialized-var-hints-reach-other-namespaces
+  (let [result (checked "(def ^String label \"ready\")
+(defonce ^String fallback \"default\")
+(def ^java.io.File location (java.io.File. \"settings\"))
+(def ^String pending)
+(def ^String redefined \"old\")
+(def redefined 42)
+(defn size [^String label] (.length label))"
+                        "(.length p/label)\n(p/size p/fallback)\n(p/size p/location)\np/redefined\np/pending")
+        diagnostics (:diagnostics result)]
+    (is (= [["consumer.clj" 4 "TSP2345"] ["consumer.clj" 6 "TSP721-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= "t/unknown" (main/type-at result "consumer.clj" 5 1)))))
+
 (deftest follows-local-sequences-without-assuming-calls-to-initializers
   (let [result (checked "(declare root)
                          (def snapshot root)

@@ -424,6 +424,22 @@
   (is (= ["space" "scope"] (mapv namespace [:space/key 'scope/key])))
   (is (thrown? ClassCastException (mapv namespace [42]))))
 
+(deftest namespace-as-a-predicate-tracks-the-qualification-of-identifiers
+  (let [file (parse/parse-string "filter.clj" "(ns filtering (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef labels :args (s/cat :xs (s/coll-of ident?)) :ret (s/coll-of string? :kind vector?))
+(defn labels [xs] (mapv #(str/upper-case (namespace %)) (filter namespace xs)))
+(s/fdef wrong :args (s/cat :xs (s/coll-of ident?)) :ret (s/coll-of string? :kind vector?))
+(defn wrong [xs] (mapv #(str/upper-case (namespace %)) (remove namespace xs)))
+(s/fdef unknown :args (s/cat :xs (s/coll-of clojure.lang.Named)) :ret (s/coll-of string? :kind vector?))
+(defn unknown [xs] (mapv #(str/upper-case (namespace %)) (filter namespace xs)))")
+        result (check/check-files [file] {})]
+    (is (= [[5 "TSP2531"] [7 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result))))
+  (is (= [:space/key 'scope/key (keyword "" "key")]
+         (vec (filter namespace [:space/key :plain 'scope/key 'plain (keyword "" "key")]))))
+  (is (thrown? NullPointerException (mapv #(str/upper-case (namespace %)) (remove namespace [:plain])))))
+
 (deftest replace-and-spec-check-non-nil-values-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef replace-x :args (s/cat :x some?) :ret string?)

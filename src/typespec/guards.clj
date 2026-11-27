@@ -86,6 +86,7 @@
                       (if (and (= 1 (count args)) (argument? scope a))
                         (cond
                           (#{'clojure.core/some? 'clojure.core/nil?} head) [:nil (= head 'clojure.core/nil?)]
+                          (= 'clojure.core/namespace head) [:namespace]
                           (and (= "clojure.core" (some-> head namespace))
                                (t/qualification-target (symbol (name head))))
                           [:qualification (t/qualification-target (symbol (name head)))]
@@ -104,7 +105,7 @@
         (tree-seq vector? seq plan)))
 
 (defn useful? [plan]
-  (boolean (some #(and (vector? %) (#{:truth :nil :predicate :qualification :equal :class :spec :call} (first %)))
+  (boolean (some #(and (vector? %) (#{:truth :nil :predicate :qualification :namespace :equal :class :spec :call} (first %)))
                  (tree-seq vector? seq plan))))
 
 (defn evidence-type?
@@ -199,6 +200,11 @@
           [t/never leaf]
           [target leaf])))))
 
+(defn namespace-parts [env leaf]
+  (if (proves? env leaf (t/qualification-target 'ident?))
+    (qualification-parts env (t/qualification-target 'qualified-ident?) leaf)
+    [leaf leaf]))
+
 (defn- class-split [env leaf class]
   (let [target (t/class-type class)]
     (cond
@@ -223,6 +229,7 @@
            (if value (vec (reverse parts)) parts))
     :predicate (predicate-split env leaf (predicates value) value)
     :qualification (qualification-parts env value leaf)
+    :namespace (namespace-parts env leaf)
     :class (class-split env leaf value)
     :equal (literal-split env leaf value)
     :spec (let [ref (t/ref-t value)]

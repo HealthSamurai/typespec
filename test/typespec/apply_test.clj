@@ -48,6 +48,17 @@
   (is (= 43 (apply (fn [entry] (inc (val entry))) {:a 42})))
   (is (thrown? clojure.lang.ArityException (apply (fn [_ _] :ok) {:a 1}))))
 
+(deftest rejects-final-java-spread-types-that-cannot-be-sequenced
+  (let [r (checked "(apply str (StringBuilder. \"ok\"))
+(apply + java.time.Instant/EPOCH)
+(apply + (java.time.LocalDate/of 2025 1 1))
+(apply + (int-array [1 2]))")]
+    (is (= [[3 "TSP2345"] [4 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r))))
+    (is (= ["string?" "int?"] (mapv #(type-at r %) [2 5]))))
+  (is (= "ok" (apply str (StringBuilder. "ok"))))
+  (is (thrown? IllegalArgumentException (apply + java.time.Instant/EPOCH))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

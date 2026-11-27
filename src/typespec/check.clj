@@ -4559,6 +4559,14 @@
                        [clojure.lang.Seqable java.lang.Iterable java.lang.CharSequence java.util.Map])))
     false))
 
+(defn- impossible-spread-member [members]
+  (some (fn [member]
+          (when (and (= :class (:t member)) (not (spread-seqable? member)))
+            (when-let [^Class class (t/load-class (:name member))]
+              (when (java.lang.reflect.Modifier/isFinal (.getModifiers class))
+                member))))
+        members))
+
 (defn- spread-call-candidates [ctx shape prefix-size members spreads]
   (let [arities (:arities shape)]
     (when (and (= :fn (:t shape)) (seq arities) (not-any? :kwargs arities)
@@ -4602,7 +4610,8 @@
             ftype (when-not callback? (t/resolve-t (:env ctx) (infer ctx f)))
             shape (call-shape ftype)
             candidates (when-not exact? (spread-call-candidates ctx shape (count prefix) tail-members spreads))
-            invalid-tail (unsupported-sequence-member ctx tail-type)]
+            invalid-tail (or (unsupported-sequence-member ctx tail-type)
+                             (impossible-spread-member tail-members))]
         (cond
           (some #(= :never (:t %)) (into [ftype tail-type] prefix-types))
           (do (when callback? (infer ctx f (some-> (first known-spreads) spread-context)))

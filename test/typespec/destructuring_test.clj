@@ -103,6 +103,24 @@
 (let [{:strs [^String label]} {\"label\" 7}] (.substring label 1))")]
     (is (= [[3 "TSP2322"]] (locations issues)) (pr-str issues))))
 
+(deftest map-alias-type-hints-are-checked-and-used-for-interop
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/fdef options-size :args (s/cat :opts (s/keys :req-un [::label])) :ret int?)
+(defn options-size [{:keys [label] :as ^java.util.Map opts}]
+  (.size opts))
+(defn invalid-hint []
+  (let [{:as ^String opts} {:label \"hello\"}]
+    (.length opts)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/options-size {:label \"hello\"})
+(a/options-size {:label 42})")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 7 "TSP2322"] ["client.clj" 3 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (str/includes? (:message (first issues)) "hint String contradicts the type"))))
+
 (deftest computed-selectors-check-the-expression-and-bind-the-selected-field
   (let [issues (diagnostics "(let [key :n {n key} {:n 2}] (inc n))
 (let [key \"n\" {n key} {\"n\" \"bad\"}] (inc n))

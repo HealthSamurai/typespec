@@ -1320,8 +1320,7 @@
         [ctx origin path] (track-path ctx (or projection {:path [] :type ty}))
         ctx (cond-> ctx missing-sym (bind missing-sym (t/union (t/prim :map) t/nil-t)))
         ctx (if-let [alias (:as special)]
-              (-> (bind ctx (:val alias) ty)
-                  (remember-projection (:val alias) origin path))
+              (bind-pattern ctx alias ty nil {:origin origin :path path})
               ctx)
         project (fn [key] {:origin origin :path (conj path key)})
         ctx (reduce

@@ -304,6 +304,21 @@
   (is (= 42 (apply parse-long ["42"])))
   (is (nil? (apply namespace [:label]))))
 
+(deftest identity-preserves-types-in-direct-apply-and-callback-calls
+  (let [r (checked "(identity \"text\")
+(apply identity [nil])
+(first (mapv identity [\"text\"]))
+(:key (identity {:key 42}))
+(let [identity (fn [_] :local)] (identity \"text\"))
+(inc (apply identity [\"bad\"]))
+(identity)
+(apply identity [1 2])")]
+    (is (= ["\"text\"" "nil?" "string?" "42" ":local"] (mapv #(type-at r %) [2 3 4 5 6])))
+    (is (= [[7 "TSP2345"] [8 "TSP2554"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= "text" (apply identity ["text"])))
+  (is (thrown? ClassCastException (inc (apply identity ["bad"])))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

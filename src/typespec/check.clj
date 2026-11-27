@@ -2488,6 +2488,7 @@
 
 (def ^:private unary-callback-refiners
   {'namespace namespace-member-result
+   'identity identity
    'parse-long (partial parsed-string-member parse-long t/lit)
    'parse-double (partial parsed-string-member parse-double parsed-double-type)
    'parse-boolean (partial parsed-string-member parse-boolean t/lit)
@@ -3373,6 +3374,9 @@
      (let [value (:val member)]
        (when (and (= :lit (:t member)) (or (string? value) (ident? value)))
          (t/lit (name value)))))))
+
+(defmethod special 'identity [ctx node _]
+  (core-unary-result ctx node identity))
 
 (doseq [head '[parse-long parse-double parse-boolean parse-uuid]]
   (defmethod special head [ctx node _]

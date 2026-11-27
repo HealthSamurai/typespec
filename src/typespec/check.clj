@@ -1464,8 +1464,12 @@
 (defn- hint-conflicts? [env actual hint]
   (and (not (t/sub? env actual hint))
        (not (t/sub? env hint actual))
-       ;; A value may implement both unrelated interfaces.
-       (not (and (interface-type? hint) (some interface-type? (t/members env actual))))))
+       (let [interface-hint? (interface-type? hint)]
+         (not-any? (fn [member]
+                     (or (t/sub? env member hint)
+                         ;; A value may implement both unrelated interfaces.
+                         (and interface-hint? (interface-type? member))))
+                   (t/members env actual)))))
 
 (defn- check-hint!
   "A hint that cannot be true for the value it is put on."

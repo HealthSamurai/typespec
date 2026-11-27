@@ -62,6 +62,23 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))))
 
+(deftest a-compatible-union-member-prevents-a-hint-contradiction
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::label (s/or :number int? :text string?))
+(s/fdef size :args (s/cat :label ::label) :ret int?)
+(defn size [^CharSequence text] (.length text))
+(s/fdef label :args (s/cat) :ret ::label)
+(defn ^CharSequence label [] \"ready\")
+(s/fdef wrong :args (s/cat :label ::label) :ret any?)
+(defn wrong [^Runnable work] (.run work))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/size \"valid\"))
+(a/size :wrong)")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 8 "TSP2322"] ["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
 (deftest clojure-functions-adapt-to-java-interfaces-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef make-future :args (s/cat) :ret java.util.concurrent.CompletableFuture)

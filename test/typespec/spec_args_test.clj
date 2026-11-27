@@ -676,6 +676,32 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest keyword-argument-spec-infers-the-result-of-map-destructuring
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::limit int?)
+(s/def ::label string?)
+(s/fdef limit-of :args (s/keys* :req-un [::limit]))
+(defn limit-of [& {:keys [limit]}] limit)
+(s/fdef label-of :args (s/keys* :opt-un [::label]))
+(defn label-of [& {:keys [label]}] label)
+(s/fdef options :args (s/keys*))
+(defn options [& {:as opts}] opts)
+(s/fdef total :args (s/cat :base int? :opts (s/keys* :req-un [::limit])))
+(defn total [base & {:keys [limit]}] (+ base limit))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(inc (a/limit-of :limit 2))
+(str/upper-case (a/limit-of :limit 2))
+(when-some [label (a/label-of :label \"x\")] (str/upper-case label))
+(str/upper-case (a/label-of))
+(.size ^java.util.Map (a/options))
+(inc (a/total 3 :limit 2))
+(a/limit-of :limit \"wrong\")")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2531"] ["client.clj" 6 "TSP2531"]
+            ["client.clj" 8 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest collection-spec-options-keep-checking-the-project
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

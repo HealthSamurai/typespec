@@ -2136,23 +2136,27 @@
                                  [[(count fixed) (boolean rest)] body])))
                      (get-in entry [:parts :arities]))
         fixed (keep (fn [[n variadic?]] (when-not variadic? n)) (keys bodies))
-        [variadic-prefix variadic-body] (some (fn [[[n variadic?] body]] (when variadic? [n body])) bodies)]
-    (mapv (fn [{:keys [params rest kwargs] :as arity}]
-            (when-not kwargs
-              (let [n (count params)]
-                (if rest
-                  (when (and (= n variadic-prefix) (not-any? #(t/arity-fits? arity %) fixed)) variadic-body)
-                  (or (get bodies [n false]) (when (and variadic-prefix (<= variadic-prefix n)) variadic-body))))))
+        [variadic-prefix variadic-body] (some (fn [[[n variadic?] body]] (when variadic? [n body])) bodies)
+        keyword-params? (= :map (-> variadic-body :params env/split-params :rest :op))]
+    (mapv (fn [{:keys [params rest kwargs keyword-regex?] :as arity}]
+            (let [n (count params)]
+              (cond
+                kwargs (when (and keyword-regex? keyword-params? (= n variadic-prefix) (empty? fixed))
+                         variadic-body)
+                rest (when (and (= n variadic-prefix) (not-any? #(t/arity-fits? arity %) fixed))
+                       variadic-body)
+                :else (or (get bodies [n false]) (when (and variadic-prefix (<= variadic-prefix n)) variadic-body)))))
           arities)))
 
-(defn- spec-inference-tail [prefix {:keys [params rest rest-min]}]
-  (if rest
+(defn- spec-inference-tail [ctx prefix {:keys [params rest rest-min kwargs]}]
+  (cond
+    kwargs (if (some #(empty? (:req %)) (map-members ctx kwargs)) (t/union kwargs t/nil-t) kwargs)
+    rest
     (let [minimum (or rest-min 0)
           tail {:t :coll :kind :seq :of rest :min-count (max 1 minimum)}]
       (if (zero? minimum) (t/union t/nil-t tail) tail))
-    (if (= prefix (count params))
-      t/nil-t
-      (assoc (t/tuple (subvec params prefix)) :kind :seq))))
+    (= prefix (count params)) t/nil-t
+    :else (assoc (t/tuple (subvec params prefix)) :kind :seq)))
 
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
@@ -2185,9 +2189,8 @@
                                 (let [{:keys [fixed rest]} (env/split-params params)
                                       c (reduce (fn [c [p ty]] (bind-pattern c p ty)) fctx (map vector fixed (:params a)))
                                       c (if rest
-                                          (bind-pattern c rest (or (:kwargs a)
-                                                                   (when spec-bodies (spec-inference-tail (count fixed) a))
-                                                                   t/unknown))
+                                          (bind-pattern c rest (or (when spec-bodies (spec-inference-tail c (count fixed) a))
+                                                                  (:kwargs a) t/unknown))
                                           c)
                                       a (if (and infer-return? (= :unknown (:t (:ret a))))
                                           (let [ret (binding [*types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]

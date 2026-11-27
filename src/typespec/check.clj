@@ -2116,15 +2116,30 @@
       (run-composition ctx node steps input default))
     (specialize-map-return ctx arity (first arg-types))))
 
+(defn- fixed-spec-bodies [entry arities]
+  (let [bodies (into {} (keep (fn [{:keys [params] :as body}]
+                                (let [{:keys [fixed rest]} (env/split-params params)]
+                                  (when-not rest [(count fixed) body]))))
+                     (get-in entry [:parts :arities]))]
+    (mapv (fn [{:keys [params rest kwargs]}]
+            (when-not (or rest kwargs) (get bodies (count params))))
+          arities)))
+
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
   [ctx sym]
   (if-let [v (get-in (:env ctx) [:vars sym])]
-    (let [infer-return? (and (= :hints (:source v)) (some #(= :unknown (:t (:ret %))) (:arities (:type v))))
+    (let [arities (get-in v [:type :arities])
+          bodies (get-in v [:parts :arities])
+          stable? (and (= 1 (get-in ctx [:env :root-definitions sym]))
+                       (not (dynamic-definition? v)))
+          missing-return? (some #(= :unknown (:t (:ret %))) arities)
+          spec-bodies (when (and missing-return? (= :fdef (:source v)) stable?)
+                        (fixed-spec-bodies v arities))
+          infer-return? (and missing-return? (or (= :hints (:source v)) (some some? spec-bodies)))
           shape-candidate? (and (#{:hints :sig :fdef} (:source v))
-                                (= 1 (get-in ctx [:env :root-definitions sym]))
-                                (not (dynamic-definition? v))
-                                (= 1 (count (:arities (:type v))) (count (:arities (:parts v))))
+                                stable?
+                                (= 1 (count arities) (count bodies))
                                 (not (get-in v [:type :arities 0 :rest]))
                                 (not (get-in v [:type :arities 0 :kwargs]))
                                 (= 1 (count (get-in v [:type :arities 0 :params]))))]
@@ -2135,7 +2150,8 @@
         (do (swap! *rets* assoc sym (:type v)) ; a recursive call sees the declared part only
             (let [fctx {:env (:env ctx) :file (:pfile v) :opts (:opts ctx) :locals {} :quiet true}
                   ars (mapv (fn [a {:keys [params body]}]
-                              (if (and (not shape-candidate?) (not= :unknown (:t (:ret a))))
+                              (if (or (nil? params)
+                                      (and (not shape-candidate?) (not= :unknown (:t (:ret a)))))
                                 a
                                 (let [{:keys [fixed rest]} (env/split-params params)
                                       c (reduce (fn [c [p ty]] (bind-pattern c p ty)) fctx (map vector fixed (:params a)))
@@ -2151,7 +2167,7 @@
                                                        (not-any? :directives (tree-seq (comp seq :children) :children expr)))
                                               (seq (infer-map-edits c (:val param) expr)))]
                                   (cond-> a edits (assoc :map-edits (vec edits))))))
-                            (:arities (:type v)) (:arities (:parts v)))
+                            arities (or spec-bodies bodies))
                   ty (assoc (:type v) :arities ars)]
               (swap! *rets* assoc sym ty)
               ty))))

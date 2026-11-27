@@ -595,6 +595,40 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
 
+(deftest argument-only-spec-infers-results-per-fixed-arity
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::code int?)
+(s/fdef code-of :args (s/cat :row (s/keys :req-un [::code])))
+(defn code-of [{:keys [code]}] code)
+(s/fdef label :args (s/cat :id int?))
+(defn label [id] (str \"object-\" id))
+(s/fdef pick :args (s/alt :text (s/cat :x string?) :integer (s/cat :x int?)))
+(defn pick [x] x)
+(s/fdef varied :args (s/alt :empty (s/cat) :one (s/cat :n int?)))
+(defn varied ([n] n) ([] \"none\"))
+(s/fdef mutable :args (s/cat))
+(defn ^:dynamic mutable [] 1)
+(s/fdef external :args (s/cat :x int?))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(defn text [^String x] x)
+(inc (a/code-of {:code 1}))
+(text (a/code-of {:code 1}))
+(text (a/label 1))
+(inc (a/label 1))
+(text (a/pick \"valid\"))
+(inc (a/pick 2))
+(text (a/pick 2))
+(text (a/varied))
+(inc (a/varied 1))
+(inc (a/varied))
+(text (a/mutable))
+(text (a/external 1))")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 12 "TSP2345"] ["client.clj" 13 "TSP210-01"] ["client.clj" 14 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest collection-spec-options-keep-checking-the-project
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

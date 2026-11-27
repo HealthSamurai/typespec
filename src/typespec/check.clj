@@ -6896,15 +6896,17 @@
       (eff ctx (apply-type ctx ty args f (parse/unparse f)))
       t/unknown)))
 
-(defn- reduction-step [ctx f ty args]
-  (let [ret (reduction-result ctx f ty args)
-        members (t/members (:env ctx) ret)]
+(defn- split-reduced [ctx ret]
+  (let [members (t/members (:env ctx) ret)]
     (if (some reduced-type? members)
       (let [{stopped true continuing false} (group-by reduced-type? members)
             assumed (t/assumption ret)]
         [(t/with-assumption (apply t/union continuing) assumed)
          (t/with-assumption (apply t/union (map reduced-payload stopped)) assumed)])
       [ret t/never])))
+
+(defn- reduction-step [ctx f ty args]
+  (split-reduced ctx (reduction-result ctx f ty args)))
 
 (defn- join-accumulator [ctx acc step]
   (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
@@ -7076,6 +7078,57 @@
           (some #{t/never} [initial source]) (do (infer ctx f) t/never)
           (report-invalid-sequence-args! ctx 'reduce [c] [source]) (do (infer ctx f) t/unknown)
           :else (reduce-over-sequence ctx f initial c source))))))
+
+(defn- reductions-sequence [ctx f initial source]
+  (let [env (:env ctx)
+        source (apply t/union (map #(or (map-entry-sequence %) %) (t/members env source)))
+        {:keys [element lower upper]} (sequence-summary ctx source)
+        [seed initial-stop] (split-reduced ctx (or initial element))
+        start (reduction-start ctx f (widen (dissoc seed :fresh)))
+        max-steps (when upper (max 0 (- upper (if initial 0 1))))
+        step? (and (not= t/never seed) (not= 0 max-steps))
+        empty-call? (and (not initial) (zero? lower))
+        invariant (when step?
+                    (if (and max-steps (<= max-steps 1)) start
+                        (reduction-accumulator ctx f start [element] empty-call?)))
+        step-args [(or invariant start) element]
+        calls (cond-> [] empty-call? (conj []) step? (conj step-args))
+        ty (if (seq calls) (reduction-function ctx f calls) (infer ctx f))
+        empty-value (if empty-call? (reduction-result ctx f ty []) t/never)
+        [next-value stopped] (if step? (reduction-step ctx f ty step-args) [t/never t/never])
+        complete? (and (= t/never initial-stop) (= t/never stopped)
+                       (not= :unknown (:t seed))
+                       (or (not step?) (and invariant (not (#{:unknown :any :never} (:t next-value))))))
+        value (if (and step? (nil? invariant)) t/unknown
+                  (t/union seed initial-stop empty-value next-value stopped))
+        lo (if complete? (max 1 (if initial (inc' lower) lower)) 1)
+        hi (cond
+             (not step?) 1
+             (and (= t/never next-value) (not= t/never stopped)) 2
+             upper (max 1 (if initial (inc' upper) upper)))]
+    (when (and (seq calls) (noncallable-scalar? ty))
+      (report! ctx f "TSP2345" (str "reductions expects a callable value, got " (t/show ty))))
+    (length/with-bounds (coll-of :seq value) lo hi)))
+
+(defmethod special 'reductions [ctx node _]
+  (let [[f a b :as args] (args-of node)]
+    (if-not (#{2 3} (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "reductions expects 2 or 3 arguments")
+          t/unknown)
+      (let [initial (when b (eff ctx (infer ctx a)))
+            coll (or b a)
+            source (eff ctx (infer ctx coll))]
+        (cond
+          (some #{t/never} [initial source]) (do (infer ctx f) t/never)
+          (and initial (every? reduced-type? (t/members (:env ctx) initial)))
+          (do (infer ctx f)
+              (length/with-bounds (coll-of :seq (second (split-reduced ctx initial))) 1 1))
+          (report-invalid-sequence-args! ctx 'reductions [coll] [source])
+          (do (infer ctx f) t/unknown)
+          :else
+          (t/with-assumption (reductions-sequence ctx f initial source)
+                             (or (t/assumption initial) (t/assumption source))))))))
 
 (defn- kv-reduction-input [member]
   (let [opaque {:bounds [0 nil] :key t/unknown :value t/unknown}]

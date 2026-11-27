@@ -70,6 +70,28 @@
   (is (= [0 "0" "0"] (vec (take 3 (iterate #(if (string? %) % (str %)) 0)))))
   (is (thrown? ClassCastException (second (iterate inc "wrong")))))
 
+(deftest reductions-checks-the-selected-reducer-arities-and-early-stops
+  (let [r (checked "(reductions + 0 [1 2])
+(reductions + [])
+(first (reductions inc [1]))
+(first (reductions 42 (reduced \"done\") :unused))
+(reductions (fn [_ x] (reduced x)) 0 [1 2 3])
+(reductions inc [])
+(reductions inc 0 [1])
+(reductions 42 0 [1])
+(reductions + 0 42)
+(reductions +)")]
+    (is (= ["(s/coll-of int? :kind seq? :min-count 3 :max-count 3)"
+            "(s/coll-of int? :kind seq? :min-count 1 :max-count 1)"
+            "int?" "string?" "(s/coll-of int? :kind seq? :min-count 1 :max-count 2)"]
+           (mapv #(at r %) (range 2 7))))
+    (is (= [[7 "TSP2554"] [8 "TSP2554"] [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [0 1 3] (vec (reductions + 0 [1 2]))))
+  (is (= ["done"] (vec (reductions 42 (reduced "done") :unused))))
+  (is (= [0 1] (vec (reductions (fn [_ x] (reduced x)) 0 [1 2 3]))))
+  (is (thrown? clojure.lang.ArityException (first (reductions inc [])))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

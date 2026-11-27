@@ -6851,6 +6851,40 @@
                                                (min 1 lo) hi))))
            (t/assumption source)))))))
 
+(defmethod special 'zipmap [ctx node _]
+  (let [args (args-of node)
+        [keys values :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count types))
+      (do (report! ctx node "TSP2554" "zipmap expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+      (report-invalid-sequence-args! ctx 'zipmap args types) t/unknown
+
+      :else
+      (let [[key-source value-source] (mapv (fn [source]
+                                             (apply t/union
+                                                    (map #(or (map-entry-sequence %) %)
+                                                         (t/members (:env ctx) source))))
+                                           [keys values])
+            key-shape (sequence-summary ctx key-source)
+            value-shape (sequence-summary ctx value-source)
+            key-items (:items key-source)
+            value-items (:items value-source)
+            limits (keep :upper [key-shape value-shape])
+            upper (when (seq limits) (apply min limits))
+            lower (min 1 (:lower key-shape) (:lower value-shape))]
+        (t/with-assumption
+         (cond
+           (= 0 upper) empty-map-shape
+           (and key-items (every? literal-map-key-type? key-items)
+                (or value-items (>= (:lower value-shape) (count key-items))))
+           (reduce (fn [shape [key value]] (assoc-map-key shape (:val key) (dissoc value :fresh)))
+                   empty-map-shape (map vector key-items (or value-items (repeat (:element value-shape)))))
+           :else (length/with-bounds {:t :map-of :k (:element key-shape) :v (:element value-shape)}
+                                     lower upper))
+         (or (t/assumption keys) (t/assumption values)))))))
+
 (defn- check-key-extremum [ctx node head]
   (let [[f & values] (args-of node)
         candidates (mapv #(infer ctx %) values)]

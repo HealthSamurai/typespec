@@ -145,6 +145,26 @@
   (is (= {:a 2 :b 1} (frequencies [:a :a :b])))
   (is (thrown? ClassCastException (subs (:a (frequencies [:a])) 0))))
 
+(deftest zipmap-pairs-positions-and-uses-the-last-value-for-duplicates
+  (let [api (parse/parse-string "values.clj" "(ns values (:require [clojure.spec.alpha :as s]))
+(s/fdef read-values :args (s/cat) :ret (s/tuple string? int?))
+(defn read-values [] [\"word\" 2])")
+        client (parse/parse-string "client.clj" "(ns client (:require [values :as api] [clojure.string :as str]))
+(str/upper-case (:word (zipmap [:word :n] (api/read-values))))
+(inc (:n (zipmap [:word :n] (api/read-values))))
+(inc (:word (zipmap [:word :n] (api/read-values))))
+(:word (zipmap [:word :word] [\"first\" 2]))
+(:missing (zipmap [:word :missing] [\"first\"]) :fallback)
+(:missing (zipmap nil [1]) :fallback)
+(zipmap :bad [1])
+(zipmap [:key])")
+        r (check/check-files [api client] {})]
+    (is (= [[4 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r))))
+    (is (= ["2" ":fallback" ":fallback"] (mapv #(main/type-at r "client.clj" % 1) [5 6 7]))))
+  (is (= {:word 2} (zipmap [:word :word] ["first" 2])))
+  (is (thrown? IllegalArgumentException (zipmap :bad [1]))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

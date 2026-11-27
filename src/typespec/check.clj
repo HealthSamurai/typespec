@@ -958,7 +958,7 @@
   (let [[source & extra] (rest (:children node))]
     (when (and source (empty? extra))
       (case (builtin-head ctx node)
-        seq (some-> (refine-path ctx source #(count-parts 0 %)) rseq vec)
+        (seq not-empty) (some-> (refine-path ctx source #(count-parts 0 %)) rseq vec)
         empty? (when (and (not some?) (not (:guards-disabled? ctx)))
                  (refine-path ctx source #(count-parts 0 %)))
         nil))))
@@ -997,7 +997,7 @@
         [ctx ctx])
 
       (and (= 'not h) (= 1 (count args))) (vec (reverse (narrow ctx a)))
-      (#{'empty? 'seq} h) (or (emptiness-contexts ctx test false) [ctx ctx])
+      (#{'empty? 'seq 'not-empty} h) (or (emptiness-contexts ctx test false) [ctx ctx])
       (= 'and h) (logical-contexts ctx args true)
       (= 'or h) (logical-contexts ctx args false)
 
@@ -5622,6 +5622,33 @@
     (if-let [source (unary-sequence-source ctx node h)]
       (sequence-tail ctx source offset nullable?)
       t/unknown)))
+
+(defmethod special 'not-empty [ctx node _]
+  (let [[arg :as args] (args-of node)]
+    (if (not= 1 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "not-empty expects one argument")
+          t/unknown)
+      (let [source (eff ctx (infer ctx arg))
+            env (:env ctx)]
+        (if (report-invalid-sequence-args! ctx 'not-empty [arg] [source])
+          t/unknown
+          (t/with-assumption
+           (apply t/union
+                  (for [member (t/members env source)
+                        :let [[lo hi] (if-let [entries (map-entry-sequence member)]
+                                        (length/bounds entries)
+                                        (if (= :map (:t member))
+                                          [(count (:req member)) nil]
+                                          (sequence-member-bounds member)))]]
+                    (cond
+                      (= t/never member) t/never
+                      (= 0 hi) t/nil-t
+                      (pos? lo) member
+                      (#{:coll :map-of} (:t member))
+                      (t/union t/nil-t (length/with-bounds member 1 hi))
+                      :else (t/union t/nil-t member))))
+           (t/assumption source)))))))
 
 (defmethod special 'list [ctx node _]
   (let [items (mapv #(dissoc (infer ctx %) :fresh) (args-of node))]

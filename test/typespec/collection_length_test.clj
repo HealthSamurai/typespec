@@ -110,6 +110,25 @@
   (is (= 2 (bounded-count 1.5 (int-array [1 2 3]))))
   (is (thrown? ClassCastException (bounded-count :bad "ab"))))
 
+(deftest not-empty-preserves-the-original-collection-and-refines-the-input
+  (let [r (checked "(not-empty [])
+(first (not-empty [\"word\" 2]))
+(not-empty \"text\")
+(not-empty (int-array 0))
+(s/fdef safe :args (s/cat :xs (s/coll-of int? :kind vector?)) :ret (s/nilable int?))
+(defn safe [xs] (when (not-empty xs) (first xs)))
+(inc (first (not-empty [\"wrong\"])))
+(not-empty true)
+(not-empty)")]
+    (is (= ["nil?" "\"word\"" "\"text\"" "nil?"]
+           (mapv #(at r %) (range 2 6))))
+    (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (let [values (int-array [1])]
+    (is (identical? values (not-empty values))))
+  (is (nil? (not-empty [])))
+  (is (thrown? IllegalArgumentException (not-empty true))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

@@ -264,6 +264,27 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest predicate-conjunctions-retain-known-input-types
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::label #(and (string? %) (< (count %) 8)))
+(s/def ::count (fn [n] (and (number? n) (int? n) (pos? n))))
+(s/fdef render :args (s/cat :label ::label :count ::count) :ret string?)
+(defn render [label count] (str (subs label 0) count))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render \"valid\" 2)
+(a/render :wrong 2)
+(a/render \"valid\" 2.5)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 2 "TSP9002"] ["api.clj" 3 "TSP9002"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"\(< \(count %\) 8\)" (:message (first issues))))
+    (is (re-find #"\(pos\? n\)" (:message (second issues)))))
+  (let [short-text #(and (string? %) (< (count %) 8))]
+    (is (= [true false false]
+           (mapv #(s/valid? short-text %) ["valid" :wrong "longer-than-limit"])))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

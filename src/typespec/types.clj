@@ -753,12 +753,20 @@
                     (literal-set-type arg))
         instance? (when (and (parameter? value) (empty? more))
                     (instance-predicate-type ctx arg))
+        and (let [checks (mapv (fn [clause] [clause (predicate-expression-type ctx parameter? clause)])
+                               (rest expression))]
+              (when-let [known (seq (keep second checks))]
+                (when-let [opaque (:fail ctx)]
+                  (doseq [[clause type] checks :when (nil? type)]
+                    (opaque clause)))
+                (vary-meta (reduce #(or (narrower-scalar-contract {} #{} %1 %2) %1) known)
+                           assoc ::unchecked-contract true)))
         or (let [branches (mapv #(predicate-expression-type ctx parameter? %) (rest expression))]
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
                    (contains? '#{list? vector? map? set? string? keyword? symbol? boolean?
-                                 true? false? nil? any? char? bytes? class?} op))
+                                 true? false? nil? some? any? char? bytes? class? int? number?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 
 (defn predicate-spec-type

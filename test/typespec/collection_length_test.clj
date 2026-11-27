@@ -825,6 +825,22 @@
     (is (= ["\"word\"" ":second" "nil?" "nil?" "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"]
            (mapv #(at r %) (range 2 7))))))
 
+(deftest distinct-keeps-the-first-occurrence-and-known-length
+  (let [r (checked "(first (distinct [:first :first :second]))
+(second (distinct [:first :first :second]))
+(distinct [nil nil false nil])
+(distinct [])
+(distinct 42)
+(distinct [] :extra)
+(distinct #{1 2})
+(distinct {:k 1})")]
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= [":first" ":second" "(s/coll-of (s/nilable boolean?) :kind seq? :min-count 2 :max-count 2)"
+            "(s/coll-of t/never :kind seq? :max-count 0)"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

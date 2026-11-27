@@ -4292,6 +4292,10 @@
       (do (run! #(infer ctx %) args)
           (report! ctx node "TSP2554" (str head " expects one argument"))))))
 
+(defn- unordered-collection? [member]
+  (or (#{:map :map-of} (:t member))
+      (#{:map :set} (or (:kind member) (:name member)))))
+
 (defn- spread-element-type [ctx member]
   (if (array-component member)
     (array-read-type member)
@@ -5401,7 +5405,46 @@
       t/never
       (list-value-type ctx items))))
 
-(doseq [h '[distinct shuffle set]]
+(defn- distinct-positions [items]
+  (when (and items (every? #(#{:lit :nil} (:t %)) items))
+    (second
+     (reduce (fn [[seen result] item]
+               (let [value (:val item)]
+                 (if (contains? seen value)
+                   [seen result]
+                   [(conj seen value) (conj result item)])))
+             [#{} []] items))))
+
+(defn- unique-sequence [ctx source kind]
+  (t/with-assumption
+   (apply t/union
+          (for [member (t/members (:env ctx) source)]
+            (if (= t/never member)
+              t/never
+              (let [member (or (map-entry-sequence member) member)
+                    items (distinct-positions (:items member))
+                    [lo hi] (sequence-member-bounds member)
+                    lower (cond items (count items) (= :set (:kind member)) lo :else (min 1 lo))
+                    upper (if items (count items) hi)
+                    element (cond (= 0 upper) t/never
+                                  items (apply t/union items)
+                                  :else (member-element member))]
+                (cond-> (length/with-bounds (coll-of kind element) lower upper)
+                  (and items (= :seq kind)) (assoc :items items))))))
+   (t/assumption source)))
+
+(defmethod special 'distinct [ctx node _]
+  (if (empty? (args-of node))
+    t/unknown
+    (if-let [source (unary-sequence-source ctx node 'distinct)]
+      (if-let [bad (some #(when (unordered-collection? %) %) (t/members (:env ctx) (eff ctx source)))]
+        (do (report! ctx (first (args-of node)) "TSP2345"
+                     (str "distinct cannot read the first position from " (t/show bad)))
+            t/unknown)
+        (unique-sequence ctx source :seq))
+      t/unknown)))
+
+(doseq [h '[shuffle set]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)
           el (elem-type ctx (infer ctx c))]

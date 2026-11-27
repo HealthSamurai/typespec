@@ -1467,6 +1467,24 @@
                  (str "hint " (t/show h) " contradicts the " what ": " (t/show (dissoc actual :platform))))))
     h))
 
+(defn- invalid-vector-pattern-input? [rest? member]
+  (case (:t member)
+    (:map :map-of) (not rest?)
+    :coll (and (= :set (:kind member)) (not rest?))
+    :lit (not (string? (:val member)))
+    :prim (or (#{:int :double :boolean :keyword :symbol :uuid} (:name member))
+              (and (not rest?) (#{:map :set} (:name member))))
+    false))
+
+(defn- check-vector-pattern-input! [ctx pattern members]
+  (let [positional (take-while #(not (and (= :kw (:op %)) (= :as (:val %)))) (:children pattern))
+        rest? (some #(and (= :sym (:op %)) (= '& (:val %))) positional)]
+    (when (seq positional)
+      (when-let [bad (first (filter #(invalid-vector-pattern-input? rest? %) members))]
+        (report! ctx pattern "TSP2345"
+                 (str "vector destructuring uses " (if rest? "seq" "nth")
+                      ", which does not accept " (t/show bad)))))))
+
 (defn bind-pattern
   ([ctx pattern ty] (bind-pattern ctx pattern ty nil))
   ([ctx pattern ty why] (bind-pattern ctx pattern ty why nil))
@@ -1484,6 +1502,7 @@
               origin (remember-projection (:val pattern) origin path)))
      :map (destructure-map ctx pattern ty why projection)
      :vector (let [members (t/members (:env ctx) ty)
+                   _ (check-vector-pattern-input! ctx pattern members)
                    sequence-positions? (every? #(or (#{:vector :seq} (:kind %)) (= :nil (:t %))) members)
                    [ctx origin path] (if (or sequence-positions? (every? :items members))
                                        (track-path ctx (or projection {:path [] :type ty}))

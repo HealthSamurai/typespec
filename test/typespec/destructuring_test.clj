@@ -121,6 +121,37 @@
         (pr-str issues))
     (is (str/includes? (:message (first issues)) "hint String contradicts the type"))))
 
+(deftest vector-destructuring-checks-the-input-operation
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef head :args (s/cat :value (s/tuple string? int?)) :ret string?)
+(defn head [[label _]] label)
+(s/fdef invalid-head :args (s/cat :value int?) :ret any?)
+(defn invalid-head [[x]] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/head [\"good\" 1])
+(a/head [1 \"wrong\"])
+(let [[x] {:a 1}] x)
+(let [[x] #{1}] x)
+(let [[x & xs] {:a 1}] x)
+(let [[x & xs] #{1}] x)
+(let [[& xs] 42] xs)
+(let [[:as x] 42] x)
+(let [[] 42] :ok)
+(let [[x] \"a\"] x)
+(let [[x] nil] x)
+(let [[x] (int-array [3])] x)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 5 "TSP2345"] ["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (str/includes? (:message (nth issues 2)) "uses nth"))
+    (is (str/includes? (:message (last issues)) "uses seq")))
+  (is (= [:a 1] (let [[x & xs] {:a 1}] x)))
+  (is (= 42 (let [[:as x] 42] x)))
+  (is (thrown? UnsupportedOperationException (let [[x] {:a 1}] x)))
+  (is (thrown? IllegalArgumentException (let [[& xs] 42] xs))))
+
 (deftest computed-selectors-check-the-expression-and-bind-the-selected-field
   (let [issues (diagnostics "(let [key :n {n key} {:n 2}] (inc n))
 (let [key \"n\" {n key} {\"n\" \"bad\"}] (inc n))

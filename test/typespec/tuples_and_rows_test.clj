@@ -77,6 +77,20 @@
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
   (is (= {:a "word" :b 2} (clojure.set/rename-keys {:a 2 :b "word"} {:a :b :b :a}))))
 
+(deftest map-invert-swaps-key-value-types-and-accounts-for-collisions
+  (let [r (checked "(:ready (clojure.set/map-invert {:source :ready}))
+(:ready (clojure.set/map-invert {:left :ready :right :ready}))
+(:missing (clojure.set/map-invert nil) :default)
+(name (:ready (clojure.set/map-invert {:source :ready})))
+(inc (:ready (clojure.set/map-invert {:source :ready})))
+(clojure.set/map-invert 42)
+(clojure.set/map-invert)")]
+    (is (= [":source" "#{:left :right}" ":default" "\"source\""] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= {:ready :source} (clojure.set/map-invert {:source :ready})))
+  (is (contains? #{:left :right} (:ready (clojure.set/map-invert {:left :ready :right :ready})))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

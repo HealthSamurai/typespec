@@ -7722,6 +7722,37 @@
 (defmethod special 'update-keys [ctx node _]
   (check-kv-rewrite ctx node 'update-keys :key rewritten-map-keys))
 
+(defn- invert-map-fields [ctx source]
+  (let [{[lo hi] :bounds key :key value :value} (kv-rewrite-input source)
+        open? (and (= :map (:t source)) (not (:complete-keys? source)) (not (:map-index source)))
+        fields (concat (:req source) (remove (comp #{t/never} val) (:opt source)))
+        pairs (mapv (fn [[k v]] [k (selector-literal-key (t/resolve-t (:env ctx) v))]) fields)]
+    (cond
+      (= :never (:t source)) t/never
+      (= 0 hi) empty-map-shape
+      (and (:complete-keys? source) (every? (comp some? second) pairs))
+      (reduce-kv (fn [shape v entries]
+                   (let [keys (map first entries)
+                         slot (if (some #(contains? (:req source) %) keys) :req :opt)]
+                     (assoc-in shape [slot v] (apply t/union (map t/lit keys)))))
+                 empty-map-shape (group-by second pairs))
+      :else (length/with-bounds {:t :map-of :k (if open? t/unknown value) :v (if open? t/unknown key)}
+                               (min 1 lo) hi))))
+
+(defmethod special 'clojure.set/map-invert [ctx node _]
+  (let [[coll :as args] (args-of node)]
+    (if (not= 1 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "map-invert expects one argument")
+          t/unknown)
+      (let [source (eff ctx (infer ctx coll))]
+        (if-let [bad (invalid-kv-source ctx source)]
+          (do (report! ctx coll "TSP2345" (str "map-invert cannot reduce keys and values of " (t/show bad)))
+              t/unknown)
+          (t/with-assumption
+           (apply t/union (map #(invert-map-fields ctx %) (t/members (:env ctx) source)))
+           (t/assumption source)))))))
+
 (doseq [[head part] {'keys :key 'vals :value}]
   (defmethod special head [ctx node _]
     (let [args (args-of node)

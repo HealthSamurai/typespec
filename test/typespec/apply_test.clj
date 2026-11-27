@@ -258,6 +258,20 @@
   (is (= #{:a :b} (apply hash-set [:a :a :b])))
   (is (thrown? ClassCastException (subs (first (hash-set 1)) 0))))
 
+(deftest applies-core-positional-readers-with-their-original-rules
+  (let [r (checked "(apply first [[\"text\" 2]])
+(apply clojure.core/second [[\"text\" 2]])
+(apply first [[nil 2]])
+(let [first (fn [_] :local)] (apply first [[]]))
+(apply first [42])
+(apply second [])
+(inc (apply first [[\"wrong\"]]))")]
+    (is (= ["\"text\"" "2" "nil?" ":local"] (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2554"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= 2 (apply second [["text" 2]])))
+  (is (thrown? IllegalArgumentException (apply first [42]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

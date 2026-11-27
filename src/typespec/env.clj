@@ -630,17 +630,19 @@
 
 (defn- factory-var [sym {:keys [file pos factory-arity]} fdef diags]
   (let [contracts (get-in fdef [:type :arities])
+        return-only (get-in fdef [:type :ret])
         matches? (fn [arity] (and (= factory-arity (count (:params arity)))
                                   (not (:rest arity)) (not (:kwargs arity))))
-        valid (vec (filter matches? contracts))]
+        valid (vec (filter matches? contracts))
+        use-spec? (or (seq valid) return-only)]
     (when (and fdef (some (complement matches?) contracts))
       (note diags fdef fdef "TSP2790"
             (str "s/fdef of " sym " must have the generated factory arity " factory-arity)))
     {:file (:file file) :pos pos :factory-arity factory-arity
-     :source (if (seq valid) :fdef :record)
-     :contract (when (seq valid) (select-keys fdef [:file :pos]))
+     :source (if use-spec? :fdef :record)
+     :contract (when use-spec? (select-keys fdef [:file :pos]))
      :type {:t :fn :arities (if (seq valid) valid
-                              [{:params (vec (repeat factory-arity t/unknown)) :ret t/unknown}])}}))
+                              [{:params (vec (repeat factory-arity t/unknown)) :ret (or return-only t/unknown)}])}}))
 
 (defn- function-var [env operator-env sym d fd diags]
   (let [sig (when (:sig d)

@@ -56,6 +56,26 @@
         (pr-str ds))
     (is (= :fdef (get-in r [:env :vars 'records.provider/->Entry :source])))))
 
+(deftest record-factories-keep-return-only-specs-and-generated-arities
+  (let [r (checked "(ns records.provider (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/def ::entry (s/keys :req-un [::label]))
+(defrecord Entry [label])
+(s/fdef ->Entry :ret ::entry)
+(s/fdef map->Entry :ret ::entry)"
+                   "(ns records.client (:require [records.provider :as p] [clojure.string :as str]))
+(str/upper-case (:label (p/->Entry \"ok\")))
+(inc (:label (p/->Entry \"ok\")))
+(str/upper-case (:label (apply p/map->Entry [{:label \"ok\"}])))
+(inc (:label (p/map->Entry {:label \"ok\"})))
+(p/->Entry)
+(p/map->Entry {} {})")
+        diagnostics (:diagnostics r)]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP2554"] ["client.clj" 7 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest explicit-redefinitions-replace-factory-signatures
   (let [r (checked
            "(ns records.provider)

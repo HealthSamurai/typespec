@@ -3308,6 +3308,18 @@
        (when (and (= :lit (:t member)) (or (string? value) (ident? value)))
          (t/lit (name value)))))))
 
+(defn- parsed-string-result [ctx node parse result-type]
+  (core-unary-result
+   ctx node
+   (fn [member]
+     (when (and (= :lit (:t member)) (string? (:val member)))
+       (if-some [value (parse (:val member))]
+         (result-type value)
+         t/nil-t)))))
+
+(defmethod special 'parse-long [ctx node _]
+  (parsed-string-result ctx node parse-long t/lit))
+
 (defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
 
 (defmethod special 'time [ctx node _]

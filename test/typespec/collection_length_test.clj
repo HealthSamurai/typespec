@@ -810,6 +810,21 @@
     (is (= ["\"word\"" ":second" "nil?" "2"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
+  (let [r (checked "(first (take-last 1 [1 \"word\"]))
+(first (take-last 0.5 [:first :second]))
+(take-last 0 [1])
+(take-last 2 nil)
+(take-last 2 [1 2 3])
+(inc (first (take-last 1 [2 \"word\"])))
+(take-last 1)
+(take-last true [1])")]
+    (is (= [[7 "TSP2345"] [8 "TSP2554"] [9 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"word\"" ":second" "nil?" "nil?" "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"]
+           (mapv #(at r %) (range 2 7))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

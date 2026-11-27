@@ -5434,22 +5434,31 @@
             (do (report! ctx source "TSP2345" (str head " cannot sequence " (t/show bad))) t/unknown)
             (t/with-assumption (transform ty limit) (or (t/assumption n) (t/assumption ty)))))))))
 
-(defn- limited-sequence [ctx source limit]
+(defn- limited-sequence [ctx from-end? source limit]
   (apply t/union
          (for [member (t/members (:env ctx) source)
                :let [member (or (map-entry-sequence member) member)
                      [lo hi] (sequence-member-bounds member)
                      upper (if limit (if hi (min hi limit) limit) hi)
                      items (when (and limit (:items member))
-                             (subvec (:items member) 0 (int upper)))
+                             (let [items (:items member)]
+                               (if from-end?
+                                 (subvec items (- (count items) (int upper)))
+                                 (subvec items 0 (int upper)))))
                      element (cond (= 0 upper) t/never
                                    items (apply t/union items)
-                                   :else (member-element member))]]
-           (cond-> (length/with-bounds (coll-of :seq element) (if limit (min lo limit) 0) upper)
-             items (assoc :items items)))))
+                                   :else (member-element member))
+                     lower (if limit (min lo limit) 0)
+                     result (cond-> (length/with-bounds (coll-of :seq element) lower upper)
+                              items (assoc :items items))]]
+           (cond
+             (not from-end?) result
+             (= 0 upper) t/nil-t
+             (pos? lower) result
+             :else (t/union (length/with-bounds result 1 upper) t/nil-t)))))
 
 (defmethod special 'take [ctx node _]
-  (check-sequence-slice ctx node 'take true (partial limited-sequence ctx)))
+  (check-sequence-slice ctx node 'take true (partial limited-sequence ctx false)))
 
 (defmethod special 'drop [ctx node _]
   (check-sequence-slice
@@ -5463,11 +5472,8 @@
                           [_ hi] (sequence-member-bounds member)]]
                 (length/with-bounds (coll-of :seq (if (= 0 hi) t/never (member-element member))) 0 hi)))))))
 
-(doseq [h '[take-last]]
-  (defmethod special h [ctx node _]
-    (let [[n c] (args-of node)]
-      (infer ctx n)
-      (coll-of :seq (elem-type ctx (infer ctx c))))))
+(defmethod special 'take-last [ctx node _]
+  (check-sequence-slice ctx node 'take-last false (partial limited-sequence ctx true)))
 
 (defn- partition-count [size step]
   (when (some? size)

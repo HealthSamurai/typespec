@@ -154,6 +154,20 @@
     (and (seq arities)
          (every? #(and (= arity (count (:params %))) (not (:rest %)) (not (:kwargs %))) arities))))
 
+(defn- fill-spec-arguments [source external]
+  (when (:return-only? source)
+    (let [result (get-in source [:type :arities 0 :ret])
+          type (:type external)
+          generic? (= :all (:t type))
+          arities (:arities (if generic? (:body type) type))]
+      (when (and result (seq arities)
+                 (every? #(or (= t/unknown (:ret %)) (t/alpha-equivalent? result (:ret %))) arities))
+        (let [arities (mapv #(assoc % :ret result) arities)]
+          (-> source
+              (merge (select-keys external [:extern/path :extern/resource :complete?]))
+              (assoc :return-only? false
+                     :type (if generic? (assoc-in type [:body :arities] arities) (assoc type :arities arities)))))))))
+
 (defn merge-contracts
   "Merges externs with source declarations. Source contracts win conflicts.
   An unannotated source function keeps its body and receives the extern signature."
@@ -171,13 +185,15 @@
                            source-contract? (and old (or (= bucket :specs)
                                                          (not (#{:hints :record} (:source old)))
                                                          (:tagged? old)))
-                           factory-arity (:factory-arity old)]
+                           factory-arity (:factory-arity old)
+                           combined (when (= :vars bucket) (fill-spec-arguments old ext))]
                        (cond
                          (and (some? factory-arity) (not (factory-signature? factory-arity (:type ext))))
                          (do (swap! diags conj (diagnostic (:file ext) "TSP2790"
                                                          (str "extern " k " must have the generated factory arity "
                                                               factory-arity)))
                              env)
+                         combined (assoc-in env [bucket k] combined)
                          source-contract?
                          (do (when (not (t/alpha-equivalent? (:type old) (:type ext)))
                                (swap! diags conj (diagnostic (:file ext) "TSP2790"

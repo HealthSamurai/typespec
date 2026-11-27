@@ -10,7 +10,8 @@
   (let [root (.toFile (java.nio.file.Files/createTempDirectory "typespec-extern-" (make-array java.nio.file.attribute.FileAttribute 0)))]
     (try
       (.mkdir (io/file root "src"))
-      (spit (io/file root "src/app.clj") source)
+      (doseq [[name content] (if (map? source) source {"app.clj" source})]
+        (spit (io/file root "src" name) content))
       (spit (io/file root "api.edn") extern)
       (spit (io/file root "other.edn") "{app/f [int? :-> int?]}")
       (spit (io/file root "typespec.edn") (pr-str (merge {:externs ["api.edn"]} cfg)))
@@ -57,6 +58,29 @@
                   "(ns app (:require [clojure.spec.alpha :as s])) (s/def :api/name int?)"]]
     (project source "{app/f [int? :-> int?] :api/name string?}" {}
              #(is (contains? (codes %) "TSP2790")))))
+
+(deftest extern-arguments-complement-a-source-return-spec
+  (project {"api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef format-number :ret string?)
+(defn format-number [n] (str n))
+(s/fdef wrong :ret string?)
+(defn wrong [n] (+ n 1))
+(s/fdef disagree :ret string?)
+(defn disagree [n] (str n))"
+            "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/format-number 1))
+(a/format-number \"wrong\")
+(inc (a/disagree 1))"}
+           "{api/format-number [int? :-> string?]
+             api/wrong [int? :-> t/unknown]
+             api/disagree [int? :-> int?]}" {}
+           (fn [res]
+             (is (= [["api.edn" 1 "TSP2790"] ["src/api.clj" 5 "TSP2322"]
+                     ["src/client.clj" 3 "TSP2345"] ["src/client.clj" 4 "TSP2345"]]
+                    (mapv (juxt :file (comp :row :pos) :code) (:diagnostics res)))
+                 (pr-str (:diagnostics res)))
+             (is (= :fdef (get-in res [:env :vars 'api/format-number :source])))
+             (is (= "api.edn" (get-in res [:env :vars 'api/format-number :extern/path]))))))
 
 (deftest record-factories-accept-externs-with-the-generated-arity
   (project "(ns app) (defrecord Entry [label]) (->Entry \"ok\") (->Entry 42) (map->Entry {}) (map->Entry)"

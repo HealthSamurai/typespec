@@ -87,6 +87,20 @@
     (is (= 2 (f 2)))
     (is (thrown? AssertionError (f 2.5)))))
 
+(deftest incompatible-preconditions-point-at-the-conflicting-condition
+  (let [r (checked "(defn possible [x] {:pre [(int? x) (number? x)]} x)
+(defn impossible [x] {:pre [(string? x) (number? x)]} x)
+(possible 42)
+(impossible 42)
+(impossible \"text\")")]
+    (is (= [[3 "TSP114-01"] [5 "TSP2345"] [6 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= 41 (get-in r [:diagnostics 0 :pos :col]))))
+  (let [f (fn [x] {:pre [(string? x) (number? x)]} x)]
+    (is (thrown? AssertionError (f 42)))
+    (is (thrown? AssertionError (f "text")))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

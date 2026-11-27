@@ -258,12 +258,37 @@
                 [(:val b) (t/ref-t (:val a)) test])))
           (pre-conditions body))))
 
-(defn- pre-types [env file params body]
-  (reduce (fn [facts [param type]]
-            (update facts param
-                    (fn [previous]
-                      (if (or (nil? previous) (t/sub? env type previous)) type previous))))
-          {} (pre-facts file params body)))
+(defn- precondition-domain [ty]
+  (case (:t ty)
+    :nil :nil
+    :lit (recur (t/lit-prim (:val ty)))
+    :prim (case (:name ty)
+            (:int :double :number) :number
+            (:string :keyword :symbol :boolean :uuid :inst) (:name ty)
+            nil)
+    nil))
+
+(defn- incompatible-preconditions? [env left right]
+  (every? (fn [[a b]] (and a b (not= a b)))
+          (for [left (t/members env left)
+                right (t/members env right)]
+            [(precondition-domain left) (precondition-domain right)])))
+
+(defn- pre-types [env file params body conflict!]
+  (let [fixed (into #{} (keep #(when (= :sym (:op %)) (:val %))) (:fixed (split-params params)))]
+    (reduce (fn [facts [param type test]]
+              (if-not (fixed param)
+                facts
+                (let [previous (get facts param)]
+                  (assoc facts param
+                         (cond
+                           (nil? previous) type
+                           (= t/never previous) previous
+                           (t/sub? env type previous) type
+                           (incompatible-preconditions? env previous type)
+                           (do (conflict! test param previous type) t/never)
+                           :else previous)))))
+            {} (pre-facts file params body))))
 
 (defn pattern-type
   "Type a parameter must have, as far as its hint or destructuring pattern says."
@@ -278,11 +303,11 @@
              :opt (into (array-map) (for [[k req?] ks :when (not req?)] [k (ty k)]))})))
       t/unknown))
 
-(defn- hints-sig [env file parts]
+(defn- hints-sig [env file parts conflict!]
   {:t :fn
    :arities (vec (for [{:keys [params body]} (:arities parts)
                        :let [{:keys [fixed rest]} (split-params params)
-                             pre (pre-types env file params body)]]
+                             pre (pre-types env file params body conflict!)]]
                    (cond-> {:params (mapv #(or (when (= :sym (:op %)) (get pre (:val %)))
                                                (pattern-type env file %))
                                           fixed)
@@ -496,7 +521,12 @@
                                    (operator-errors diags (:file d) (:sig-pos d))))
         declared (or sig (:type fd))
         invalid? (operators/invalid? sig)
-        hints (when-not declared (hints-sig env (:file d) (:parts d)))]
+        hints (when-not declared
+                (hints-sig env (:file d) (:parts d)
+                           (fn [at param previous type]
+                             (note diags (:file d) at "TSP114-01"
+                                   (str "incompatible preconditions on " param ": "
+                                        (t/show previous) " and " (t/show type))))))]
     (when (and sig fd (not invalid?) (not (t/alpha-equivalent? sig (:type fd))))
       (note diags (:file d) (:name (:parts d)) "TSP2790"
             (str "t/sig and s/fdef of " (name sym) " disagree: "

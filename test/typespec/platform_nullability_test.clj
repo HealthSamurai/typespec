@@ -51,6 +51,24 @@
                (mapv (juxt (comp :row :pos) :code :message) ds))
             (pr-str ds))))))
 
+(deftest expression-hints-preserve-nil-from-project-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef label :args (s/cat :flag boolean?) :ret (s/nilable string?))
+(defn label [flag] (when flag \"hello\"))")
+        client (parse/parse-string "client.clj"
+                 "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef bad :args (s/cat :flag boolean?))
+(defn bad [flag] (.length ^String (a/label flag)))
+(s/fdef good :args (s/cat :flag boolean?))
+(defn good [flag]
+  (when-let [label (a/label flag)] (.length ^String (identity label))))
+(.length ^String (identity nil))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2531" "(a/label flag) may be nil"]
+            ["client.clj" 7 "TSP2531" "(identity nil) is nil"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest platform-values-in-maps-and-tuples-are-checked-across-namespaces
   (let [client "(api/consume {:parent (.getParentFile (java.io.File. \"file\"))})
 (api/consume-pair [1 (.getParentFile (java.io.File. \"file\"))])

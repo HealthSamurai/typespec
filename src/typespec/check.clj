@@ -9031,9 +9031,16 @@
               (if callback-arity (infer-callback ctx node callback-arity) (infer* ctx node)))
          ty (if-let [h (and (not= :sym (:op node)) (env/hint-type (:file ctx) node))]
               (do (check-hint! ctx node ty "type of the expression")
-                  (if-let [why (:null-return (meta ty))]
-                    (with-meta (t/union (dissoc h :platform) t/nil-t) {:null-return why})
-                    h))
+                  (let [members (t/members (:env ctx) ty)
+                        nil-member (or (first (filter #(= :nil (:t %)) members))
+                                       ;; A nullable Java method may have an opaque
+                                       ;; value type, which absorbs nil in a union.
+                                       (when (:null-return (meta ty)) t/nil-t))]
+                    (cond
+                      (nil? nil-member) h
+                      (every? #(= :nil (:t %)) members) nil-member
+                      :else (with-meta (t/union (dissoc h :platform) nil-member)
+                              (select-keys (meta ty) [:null-return ::t/assumption])))))
               ty)
          ty (if-let [cast (find-d 't/cast)]
               (do (record-escape! ctx cast :cast)

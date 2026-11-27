@@ -141,6 +141,34 @@
   (is (thrown? IndexOutOfBoundsException (apply ["text"] [1])))
   (is (thrown? IllegalArgumentException (apply ["text"] [0.5]))))
 
+(deftest direct-calls-use-typed-data-lookups
+  (let [config (parse/parse-string "config.clj" "(ns config)
+(def ^:const routes {:auto \"ready\" :manual 42})")
+        client (parse/parse-string "client.clj"
+                 "(ns client (:require [config :as c] [clojure.spec.alpha :as s]))
+(s/fdef auto-label :args (s/cat) :ret string?)
+(defn auto-label [] (c/routes :auto))
+(s/fdef wrong-label :args (s/cat) :ret string?)
+(defn wrong-label [] (c/routes :manual))
+(let [row {:port 443}] (inc (row :port)))
+(let [row {:port \"443\"}] (inc (row :port)))
+({:title nil} :title :default)
+(c/routes :missing :default)
+((quote status) {(quote status) :open})
+(let [pair [\"root\" 2]] (inc (pair 1)))
+([\"root\" 2] 2)
+(#{:auto} :auto)
+(#{:auto} :auto :default)")
+        result (check/check-files [client config] {})]
+    (is (= [[5 "TSP2322"] [7 "TSP2345"] [12 "TSP330-02"] [14 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["nil?" ":default" ":open" ":auto"]
+           (mapv #(main/type-at result "client.clj" % 1) [8 9 10 13]))))
+  (is (= [nil :default :open :auto]
+         [({:title nil} :title :default) ({:title nil} :missing :default)
+          ('status {'status :open}) (#{:auto} :auto)])))
+
 (deftest cons-produces-a-typed-prefix-for-apply
   (let [r (checked "(apply subs (cons \"text\" [1]))
 (apply subs (cons \"text\" (int-array [1])))

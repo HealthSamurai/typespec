@@ -4875,6 +4875,22 @@
                         :else (or (:of vector) t/unknown)))]
           (t/with-assumption (apply t/union parts) (t/assumption index)))))))
 
+(defn- callable-data-result [ctx node target label type arg-nodes arg-types]
+  (let [members (t/members (:env ctx) type)]
+    (cond
+      (and (= :lit (:t type)) (ident? (:val type)))
+      (apply-key-lookup ctx node label (:val type) arg-types)
+
+      (spread-map-target? members)
+      (apply-map-lookup ctx node label type arg-types)
+
+      (spread-set-target? members)
+      (apply-set-lookup ctx node target label type arg-types)
+
+      (every? vector-member? members)
+      (t/with-assumption (apply-vector-lookup ctx node label members arg-nodes arg-types)
+                         (t/assumption type)))))
+
 (defn- constructed-vector [ctx types]
   (if (some #{t/never} types)
     t/never
@@ -4968,8 +4984,7 @@
                                  (t/resolve-t (:env ctx) (infer ctx f (spread-context items)))
                                  ftype)
                             types (into prefix-types items)
-                            nodes (into prefix (spread-tail-nodes tail items))
-                            members (t/members (:env ctx) ty)]
+                            nodes (into prefix (spread-tail-nodes tail items))]
                         (cond
                           (= :never (:t ty)) t/never
                           (= 'vector constructor) (constructed-vector ctx types)
@@ -4988,18 +5003,10 @@
                             (if (and unary-refiner (= 1 (count types)))
                               (refine-unary-result ctx (first types) result unary-refiner)
                               result))
-                          (and (= :lit (:t ty)) (ident? (:val ty)))
-                          (apply-key-lookup ctx node label (:val ty) types)
-                          (spread-map-target? members)
-                          (apply-map-lookup ctx node label ty types)
-                          (spread-set-target? members)
-                          (apply-set-lookup ctx node f label ty types)
-                          (every? vector-member? members)
-                          (t/with-assumption (apply-vector-lookup ctx node label members nodes types)
-                                             (t/assumption ty))
                           :else
-                          (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
-                              t/unknown))))
+                          (or (callable-data-result ctx node f label ty nodes types)
+                              (do (when-not (= :any (:t ty)) (check-composable! ctx f ty "apply"))
+                                  t/unknown)))))
                     known-spreads)))
 
           candidates
@@ -9031,6 +9038,14 @@
     (run! #(infer ctx %) args)
     t/unknown))
 
+(defn- call-typed-value [ctx node target type args arg-types]
+  (let [type (if (= :ref (:t type)) (t/resolve-t (:env ctx) type) type)
+        label (parse/unparse target)]
+    (if (or (#{:fn :all} (:t type)) (seq (:arities type)))
+      (call-fn ctx node label type args arg-types)
+      (let [inputs (or arg-types (mapv #(infer ctx %) args))]
+        (or (callable-data-result ctx node target label type args inputs) t/unknown)))))
+
 (defn- infer-list [ctx node]
   (let [h (first (:children node))
         args (args-of node)
@@ -9048,19 +9063,13 @@
       (not= :sym (:op h))
       (let [types (when (inline-callback? ctx h) (mapv #(infer ctx %) args))
             ft (t/resolve-t (:env ctx) (eff ctx (infer ctx h (some-> types direct-callback-context))))]
-        (if (#{:fn :all} (:t ft))
-          (call-fn ctx node (parse/unparse h) ft args types)
-          (do (when-not types (run! #(infer ctx %) args)) t/unknown)))
+        (call-typed-value ctx node h ft args types))
       (contains? (:locals ctx) (:val h))
       (if-let [callback (deferred-callback ctx h)]
         (let [types (mapv #(infer ctx %) args)
               ft (force-callback ctx callback (direct-callback-context types))]
           (apply-type ctx ft types node (str (:val h))))
-        (let [local (get-in ctx [:locals (:val h)])
-              ft (if (= :ref (:t local)) (t/resolve-t (:env ctx) local) local)]
-          (if (or (= :all (:t ft)) (seq (:arities ft)))
-            (call-fn ctx node (str (:val h)) ft args)
-            (do (run! #(infer ctx %) args) t/unknown))))
+        (call-typed-value ctx node h (get-in ctx [:locals (:val h)]) args nil))
       :else
       (let [sym (:val h) n (name sym) head (env/head file node)
             own? (and (nil? (namespace (env/resolve-sym file sym)))
@@ -9100,7 +9109,7 @@
           :else
           (let [{:keys [type]} (read-var ctx sym h :call)]
             (if type
-              (call-fn ctx node (str sym) type args)
+              (call-typed-value ctx node h type args nil)
               (check-unknown-call ctx args))))))))
 
 (defn- literal-element-type [ctx types]

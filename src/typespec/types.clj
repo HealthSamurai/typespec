@@ -843,11 +843,27 @@
                     (vary-meta (union type nil-t) merge (select-keys (meta type) [::referenced-specs])))
                   (or (partial-instance-type ctx form) (predicate-spec-type ctx form)))))
 
+(defn spec-option-map
+  "Reads keyword argument pairs with an optional trailing map."
+  [options]
+  (if (even? (count options))
+    (apply hash-map options)
+    (when (map? (last options))
+      (into (apply hash-map (butlast options)) (last options)))))
+
 (defn- conjunction-input-shape [ctx form seen]
   (cond
     (qualified-keyword? form) (named-spec-input ctx form seen conjunction-input-shape)
-    (and (seq? form) (#{:s/keys :s/tuple} (type-form-op ctx (first form))))
-    (parse-type ctx form)))
+    (seq? form)
+    (case (type-form-op ctx (first form))
+      (:s/keys :s/tuple) (parse-type ctx form)
+      :s/map-of (let [{:keys [kind]} (spec-option-map (drop 3 form))]
+                  (when (or (nil? kind) (= 'map? (core-name ctx kind)))
+                    (parse-type ctx form)))
+      :s/coll-of (let [{:keys [kind]} (spec-option-map (drop 2 form))]
+                   (when (or (nil? kind) (#{'vector? 'set? 'list? 'seq?} (core-name ctx kind)))
+                     (parse-type ctx form)))
+      nil)))
 
 (defn- spec-conjunction-type [ctx forms]
   ;; The first transforming spec can still constrain the original input
@@ -886,14 +902,6 @@
           and (conjunctive-keys branches)
           or (bounded-branches (mapcat identity branches))
           nil)))))
-
-(defn spec-option-map
-  "Reads keyword argument pairs with an optional trailing map."
-  [options]
-  (if (even? (count options))
-    (apply hash-map options)
-    (when (map? (last options))
-      (into (apply hash-map (butlast options)) (last options)))))
 
 (defn- spec-keys-options [args]
   (when-let [{:keys [req opt req-un opt-un] :as options} (spec-option-map args)]

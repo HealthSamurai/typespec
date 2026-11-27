@@ -360,6 +360,33 @@
     (is (= [:api/record :schema/row-alias :schema/row] (get dependencies :schema/row)))
     (is (= [:api/entry :schema/pair] (get dependencies :schema/pair)))))
 
+(deftest spec-and-preserves-homogeneous-collection-inputs
+  (let [domain (parse/parse-string "domain.clj" "(ns domain
+  (:refer-clojure :exclude [vector?])
+  (:require [clojure.spec.alpha :as spec]))
+(defn vector? [x] (map? x))
+(spec/def ::by-name (spec/map-of string? int?))
+(spec/def ::counts (spec/coll-of int? :kind clojure.core/vector? :min-count 1))
+(spec/def ::custom (spec/coll-of any? :kind vector?))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/fdef read-index :args (s/cat :m (s/and map? ::d/by-name)) :ret int?)
+(defn read-index [m] (count m))
+(s/fdef read-counts :args (s/cat :v (s/and vector? ::d/counts)) :ret int?)
+(defn read-counts [v] (count v))
+(s/fdef read-custom :args (s/cat :m (s/and coll? ::d/custom)) :ret int?)
+(defn read-custom [m] (count m))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/read-index {\"n\" 1})
+(a/read-index {\"n\" \"one\"})
+(a/read-counts [2])
+(a/read-counts [\"two\"])
+(a/read-counts [])
+(a/read-custom {:n 1})")
+        diagnostics (:diagnostics (check/check-files [client api domain] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP330-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

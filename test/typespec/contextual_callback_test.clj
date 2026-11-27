@@ -18,6 +18,21 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest map-uses-a-callbacks-return-only-spec
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defmulti render class)
+(defmethod render java.lang.Long [x] (str x))
+(s/fdef render :ret string?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (first (mapv a/render [1 2])))
+(inc (first (mapv a/render [1 2])))
+(str/upper-case (first (map a/render [1 2])))
+(let [f a/render] (inc (first (map f [1 2]))))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest into-contextualizes-direct-map-and-filter-transducers
   (let [forms ["(into [] (map str) [1 2])"
                "(into [:seed] (clojure.core/map #(str/upper-case %)) [\"abc\"])"

@@ -2536,6 +2536,10 @@
       (infer-deferred-callback (callback-analysis-context ctx callback)
                                (assoc callback :finishing? true) nil))))
 
+(defn- return-type-without-arity [{:keys [t arities ret]}]
+  (when (and (= :fn t) (empty? arities) ret (not= :unknown (:t ret)))
+    ret))
+
 (defn- apply-type
   "Result of calling a function type with these argument types; mismatches are reported at `at`."
   [ctx ftype arg-types at label & [require-match?]]
@@ -2567,7 +2571,7 @@
             :else (:ret ar)))
     (if (seq (:arities ftype))
       (do (report! ctx at "TSP2554" (str label " is called with " (count arg-types) " argument(s)")) t/unknown)
-      t/unknown))))
+      (or (return-type-without-arity ftype) t/unknown)))))
 
 (defn- positional-callback-index [ctx node]
   (when (and (= :sym (:op node))
@@ -4824,10 +4828,6 @@
               (or (not rest) kwargs
                   (some #(not (#{:unknown :any} (:t %))) (conj params rest))))
             (:arities ty))))
-
-(defn- return-type-without-arity [{:keys [t arities ret]}]
-  (when (and (= :fn t) (empty? arities) ret (not= :unknown (:t ret)))
-    ret))
 
 (defn- spread-seqable? [ty]
   (case (:t ty)

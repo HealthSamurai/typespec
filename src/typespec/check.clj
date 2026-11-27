@@ -4593,7 +4593,7 @@
             tail (last args)
             prefix-types (mapv #(infer ctx %) prefix)
             tail-type (infer ctx tail)
-            tail-members (t/members (:env ctx) (eff ctx tail-type))
+            tail-members (mapv #(or (map-entry-sequence %) %) (t/members (:env ctx) (eff ctx tail-type)))
             spreads (spread-tail-types ctx tail tail-members)
             known-spreads (finite-spreads spreads tail-members)
             exact? (some? known-spreads)

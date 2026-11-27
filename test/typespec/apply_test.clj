@@ -29,6 +29,25 @@
     (is (= ["string?" "string?" "int?" "int?" "int?" "int?" "string?" "string?" "int?" ":local"]
            (mapv #(type-at r %) (range 2 12))))))
 
+(deftest spreads-persistent-maps-as-typed-entries
+  (let [api (parse/parse-string "entries.clj" "(ns entries (:require [clojure.spec.alpha :as s]))
+(s/fdef describe :args (s/cat :a clojure.lang.IMapEntry :b clojure.lang.IMapEntry) :ret string?)
+(defn describe [a b] (str (key a) (key b)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [entries :as api]))
+(apply api/describe {:a 1 :b 2})
+(apply api/describe {:a 1})
+(apply + {})
+(apply (fn [entry] (inc (val entry))) {:a 42})
+(apply (fn [entry] (inc (val entry))) {:a \"wrong\"})")
+        r (check/check-files [api client] {})]
+    (is (= [[3 "TSP2554"] [6 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["string?" "int?" "int?"]
+           (mapv #(main/type-at r "client.clj" % 1) [2 4 5]))))
+  (is (= 43 (apply (fn [entry] (inc (val entry))) {:a 42})))
+  (is (thrown? clojure.lang.ArityException (apply (fn [_ _] :ok) {:a 1}))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

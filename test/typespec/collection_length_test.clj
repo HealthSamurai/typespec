@@ -874,6 +874,27 @@
   (is (= [[1] ["word" 2]] (mapv vec (split-with number? [1 "word" 2]))))
   (is (thrown? ClassCastException (inc (first (second (split-with number? [1 "word" 2])))))))
 
+(deftest take-nth-keeps-strided-positions-and-counts
+  (let [r (checked "(second (take-nth 2 [1 :skip \"word\"]))
+(take-nth 2 [1 2 3 4 5])
+(first (take-nth 0 [\"same\" 2]))
+(first (take-nth :unused []))
+(into [] (take-nth -2) [1 2 3 4 5])
+(inc (second (take-nth 2 [1 :skip \"word\"])))
+(take-nth :invalid [1])
+(take-nth 2 42)
+(take-nth)
+(into [] (take-nth 0) [1])
+(into [] (take-nth 0) [])")]
+    (is (= ["\"word\"" "(s/coll-of int? :kind seq? :min-count 3 :max-count 3)"
+            "string?" "nil?" "(s/coll-of int? :kind vector? :max-count 3)"]
+           (mapv #(at r %) (range 2 7))))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP2345"] [10 "TSP2554"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= ["same" "same" "same"] (vec (take 3 (take-nth 0 ["same" 2])))))
+  (is (= [1 3 5] (into [] (take-nth -2) [1 2 3 4 5])))
+  (is (thrown? ArithmeticException (into [] (take-nth 0) [1]))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

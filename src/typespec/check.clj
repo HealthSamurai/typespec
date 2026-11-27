@@ -5654,6 +5654,44 @@
       (zero? size) 0
       (and step (pos? step)) (inc (quot (dec size) step)))))
 
+(defmethod special 'take-nth [ctx node _]
+  (let [[amount coll :as args] (args-of node)
+        [n source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not (#{1 2} (count types)))
+      (do (report! ctx node "TSP2554" "take-nth expects 1 or 2 arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+      (= 1 (count types)) t/unknown
+      (report-invalid-sequence-args! ctx 'take-nth [coll] [source]) t/unknown
+
+      :else
+      (let [env (:env ctx)
+            raw (:val (t/resolve-t env n))
+            step (slice-limit ctx n)
+            members (map #(or (map-entry-sequence %) %) (t/members env source))]
+        (when (and (some #(not= 0 (second (sequence-member-bounds %))) members)
+                   (= :mismatch (:status (t/sub-result env n (t/prim :number)))))
+          (assignable! ctx amount n (t/prim :number)))
+        (t/with-assumption
+         (apply t/union
+                (for [member members
+                      :let [[lo hi] (sequence-member-bounds member)
+                            items (:items member)
+                            selected (when (and items step (pos? step))
+                                       (into [] (keep-indexed #(when (zero? (rem %1 step)) %2)) items))
+                            lower (or (partition-count lo step) (min 1 lo))
+                            upper (or (partition-count hi step)
+                                      (when (and (number? raw) (pos? raw)) hi))
+                            element (cond
+                                      (= 0 upper) t/never
+                                      selected (apply t/union selected)
+                                      (and (= 0 step) (seq items)) (first items)
+                                      :else (member-element member))]]
+                  (cond-> (length/with-bounds (coll-of :seq element) lower upper)
+                    selected (assoc :items selected))))
+         (or (t/assumption n) (t/assumption source)))))))
+
 (defn- partition-all-type [ctx source size step]
   (t/with-assumption
    (apply t/union
@@ -6928,6 +6966,19 @@
         (record! ctx xf (t/prim :fn))
         (transducer-output (interposed-element element separator upper)
                            (interposed-length upper)))
+
+      (and (= 'take-nth head) f (empty? more))
+      (let [amount (eff ctx (infer ctx f))
+            raw (:val (t/resolve-t (:env ctx) amount))
+            step (when (and (integer? raw) (not (zero? raw))) (abs (bigint raw)))]
+        (record! ctx xf (t/prim :fn))
+        (when-not (= t/never element)
+          (cond
+            (and (number? raw) (zero? raw))
+            (report! ctx f "TSP2345" "take-nth transducer step cannot be zero")
+            (= :mismatch (:status (t/sub-result (:env ctx) amount (t/prim :number))))
+            (assignable! ctx f amount (t/prim :number))))
+        (transducer-output element (or (partition-count upper step) upper)))
 
       (and (#{'take 'drop} head) f (empty? more))
       (let [amount (infer ctx f)

@@ -874,6 +874,20 @@
     (is (= ["(s/coll-of string? :kind set? :min-count 2 :max-count 2)" "(s/coll-of (s/nilable boolean?) :kind set? :min-count 2 :max-count 2)" "(s/coll-of int? :kind set? :min-count 2 :max-count 2)" "(s/coll-of t/never :kind set? :max-count 0)"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest ffirst-checks-both-sequence-levels
+  (let [r (checked "(ffirst [[\"name\" 42] [:other]])
+(ffirst [])
+(ffirst [nil])
+(ffirst [\"text\"])
+(inc (ffirst [[\"bad\"]]))
+(ffirst [42])
+(ffirst 42)
+(ffirst [] :extra)")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"name\"" "nil?" "nil?" "java.lang.Character"] (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

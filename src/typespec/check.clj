@@ -4470,7 +4470,16 @@
         (positional-type ctx ty i)
         t/unknown))))
 
-(doseq [h '[rand-nth ffirst]]
+(defmethod special 'ffirst [ctx node _]
+  (if-let [source (unary-sequence-source ctx node 'ffirst)]
+    (if (= t/never source)
+      t/never
+      (or (checked-sequence-position ctx (first (args-of node)) "ffirst"
+                                     (sequence-position-type ctx source 0) 0)
+          t/unknown))
+    t/unknown))
+
+(doseq [h '[rand-nth]]
   (defmethod special h [ctx node _]
     (let [[c] (args-of node)]
       (indexed (elem-type ctx (infer ctx c))))))

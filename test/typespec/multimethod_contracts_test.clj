@@ -57,6 +57,24 @@
     (is (= [["demo.clj" 8 "TSP2322"]] (locations result)) (pr-str (:diagnostics result)))
     (is (str/includes? (get-in result [:diagnostics 0 :message]) "returns int?"))))
 
+(deftest return-only-spec-checks-fixed-and-variadic-method-bodies
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defmulti stringify (fn [tag & _] tag))
+(s/fdef stringify :ret string?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(defmethod a/stringify :single [_ ^String value] (str/upper-case value))
+(defmethod a/stringify :variadic [_ & values] (str (count values)))
+(defmethod a/stringify :bad [_ ^String value] (.length value))
+(defmethod a/stringify :bad-rest [_ & {:keys [label]}] {:label label})
+(str/upper-case (a/stringify :single \"a\"))
+(str/upper-case (a/stringify :variadic 1 2 3))
+(inc (a/stringify :single \"a\"))")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2322"] ["client.clj" 8 "TSP2345"]]
+           (locations result))
+        (pr-str (:diagnostics result)))
+    (is (str/includes? (get-in result [:diagnostics 0 :message]) "(defmethod api/stringify :bad, s/fdef)"))))
+
 (def ^:private request-spec
   "
 (s/def :render.text/method #{\"text\" \"plain\"})

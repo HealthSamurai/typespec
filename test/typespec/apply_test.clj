@@ -156,6 +156,22 @@
   (is (= "ext" (apply subs (cons "text" [1]))))
   (is (thrown? ClassCastException (apply subs (cons "text" ["bad"])))))
 
+(deftest list-star-keeps-prefixes-and-spreads-the-final-argument
+  (let [r (checked "(apply subs (list* \"text\" [1 3]))
+(apply subs (list* \"text\" 1 [3]))
+(apply (fn [a b c d e] (str a b c d e)) (list* :a :b :c :d [:e]))
+(list* [])
+(first (list* [:key]))
+(apply subs (list* \"text\" [\"bad\"]))
+(list* :key false)
+(list*)")]
+    (is (= ["string?" "string?" "string?" "nil?" ":key"] (mapv #(type-at r %) [2 3 4 5 6])))
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= "ex" (apply subs (list* "text" 1 [3]))))
+  (is (nil? (list* [])))
+  (is (thrown? IllegalArgumentException (list* :key false))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

@@ -4775,17 +4775,32 @@
              (cond-> (length/with-bounds (coll-of :seq element) (+' size lo) (when hi (+' size hi)))
                items (assoc :items items))))))
 
-(defmethod special 'cons [ctx node _]
-  (let [[_ coll :as args] (args-of node)
-        [item source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+(defn- check-prefixed-sequence [ctx node head]
+  (let [args (args-of node)
+        types (mapv #(eff ctx (infer ctx %)) args)
+        cons? (= 'cons head)]
     (cond
-      (not= 2 (count types))
-      (do (report! ctx node "TSP2554" "cons expects two arguments") t/unknown)
+      (if cons? (not= 2 (count types)) (empty? types))
+      (do (report! ctx node "TSP2554"
+                   (str head (if cons? " expects two arguments" " expects at least one argument")))
+          t/unknown)
 
       (some #{t/never} types) t/never
-      (report-invalid-sequence-args! ctx 'cons [coll] [source]) t/unknown
-      :else (t/with-assumption (prefixed-sequence ctx [(dissoc item :fresh)] source)
-                               (some t/assumption types)))))
+      :else
+      (let [tail (peek args)
+            source (peek types)
+            prefix (mapv #(dissoc % :fresh) (pop types))]
+        (if (report-invalid-sequence-args! ctx head [tail] [source])
+          t/unknown
+          (t/with-assumption
+           (if (empty? prefix)
+             (sequence-tail ctx source 0 true)
+             (prefixed-sequence ctx prefix source))
+           (some t/assumption types)))))))
+
+(doseq [head '[cons list*]]
+  (defmethod special head [ctx node _]
+    (check-prefixed-sequence ctx node head)))
 
 (defmethod special 'lazy-seq [ctx node _]
   (let [forms (args-of node)

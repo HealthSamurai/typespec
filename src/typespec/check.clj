@@ -6987,6 +6987,40 @@
                  (length/with-bounds {:t :coll :kind kind :of (dissoc selected :fresh)} 0 maximum)
                  (t/assumption source))))))))))
 
+(defmethod special 'clojure.set/select [ctx node _]
+  (let [[f coll :as args] (args-of node)]
+    (if (not= 2 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "select expects two arguments")
+          t/unknown)
+      (let [source (eff ctx (infer ctx coll))
+            env (:env ctx)
+            {:keys [element upper]} (sequence-summary ctx source)]
+        (cond
+          (= t/never source) (do (infer ctx f) t/never)
+          (report-invalid-sequence-args! ctx 'select [coll] [source]) (do (infer ctx f) t/unknown)
+          (= 0 upper) (if (= t/never (infer ctx f)) t/never source)
+          :else
+          (let [[ret yes no] (apply-predicate ctx f element true)
+                ret (eff ctx ret)
+                all? (or (= t/never no) (= t/never (truth-part env ret false)))
+                none? (or (= t/never yes) (= t/never (truth-part env ret true)))]
+            (t/with-assumption
+             (apply t/union
+                    (for [member (t/members env source)
+                          :let [[lo hi] (sequence-member-bounds member)]]
+                      (cond
+                        (or (= 0 hi) (= t/never member)) member
+                        (= t/never ret) (cond
+                                          (pos? lo) t/never
+                                          (spread-set-target? [member]) (length/with-bounds (coll-of :set t/never) 0 0)
+                                          :else t/unknown)
+                        all? member
+                        (spread-set-target? [member])
+                        (length/with-bounds (coll-of :set (if none? t/never yes)) 0 (if none? 0 hi))
+                        :else t/unknown)))
+             (or (t/assumption source) (t/assumption ret)))))))))
+
 (defn- sequence-with-kind [ctx source kind reorder-items]
   (t/with-assumption
    (apply t/union

@@ -117,6 +117,21 @@
   (is (= #{{:destination 2}} (clojure.set/rename #{{:source 2}} {:source :destination})))
   (is (= #{} (clojure.set/rename nil {:source :destination}))))
 
+(deftest set-select-checks-the-predicate-and-preserves-set-kind
+  (let [r (checked "(bounded-count 0 (clojure.set/select (fn [_] true) #{1 2}))
+(bounded-count 0 (clojure.set/select (fn [_] false) #{1 2}))
+(clojure.set/select inc nil)
+(clojure.set/select (fn [_] true) [\"word\"])
+(clojure.set/select inc #{\"bad\"})
+(clojure.set/select inc 42)
+(clojure.set/select inc)")]
+    (is (= ["2" "0" "nil?" "(s/coll-of string? :kind vector?)"]
+           (mapv #(type-at r %) [2 3 4 5])))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= #{1} (clojure.set/select number? #{1 :two})))
+  (is (thrown? ClassCastException (clojure.set/select inc #{"bad"}))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

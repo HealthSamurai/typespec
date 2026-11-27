@@ -272,6 +272,20 @@
   (is (= 2 (apply second [["text" 2]])))
   (is (thrown? IllegalArgumentException (apply first [42]))))
 
+(deftest applies-entry-readers-with-typed-key-value-positions
+  (let [r (checked "(apply key [(find {:amount 42} :amount)])
+(apply clojure.core/val [(find {:amount 42} :amount)])
+(inc (apply val [(find {:amount 42} :amount)]))
+(inc (apply key [(find {:amount 42} :amount)]))
+(apply val [[:amount 42]])
+(apply key [nil])
+(apply val [])")]
+    (is (= [":amount" "42" "int?"] (mapv #(type-at r %) [2 3 4])))
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2531"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= 42 (apply val [(find {:amount 42} :amount)])))
+  (is (thrown? ClassCastException (apply val [[:amount 42]]))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

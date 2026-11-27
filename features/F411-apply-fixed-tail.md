@@ -54,6 +54,8 @@ origin: Clojure
 одним элементом при прямом вызове и через `apply`.
 `apply first` и `apply second` проверяют тип входной
 последовательности и сохраняют тип читаемой позиции.
+`apply key` и `apply val` читают проверенную пару `Map.Entry`
+и отклоняют несовместимое значение, включая `nil`.
 
 ```clojure example
 (ns example)

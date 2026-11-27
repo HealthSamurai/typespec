@@ -6546,6 +6546,38 @@
      :upper (when (every? :upper parts) (apply max (map :upper parts)))
      :element (t/with-assumption (apply t/union (map :element parts)) (t/assumption source))}))
 
+(defn- check-map-relation [ctx node head result]
+  (let [[coll selector :as args] (args-of node)
+        [source keys :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count args))
+      (do (report! ctx node "TSP2554" (str head " expects two arguments")) t/unknown)
+
+      (some #{t/never} types) t/never
+      (report-invalid-sequence-args! ctx head [coll] [source]) t/unknown
+      :else
+      (let [{:keys [upper] :as shape} (sequence-summary ctx source)]
+        (if (and (not= 0 upper)
+                 (report-invalid-sequence-args! ctx head [selector] [keys]))
+          t/unknown
+          (t/with-assumption (result shape selector keys) (some t/assumption types)))))))
+
+(defn- projected-relation-rows [ctx rows selector keys]
+  (if-let [paths (fixed-map-key-sequences ctx selector keys literal-map-key-type?)]
+    (apply t/union
+           (for [row (t/members (:env ctx) rows)
+                 path paths]
+             (project-map-keys ctx row path)))
+    t/unknown))
+
+(defmethod special 'clojure.set/project [ctx node _]
+  (check-map-relation
+   ctx node 'project
+   (fn [{:keys [element lower upper]} selector keys]
+     (length/with-bounds
+      (coll-of :set (if (= 0 upper) t/never (projected-relation-rows ctx element selector keys)))
+      (min 1 lower) upper))))
+
 (defn- random-sample-mode [ctx ty]
   (let [probability (:val (t/resolve-t (:env ctx) ty))]
     (when (number? probability)

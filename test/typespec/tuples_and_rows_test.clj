@@ -91,6 +91,19 @@
   (is (= {:ready :source} (clojure.set/map-invert {:source :ready})))
   (is (contains? #{:left :right} (:ready (clojure.set/map-invert {:left :ready :right :ready})))))
 
+(deftest project-preserves-selected-field-types-and-set-cardinality
+  (let [r (checked "(:n (first (clojure.set/project #{{:n 2 :other \"word\"}} [:n])))
+(:other (first (clojure.set/project #{{:n 2 :other \"word\"}} [:n])) :default)
+(bounded-count 0 (clojure.set/project nil [:n]))
+(inc (:n (first (clojure.set/project #{{:n \"bad\"}} [:n]))))
+(clojure.set/project 42 [:n])
+(clojure.set/project #{})")]
+    (is (= ["2" ":default" "0"] (mapv #(type-at r %) [2 3 4])))
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= #{{:n 2}} (clojure.set/project #{{:n 2 :other "word"}} [:n])))
+  (is (= #{} (clojure.set/project nil [:n]))))
+
 (deftest tuple-contracts-check-positions-and-length
   (let [r (checked "(s/fdef pair :args (s/cat :p (s/tuple int? string?)) :ret string?)
 (defn pair [[id text]] (subs text id))

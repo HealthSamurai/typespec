@@ -2826,6 +2826,8 @@
 (defn- composition-stage [ctx node ty]
   (let [ty (t/resolve-t (:env ctx) (eff ctx ty))]
     (or (composition-projection ctx node ty)
+        (when-let [result (return-type-without-arity ty)]
+          {:kind :return-only :type result})
         (if (= :all (:t ty))
           {:kind :generic :type ty :label (parse/unparse node)}
           (if-let [shape (function-shape ctx ty)]
@@ -2838,6 +2840,7 @@
     :typed-set (typed-set-call-result ctx type input)
     :key (read-key ctx (eff ctx input) key node (or default t/nil-t) nil)
     :position (checked-sequence-position ctx node (str "comp: " label) input index)
+    :return-only (if (= t/never input) t/never (t/with-assumption type (t/assumption input)))
     :generic (if (= t/never input)
                t/never
                (let [ret (call-generic ctx node (str "comp: " label) type nil [input])]
@@ -2873,15 +2876,19 @@
 
 (defn- compose-shape [ctx inner stage]
   (let [arities (:arities inner)
+        result (when (empty? arities) (:ret inner))
         deferred? (some :composition arities)
         expected (when (and inner (not deferred?) (callback-node? ctx stage))
-                   {:t :fn :arities [{:params [(apply t/union (map (comp #(eff ctx %) :ret) arities))]
+                   {:t :fn :arities [{:params [(if result (eff ctx result)
+                                                  (apply t/union (map (comp #(eff ctx %) :ret) arities)))]
                                       :ret t/unknown}]})
         ty (if expected (infer ctx stage expected) (infer ctx stage))]
     (when inner
       (when-let [step (composition-stage ctx stage ty)]
-        (if (and deferred? (not (unary-composition-stage? step)))
-          (report-comp-arity! ctx stage)
+        (cond
+          (and deferred? (not (unary-composition-stage? step))) (report-comp-arity! ctx stage)
+          result (when-let [ret (composition-step ctx stage step result nil)] (assoc inner :ret ret))
+          :else
           (let [arities (mapv (fn [arity]
                                 (if (:composition arity)
                                   (update arity :composition conj step)
@@ -2902,7 +2909,9 @@
                     entry entry
                     generic? (update-in (:body resolved) [:arities 0]
                                         #(assoc % :ret t/unknown :composition (or (:composition %) [])))
-                    :else (or (function-shape ctx resolved) (check-composable! ctx right resolved "comp")))
+                    :else (or (function-shape ctx resolved)
+                              (when (return-type-without-arity resolved) resolved)
+                              (check-composable! ctx right resolved "comp")))
             composed (reduce (partial compose-shape ctx) shape stages)]
         (if (and generic? composed)
           ;; Instantiation checks the original parameters and result first.

@@ -27,6 +27,27 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest comp-keeps-results-when-a-stage-has-no-argument-spec
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defmulti render class)
+(defmethod render java.lang.Number [x] (str x))
+(s/fdef render :ret string?)
+(defmulti size class)
+(defmethod size java.lang.String [x] (count x))
+(s/fdef size :ret int?)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case ((comp a/render inc) 1))
+(inc ((comp a/render inc) 1))
+(inc ((comp inc a/size) \"x\"))
+(comp name a/size)
+(str/upper-case ((comp a/render a/size) \"x\"))
+((comp a/render inc) \"x\")
+(inc ((comp #(inc %) a/size) \"x\"))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest composition-transfers-inputs-and-returns
   (let [result (checked "(comp inc count)
                          ((comp inc count) \"abc\")

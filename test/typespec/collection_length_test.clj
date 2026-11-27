@@ -178,13 +178,28 @@
 (random-sample 1 42)
 (random-sample)")]
     (is (= ["\"word\"" "nil?" "nil?" "(s/coll-of int? :kind seq? :max-count 2)"
-            "(s/coll-of t/never :kind vector? :max-count 0)" "(s/coll-of int? :kind vector? :max-count 2)"]
+            "(s/coll-of t/never :kind vector?)" "(s/coll-of int? :kind vector? :max-count 2)"]
            (mapv #(at r %) (range 2 8))))
     (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2345"] [12 "TSP2554"]]
            (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
   (is (= [1 2] (vec (random-sample 2 [1 2]))))
   (is (empty? (into [] (random-sample -1) [1 2])))
   (is (thrown? ClassCastException (first (random-sample :bad [1])))))
+
+(deftest distinct-predicate-checks-arity-and-known-repeats
+  (let [r (checked "(distinct? nil)
+(distinct? :x :y \"word\")
+(distinct? :x :y :x)
+(distinct? 1 1.0)
+(let [x (fn [y] (distinct? :x y :x))] (x 1))
+(if (distinct? :x :x) (inc \"unreachable\") :ok)
+(if (distinct? :x :y) (inc \"bad\") :ok)
+(distinct?)")]
+    (is (= ["true" "true" "false" "true" "false" ":ok"] (mapv #(at r %) (range 2 8))))
+    (is (= [[8 "TSP2345"] [9 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (distinct? 1 1.0))
+  (is (not (distinct? :x :y :x))))
 
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])

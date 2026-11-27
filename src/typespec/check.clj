@@ -5695,6 +5695,24 @@
         (unique-sequence ctx source :seq))
       t/unknown)))
 
+(defmethod special 'distinct? [ctx node _]
+  (let [types (mapv #(eff ctx (infer ctx %)) (args-of node))
+        known (filter (fn [ty]
+                        (let [value (:val ty)]
+                          (and (#{:lit :nil} (:t ty))
+                               (not (and (number? value) (Double/isNaN (double value)))))))
+                      types)]
+    (t/with-assumption
+     (cond
+       (empty? types) (do (report! ctx node "TSP2554" "distinct? expects at least one argument")
+                          (t/prim :boolean))
+       (some #{t/never} types) t/never
+       (= 1 (count types)) (t/lit true)
+       (and (next known) (not (apply distinct? (map :val known)))) (t/lit false)
+       (= (count types) (count known)) (t/lit true)
+       :else (t/prim :boolean))
+     (some t/assumption types))))
+
 (defmethod special 'dedupe [ctx node _]
   (if (empty? (args-of node))
     t/unknown

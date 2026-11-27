@@ -289,11 +289,13 @@
       (and (= 'clojure.spec.alpha/valid? head) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
       [[(:val b) (t/ref-t (:val a)) test]])))
 
-(defn- pre-facts
-  "Facts with their source conditions from the supported :pre forms."
+(defn pre-facts
+  "Facts about fixed parameters with their source conditions from supported :pre forms."
   [file params body]
-  (let [file (assoc file :locals (set (parameter-bindings params)))]
-    (mapcat #(condition-facts file %) (pre-conditions body))))
+  (when-let [tests (seq (pre-conditions body))]
+    (let [file (assoc file :locals (set (parameter-bindings params)))
+          fixed (into #{} (keep #(when (= :sym (:op %)) (:val %))) (:fixed (split-params params)))]
+      (filter #(fixed (first %)) (mapcat #(condition-facts file %) tests)))))
 
 (defn- precondition-domain [ty]
   (case (:t ty)
@@ -316,20 +318,17 @@
                       (boolean (and a b (not= a b))))))))
 
 (defn- pre-types [env file params body conflict!]
-  (let [fixed (into #{} (keep #(when (= :sym (:op %)) (:val %))) (:fixed (split-params params)))]
-    (reduce (fn [facts [param type test]]
-              (if-not (fixed param)
-                facts
-                (let [previous (get facts param)]
-                  (assoc facts param
-                         (cond
-                           (nil? previous) type
-                           (= t/never previous) previous
-                           (t/sub? env type previous) type
-                           (incompatible-preconditions? env previous type)
-                           (do (conflict! test param previous type) t/never)
-                           :else previous)))))
-            {} (pre-facts file params body))))
+  (reduce (fn [facts [param type test]]
+            (let [previous (get facts param)]
+              (assoc facts param
+                     (cond
+                       (nil? previous) type
+                       (= t/never previous) previous
+                       (t/sub? env type previous) type
+                       (incompatible-preconditions? env previous type)
+                       (do (conflict! test param previous type) t/never)
+                       :else previous))))
+          {} (pre-facts file params body)))
 
 (defn pattern-type
   "Type a parameter must have, as far as its hint or destructuring pattern says."

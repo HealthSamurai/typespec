@@ -180,6 +180,29 @@
     (is (thrown? AssertionError (f -1)))
     (is (thrown? AssertionError (f :wrong)))))
 
+(deftest explicit-contracts-keep-their-call-types-and-refine-function-bodies
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef text :args (s/cat :x (s/nilable string?)) :ret string?)
+(defn text [x] {:pre [(some? x)]} (subs x 0))
+(defn tagged {:t/sig '[any? :-> string?]} [x] {:pre [(string? x)]} (subs x 0))
+(defn wrong {:t/sig '[any? :-> string?]} [x] {:pre [(string? x)]} (inc x))
+(defn malformed {:t/sig '[any? :-> string?]} [x]
+  {:pre [(string? x) (number? x 0)]}
+  (subs x 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/text \"text\")
+(api/text nil)
+(api/text 42)
+(api/tagged :tag)")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 5 "TSP2322"] ["api.clj" 5 "TSP2345"] ["api.clj" 7 "TSP2554"]
+            ["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r))))
+  (let [f (fn [x] {:pre [(some? x)]} (subs x 0))]
+    (is (= "text" (f "text")))
+    (is (thrown? AssertionError (f nil)))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

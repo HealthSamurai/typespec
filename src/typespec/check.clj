@@ -8383,6 +8383,20 @@
                         (assoc (t/tuple (subvec params n)) :kind :seq)))))
      :ret (apply t/union (map :ret contracts))}))
 
+(defn- apply-preconditions [ctx facts]
+  (let [env (:env ctx)]
+    (reduce (fn [ctx [param type]]
+              (update-in ctx [:locals param]
+                         (fn [current]
+                           (cond
+                             (#{:unknown :any} (:t current)) type
+                             (= t/some-t type) (let [present (t/remove-nil env current)]
+                                                 (if (= t/never present) current present))
+                             (t/sub? env current type) current
+                             (t/sub? env type current) type
+                             :else current))))
+            ctx facts)))
+
 (defn- check-defn [ctx node]
   (let [file (:file ctx) env (:env ctx)
         parts (env/defn-parts node)
@@ -8433,8 +8447,13 @@
                      (not (t/sub? env ret-hint (:ret declared))) (not (t/sub? env (:ret declared) ret-hint)))
             (report! ctx (env/tag-node params) "TSP2322"
                      (str "hint " (t/show ret-hint) " contradicts the signature: " (t/show (:ret declared)))))
-          (let [rty (infer-body ctx' body (:ret declared))]
-            (when (seq body) (check-return! ctx' (last body) rty (:ret declared)))))))
+          (let [facts (when (#{:sig :fdef} (:source v)) (seq (env/pre-facts file params body)))
+                forms (if facts
+                        (do (infer ctx' (first body)) (next body))
+                        body)
+                body-ctx (apply-preconditions ctx' facts)
+                rty (infer-body body-ctx forms (:ret declared))]
+            (when (seq forms) (check-return! body-ctx (last forms) rty (:ret declared)))))))
     t/unknown))
 
 (defmethod special 'defn [ctx node _] (check-defn ctx node))

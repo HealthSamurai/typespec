@@ -319,6 +319,8 @@
 
 (defn- intersect-precondition [env previous type]
   (cond
+    ;; any? permits every input, even though ordinary subtyping treats it as a bypass.
+    (some #(= :any (:t %)) (t/members env type)) previous
     (t/sub? env type previous) type
 
     (or (= :union (:t previous)) (= :union (:t type)))

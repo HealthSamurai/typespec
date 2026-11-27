@@ -211,6 +211,25 @@
     (is (= "text" (f "text")))
     (is (thrown? AssertionError (f 42)))))
 
+(deftest an-unconstrained-spec-precondition-keeps-the-concrete-fact
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::anything any?)
+(defn guarded [x] {:pre [(string? x) (s/valid? ::anything x)]} (subs x 0))
+(defn reversed [x] {:pre [(s/valid? ::anything x) (string? x)]} (subs x 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/guarded \"text\")
+(api/guarded 42)
+(api/reversed \"text\")
+(api/reversed 42)")
+        r (check/check-files [client api] {})]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["string?" "string?"] (mapv #(main/type-at r "client.clj" % 1) [2 4]))))
+  (let [f (fn [x] {:pre [(string? x) (s/valid? any? x)]} (subs x 0))]
+    (is (= "text" (f "text")))
+    (is (thrown? AssertionError (f 42)))))
+
 (deftest explicit-contracts-keep-their-call-types-and-refine-function-bodies
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef text :args (s/cat :x (s/nilable string?)) :ret string?)

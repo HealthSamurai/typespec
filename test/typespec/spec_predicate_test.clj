@@ -140,6 +140,23 @@
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))))
 
+(deftest boolean-coercion-supplies-a-boolean-to-spec-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef enabled? :args (s/cat :value any?) :ret boolean?)
+(defn enabled? [value] (boolean value))
+(s/fdef label :args (s/cat :enabled boolean?) :ret string?)
+(defn label [enabled] (if enabled \"yes\" \"no\"))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/label (boolean :enabled))
+(a/label (apply boolean [nil]))
+(boolean)
+(inc (boolean :enabled))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2554"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [false false true true] (mapv boolean [nil false 0 :enabled])))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

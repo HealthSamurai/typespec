@@ -4331,8 +4331,14 @@
 
 (defn- assoc-key-type [ctx ty k value]
   (let [members (t/members (:env ctx) ty)]
-    (if (every? #(#{:map :nil} (:t %)) members)
-      (apply t/union (map #(assoc-map-key (if (= :nil (:t %)) empty-map-shape %) k value) members))
+    (if (every? #(#{:map :map-of :nil} (:t %)) members)
+      (apply t/union
+             (for [member members
+                   :let [shape (case (:t member)
+                                 :nil empty-map-shape
+                                 :map-of (indexed-map-shape member)
+                                 member)]]
+               (assoc-map-key shape k value)))
       ty)))
 
 (defn- forget-map-keys [ctx ty]

@@ -1166,6 +1166,25 @@
             ["client.clj" 11 "TSP2531"]]
            (mapv (juxt :file (comp :row :pos) :code) issues)) (pr-str issues))))
 
+(deftest updating-a-map-of-keeps-the-written-key-and-other-entries
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of keyword? int?))
+(s/fdef label :args (s/cat :m ::counts) :ret string?)
+(defn label [m] (get (update m :status (fn [_] \"done\")) :status))
+(s/fdef wrong :args (s/cat :m ::counts) :ret int?)
+(defn wrong [m] (get (update m :status (fn [_] \"done\")) :status))
+(s/fdef preserved :args (s/cat :m ::counts) :ret int?)
+(defn preserved [m] (get (update m :status (fn [_] \"done\")) :n 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/upper-case (a/label {:n 1}))
+(a/label {:n \"wrong\"})
+(inc (a/preserved {:n 1}))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 6 "TSP2322"] ["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "returns string?, but the signature says int?" (:message (first issues))))))
+
 (deftest merge-required-left-optional-right
   (let [a (map-type {:x (t/prim :string)} {:z (t/prim :string)})
         b (map-type {} {:x (t/prim :int) :z t/nil-t})

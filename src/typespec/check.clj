@@ -5639,6 +5639,15 @@
 (defmethod special 'take-last [ctx node _]
   (check-sequence-slice ctx node 'take-last false (partial limited-sequence ctx true)))
 
+(defmethod special 'split-at [ctx node _]
+  (check-sequence-slice
+   ctx node 'split-at false
+   (fn [source limit]
+     (apply t/union
+            (for [member (t/members (:env ctx) source)]
+              (t/tuple [(limited-sequence ctx false member limit)
+                        (skipped-sequence ctx member limit false)]))))))
+
 (defn- partition-count [size step]
   (when (some? size)
     (cond

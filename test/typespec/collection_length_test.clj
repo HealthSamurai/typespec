@@ -844,6 +844,21 @@
   (is (nil? (nthnext nil :unused)))
   (is (thrown? ClassCastException (nthnext [] :invalid))))
 
+(deftest split-at-keeps-the-positions-in-both-parts
+  (let [r (checked "(let [[head tail] (split-at 1 [1 \"word\"])] (str (first head) (str/upper-case (first tail))))
+(first (second (split-at 0 [\"whole\"])))
+(first (first (split-at 8 [\"whole\"])))
+(first (second (split-at 8 [\"whole\"])))
+(inc (first (second (split-at 1 [1 \"word\"]))))
+(split-at 1 42)
+(split-at 1)")]
+    (is (= ["string?" "\"whole\"" "\"whole\"" "nil?"]
+           (mapv #(at r %) (range 2 6))))
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [[1] ["word"]] (mapv vec (split-at 1 [1 "word"]))))
+  (is (thrown? IllegalArgumentException (first (second (split-at 1 42))))))
+
 (deftest take-last-keeps-the-suffix-and-returns-nil-when-empty
   (let [r (checked "(first (take-last 1 [1 \"word\"]))
 (first (take-last 0.5 [:first :second]))

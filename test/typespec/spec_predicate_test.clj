@@ -335,6 +335,31 @@
          (mapv #(s/valid? (s/and vector? (s/tuple string? int?)) %)
                [["good" 2] ["good" "2"] ["short"]]))))
 
+(deftest spec-and-imports-named-map-and-tuple-input-shapes
+  (let [schema (parse/parse-string "schema.clj" "(ns schema (:require [clojure.spec.alpha :as spec]))
+(spec/def ::id int?)
+(spec/def ::row (spec/keys :req-un [::id]))
+(spec/def ::row-alias ::row)
+(spec/def ::pair (spec/tuple string? int?))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [schema :as schema]))
+(s/def ::record (s/and map? ::schema/row-alias))
+(s/def ::entry (s/and vector? ::schema/pair))
+(s/fdef total :args (s/cat :row ::record :entry ::entry) :ret int?)
+(defn total [{:keys [id]} [_ count]] (+ id count))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/total {:id 1} [\"valid\" 2])
+(a/total {} [\"valid\" 2])
+(a/total {:id \"1\"} [\"valid\" 2])
+(a/total {:id 1} [\"valid\" \"2\"])")
+        {:keys [env diagnostics]} (check/check-files [client api schema] {})
+        signature (get-in env [:vars 'api/total :type])
+        dependencies (contracts/dependency-paths (:specs env) signature)]
+    (is (= [["client.clj" 3 "TSP2741"] ["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [:api/record :schema/row-alias :schema/row] (get dependencies :schema/row)))
+    (is (= [:api/entry :schema/pair] (get dependencies :schema/pair)))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

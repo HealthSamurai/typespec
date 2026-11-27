@@ -788,16 +788,17 @@
                                  (fn [argument] (or (= param argument) (and reader-fn? (= '%1 argument))))
                                  body))))
 
+(defn- named-spec-input [ctx name seen read-input]
+  (when (and (not (seen name)) (< (count seen) 64))
+    (let [definitions (:spec-definitions ctx)]
+      (when-let [{:keys [spec-form spec-context]} (definitions name)]
+        (let [source (assoc spec-context :spec-definitions definitions :fail (constantly nil))]
+          (when-let [type (read-input source spec-form (conj seen name))]
+            (vary-meta type assoc ::referenced-specs #{name})))))))
+
 (defn- transparent-predicate-type [ctx form seen]
   (cond
-    (qualified-keyword? form)
-    (when (and (not (seen form)) (< (count seen) 64))
-      (let [definitions (:spec-definitions ctx)]
-        (when-let [{:keys [spec-form spec-context]} (definitions form)]
-          (when-let [type (transparent-predicate-type (assoc spec-context :spec-definitions definitions)
-                                                     spec-form (conj seen form))]
-            (vary-meta type assoc ::referenced-specs #{form})))))
-
+    (qualified-keyword? form) (named-spec-input ctx form seen transparent-predicate-type)
     (symbol? form) (let [predicate (core-name ctx form)]
                      (or (qualification-target predicate) (builtin-predicate-type predicate)))
     (and (set? form) (every? literal-set-member? form)) (literal-set-type (filter identity form))
@@ -806,6 +807,12 @@
                     (vary-meta (union type nil-t) merge (select-keys (meta type) [::referenced-specs])))
                   (or (partial-instance-type ctx form) (predicate-spec-type ctx form)))))
 
+(defn- conjunction-input-shape [ctx form seen]
+  (cond
+    (qualified-keyword? form) (named-spec-input ctx form seen conjunction-input-shape)
+    (and (seq? form) (#{:s/keys :s/tuple} (type-form-op ctx (first form))))
+    (parse-type ctx form)))
+
 (defn- spec-conjunction-type [ctx forms]
   ;; The first transforming spec can still constrain the original input
   ;; when all earlier predicates preserve it.
@@ -813,16 +820,14 @@
     (if prefix
       (let [leading (first forms)
             refined (reduce refine-predicate-type prefix)
-            boundary (nth forms (count prefix) nil)
-            shape (when (and (seq? boundary) (#{:s/keys :s/tuple} (type-form-op ctx (first boundary))))
-                    (parse-type ctx boundary))
+            shape (conjunction-input-shape ctx (nth forms (count prefix) nil) #{})
             refined (if (and shape (= :proved (:status (contract-sub-result shape refined))))
                       shape
                       refined)
             type (if (and (qualified-keyword? leading) (= refined (first prefix)))
                    (ref-t leading)
                    refined)
-            references (into #{} (mapcat #(-> % meta ::referenced-specs)) prefix)]
+            references (into #{} (mapcat #(-> % meta ::referenced-specs)) (cons refined prefix))]
         (cond-> type (seq references) (vary-meta assoc ::referenced-specs references)))
       (parse-type ctx (first forms)))))
 

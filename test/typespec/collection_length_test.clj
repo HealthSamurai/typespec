@@ -796,6 +796,20 @@
     (is (= ["\"word\"" "nil?" "\"one\"" "(s/coll-of int? :kind seq? :min-count 2 :max-count 2)"]
            (mapv #(at r %) (range 2 6))))))
 
+(deftest drop-keeps-the-selected-tail-and-its-bounds
+  (let [r (checked "(first (drop 1 [1 \"word\" :tail]))
+(first (drop 0.5 [:first :second]))
+(first (drop 8 [1]))
+(first (drop 2 [:gone 1 2 3]))
+(inc (first (drop 1 [2 \"word\"])))
+(drop 0 42)
+(drop 1 [] :extra)")]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))
+    (is (= ["\"word\"" ":second" "nil?" "2"]
+           (mapv #(at r %) (range 2 6))))))
+
 (deftest literal-strings-preserve-bounds-under-sequence-operations
   (let [r (checked "(first \"ab\")
 (first \"\")

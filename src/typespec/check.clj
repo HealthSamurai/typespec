@@ -5451,7 +5451,19 @@
 (defmethod special 'take [ctx node _]
   (check-sequence-slice ctx node 'take true (partial limited-sequence ctx)))
 
-(doseq [h '[drop take-last]]
+(defmethod special 'drop [ctx node _]
+  (check-sequence-slice
+   ctx node 'drop true
+   (fn [source limit]
+     (if limit
+       (sequence-tail ctx source limit false)
+       (apply t/union
+              (for [member (t/members (:env ctx) source)
+                    :let [member (or (map-entry-sequence member) member)
+                          [_ hi] (sequence-member-bounds member)]]
+                (length/with-bounds (coll-of :seq (if (= 0 hi) t/never (member-element member))) 0 hi)))))))
+
+(doseq [h '[take-last]]
   (defmethod special h [ctx node _]
     (let [[n c] (args-of node)]
       (infer ctx n)

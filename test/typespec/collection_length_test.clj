@@ -165,6 +165,27 @@
   (is (= {:word 2} (zipmap [:word :word] ["first" 2])))
   (is (thrown? IllegalArgumentException (zipmap :bad [1]))))
 
+(deftest random-sample-preserves-bounds-for-deterministic-probabilities
+  (let [r (checked "(second (random-sample 1 [0 \"word\"]))
+(first (random-sample 0 [0 \"word\"]))
+(first (random-sample :unused []))
+(random-sample 0.5 [1 2])
+(into [] (random-sample -1) [1 2])
+(into [] (random-sample 2) [1 2])
+(inc (first (random-sample 1 [\"word\"])))
+(random-sample :bad [1])
+(into [] (random-sample :bad) [1])
+(random-sample 1 42)
+(random-sample)")]
+    (is (= ["\"word\"" "nil?" "nil?" "(s/coll-of int? :kind seq? :max-count 2)"
+            "(s/coll-of t/never :kind vector? :max-count 0)" "(s/coll-of int? :kind vector? :max-count 2)"]
+           (mapv #(at r %) (range 2 8))))
+    (is (= [[8 "TSP2345"] [9 "TSP2345"] [10 "TSP2345"] [11 "TSP2345"] [12 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= [1 2] (vec (random-sample 2 [1 2]))))
+  (is (empty? (into [] (random-sample -1) [1 2])))
+  (is (thrown? ClassCastException (first (random-sample :bad [1])))))
+
 (deftest flatten-infers-leaves-and-length-from-known-sequential-values
   (let [r (checked "(flatten [1 [2 (list 3)] []])
 (flatten nil)

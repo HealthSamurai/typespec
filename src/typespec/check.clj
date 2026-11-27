@@ -6221,6 +6221,38 @@
      :upper (when (every? :upper parts) (apply max (map :upper parts)))
      :element (t/with-assumption (apply t/union (map :element parts)) (t/assumption source))}))
 
+(defn- random-sample-mode [ctx ty]
+  (let [probability (:val (t/resolve-t (:env ctx) ty))]
+    (when (number? probability)
+      (cond
+        (not (pos? probability)) :none
+        (>= probability 1) :all))))
+
+(defmethod special 'random-sample [ctx node _]
+  (let [[probability coll :as args] (args-of node)
+        [p source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not (#{1 2} (count types)))
+      (do (report! ctx node "TSP2554" "random-sample expects 1 or 2 arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+      (= 1 (count types)) t/unknown
+      (report-invalid-sequence-args! ctx 'random-sample [coll] [source]) t/unknown
+
+      :else
+      (let [normalized (apply t/union (map #(or (map-entry-sequence %) %) (t/members (:env ctx) source)))
+            {:keys [element upper]} (sequence-summary ctx normalized)
+            mode (random-sample-mode ctx p)]
+        (when (and (not= 0 upper)
+                   (= :mismatch (:status (t/sub-result (:env ctx) p (t/prim :number)))))
+          (assignable! ctx probability p (t/prim :number)))
+        (t/with-assumption
+         (cond
+           (or (= 0 upper) (= :none mode)) (length/with-bounds (coll-of :seq t/never) 0 0)
+           (= :all mode) (sequence-tail ctx source 0 false)
+           :else (length/with-bounds (coll-of :seq element) 0 upper))
+         (or (t/assumption p) (t/assumption source)))))))
+
 (defmethod special 'interleave [ctx node _]
   (let [args (args-of node)
         sources (mapv #(eff ctx (infer ctx %)) args)]
@@ -7512,6 +7544,14 @@
         (record! ctx xf (t/prim :fn))
         (transducer-output (interposed-element element separator upper)
                            (interposed-length upper)))
+
+      (and (= 'random-sample head) f (empty? more))
+      (let [p (eff ctx (infer ctx f))]
+        (record! ctx xf (t/prim :fn))
+        (when (and (not= t/never element)
+                   (= :mismatch (:status (t/sub-result (:env ctx) p (t/prim :number)))))
+          (assignable! ctx f p (t/prim :number)))
+        (if (= :none (random-sample-mode ctx p)) (transducer-output t/never 0) input))
 
       (and (= 'take-nth head) f (empty? more))
       (let [amount (eff ctx (infer ctx f))

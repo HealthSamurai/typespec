@@ -533,10 +533,11 @@
 
          (= 'clojure.spec.alpha/fdef h)
          (let [[_ nm & opts] (:children form)
-               {:keys [args ret]} (apply hash-map (parse/node->data {:op :list :children opts}))
+               options (t/spec-option-map (map parse/node->data opts))
                ctx (assoc (type-ctx file (opaque form)) :spec-definitions spec-definitions :spec? true)
-               r (if ret (t/parse-type ctx ret) t/unknown)
-               ars (t/spec-args->arities ctx args r)]
+               ars (if-let [{:keys [args ret]} options]
+                     (t/spec-args->arities ctx args (if ret (t/parse-type ctx ret) t/unknown))
+                     (do ((:fail ctx) (parse/node->data form)) nil))]
            (if (= :sym (:op nm))
              (let [sym (qualify (:val nm))
                    location {:file (:file file) :pos (:pos form)}]

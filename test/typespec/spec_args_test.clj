@@ -541,6 +541,31 @@
 (keep-first 2)")]
     (is (empty? (:diagnostics r)) (pr-str (:diagnostics r)))))
 
+(deftest function-spec-options-accept-trailing-maps
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef render {:args (s/cat :text string?) :ret string?})
+(defn render [text] text)
+(s/fdef add :args (s/cat :n int?) :ret string? {:ret int?})
+(defn add [n] (inc n))
+(s/fdef invoke {:args (s/cat :f (s/fspec {:args (s/cat :n int?) :ret int?})) :ret int?})
+(defn invoke [f] (f 2))
+(s/fdef broken :args (s/cat :value int?) :ret)
+(defn broken [value] value)
+(s/def ::broken-callback (s/fspec :args))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render \"valid\")
+(a/render 42)
+(inc (a/add 2))
+(a/add \"2\")
+(a/invoke a/add)
+(a/invoke a/render)
+(a/broken :valid)")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 8 "TSP9002"] ["api.clj" 10 "TSP9002"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))
+
 (deftest unsupported-regexes-are-reported
   (let [r (checked "(sp/fdef nonterminal :args (sp/cat :xs (sp/+ int?) :last string?) :ret any?)
 (sp/fdef repeated-alt :args (sp/+ (sp/alt :one int? :other string?)) :ret any?)

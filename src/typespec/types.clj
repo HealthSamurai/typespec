@@ -1019,6 +1019,14 @@
         (mapv #(assoc % :ret ret) branches)
         (do ((:fail ctx) args) nil)))))
 
+(defn spec-option-map
+  "Reads keyword argument pairs with an optional trailing map."
+  [options]
+  (if (even? (count options))
+    (apply hash-map options)
+    (when (map? (last options))
+      (into (apply hash-map (butlast options)) (last options)))))
+
 (defn parse-sig
   "[A B :-> R], [A & B :-> R], or a list of such vectors."
   [ctx form]
@@ -1145,9 +1153,10 @@
         (:s/coll-of :s/every) (collection-type ctx form)
         :s/map-of {:t :map-of :k (p (nth form 1)) :v (p (nth form 2))}
         :s/tuple (with-meta (tuple (mapv p (rest form))) {::tuple-contract true})
-        :s/fspec (if (:inside-all ctx) (fail) (let [{:keys [args ret]} (apply hash-map (rest form))
-                       r (if ret (p ret) unknown)]
-                   {:t :fn :arities (spec-args->arities ctx args r) :ret r}))
+        :s/fspec (if-let [{:keys [args ret]} (when-not (:inside-all ctx) (spec-option-map (rest form)))]
+                   (let [r (if ret (p ret) unknown)]
+                     {:t :fn :arities (spec-args->arities ctx args r) :ret r})
+                   (fail))
         :t/fn (if (:inside-all ctx)
                 (if (and (= 2 (count form)) (vector? (second form))) (p (second form)) (fail))
                 (parse-sig ctx (second form)))

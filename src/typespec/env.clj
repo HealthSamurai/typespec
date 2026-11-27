@@ -244,17 +244,26 @@
                  (partition 2 (:children pattern)))
     nil))
 
-(defn- pre-types
-  "{param-symbol type} from :pre conditions like (string? x) and (s/valid? ::spec x)."
+(defn- pre-facts
+  "Facts with their source conditions from the supported :pre forms."
   [file params body]
   (let [file (assoc file :locals (set (parameter-bindings params)))]
-    (into {}
-          (for [test (pre-conditions body)
-                :let [h (precondition-head file test) [a b _ & more] (rest (:children test))]]
-            (cond (and (pre-preds h) (= :sym (:op a)) (nil? b)) [(:val a) (t/prim (pre-preds h))]
-                  (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
-                  [(:val b) (t/ref-t (:val a))]
-                  :else nil)))))
+    (keep (fn [test]
+            (let [h (precondition-head file test)
+                  [a b _ & more] (rest (:children test))]
+              (cond
+                (and (pre-preds h) (= :sym (:op a)) (nil? b))
+                [(:val a) (t/prim (pre-preds h)) test]
+                (and (= 'clojure.spec.alpha/valid? h) (= :kw (:op a)) (= :sym (:op b)) (empty? more))
+                [(:val b) (t/ref-t (:val a)) test])))
+          (pre-conditions body))))
+
+(defn- pre-types [env file params body]
+  (reduce (fn [facts [param type]]
+            (update facts param
+                    (fn [previous]
+                      (if (or (nil? previous) (t/sub? env type previous)) type previous))))
+          {} (pre-facts file params body)))
 
 (defn pattern-type
   "Type a parameter must have, as far as its hint or destructuring pattern says."
@@ -273,7 +282,7 @@
   {:t :fn
    :arities (vec (for [{:keys [params body]} (:arities parts)
                        :let [{:keys [fixed rest]} (split-params params)
-                             pre (pre-types file params body)]]
+                             pre (pre-types env file params body)]]
                    (cond-> {:params (mapv #(or (when (= :sym (:op %)) (get pre (:val %)))
                                                (pattern-type env file %))
                                           fixed)

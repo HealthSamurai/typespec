@@ -70,6 +70,23 @@
   (let [f (fn [{:keys [string?]} x] {:pre [(string? x)]} x)]
     (is (= 42 (f {:string? number?} 42)))))
 
+(deftest preconditions-keep-the-narrower-compatible-type-in-either-order
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn a [x] {:pre [(int? x) (number? x)]} x)
+(defn b [x] {:pre [(number? x) (int? x)]} x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as api]))
+(api/a 2)
+(api/b 2)
+(api/a 2.5)
+(api/b 2.5)")
+        r (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r))))
+    (is (= ["int?" "int?"] (mapv #(main/type-at r "client.clj" % 1) [2 3]))))
+  (let [f (fn [x] {:pre [(int? x) (number? x)]} x)]
+    (is (= 2 (f 2)))
+    (is (thrown? AssertionError (f 2.5)))))
+
 (deftest one-or-more-in-calls-and-partial
   (let [r (checked "(sp/fdef total :args (sp/cat :prefix string? :xs (sp/+ int?)) :ret string?)
 (defn total [prefix & xs] (if xs prefix nil))

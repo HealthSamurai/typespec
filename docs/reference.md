@@ -43,7 +43,7 @@ This is the **whole** grammar. Tool output (errors, `sig`, `type-at`, JSON) uses
 
 Rules the type checker makes explicit:
 
-- In a Spec declaration, `s/and` narrows comparable scalar types from its initial value-preserving predicates. For example, `(s/and number? int?)` accepts integers. Refinements such as positivity and predicates after a conformer may remain unchecked.
+- In a Spec declaration, `s/and` narrows comparable scalar types from its initial value-preserving predicates and can retain a following `s/keys` or `s/tuple` input shape. For example, `(s/and number? int?)` accepts integers. Refinements such as positivity and predicates after a conformer may remain unchecked.
 - Unary Spec predicates can express literal membership with `#(contains? #{:get :post} %)` or alternatives such as `#(or (list? %) (vector? %))`. The checker extracts these types from source and uses them in enclosing map and function contracts. [F112](../features/F112-spec.md)
 - A form outside the grammar produces `TSP9001 not a type`, not a silent `any?`.
 - Named specs can describe recursive maps and collections. For example, `(s/def :fhir/extension (s/keys :opt-un [:fhir/extension]))` describes a recursive map with an optional child. Ordinary project checks retain the field and index path to a nested mismatch. [Recursive types](../features/F295-recursive-types.md)

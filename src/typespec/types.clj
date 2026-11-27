@@ -807,12 +807,18 @@
                   (or (partial-instance-type ctx form) (predicate-spec-type ctx form)))))
 
 (defn- spec-conjunction-type [ctx forms]
-  ;; Later s/and operands see the conformed value. Only combine predicates
-  ;; before a form that might have transformed it.
+  ;; The first transforming spec can still constrain the original input
+  ;; when all earlier predicates preserve it.
   (let [prefix (seq (take-while some? (map #(transparent-predicate-type ctx % #{}) forms)))]
     (if prefix
       (let [leading (first forms)
             refined (reduce refine-predicate-type prefix)
+            boundary (nth forms (count prefix) nil)
+            shape (when (and (seq? boundary) (#{:s/keys :s/tuple} (type-form-op ctx (first boundary))))
+                    (parse-type ctx boundary))
+            refined (if (and shape (= :proved (:status (contract-sub-result shape refined))))
+                      shape
+                      refined)
             type (if (and (qualified-keyword? leading) (= refined (first prefix)))
                    (ref-t leading)
                    refined)

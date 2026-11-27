@@ -313,6 +313,28 @@
     (is (= [:api/title :schema/alias :schema/maybe-title]
            (get dependencies :schema/maybe-title)))))
 
+(deftest spec-and-applies-shape-contracts-after-value-preserving-predicates
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::record (s/and map? (s/keys :req-un [::id])))
+(s/def ::pair (s/and vector? (s/tuple string? int?)))
+(s/fdef sum-id :args (s/cat :row ::record :pair ::pair) :ret int?)
+(defn sum-id [{:keys [id]} [label suffix]] (+ id suffix))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/sum-id {:id 1} [\"good\" 2])
+(a/sum-id {} [\"good\" 2])
+(a/sum-id {:id \"1\"} [\"good\" 2])
+(a/sum-id {:id 1} [\"good\" \"2\"])
+(a/sum-id {:id 1} [\"short\"])")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2741"] ["client.clj" 4 "TSP2322"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP330-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= [true false false]
+         (mapv #(s/valid? (s/and vector? (s/tuple string? int?)) %)
+               [["good" 2] ["good" "2"] ["short"]]))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

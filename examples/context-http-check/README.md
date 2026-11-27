@@ -171,9 +171,11 @@ reads the same Var from another namespace. It verifies the old and new
 snapshot types and rejects numeric writes through `reset-vals!`,
 `swap-vals!`, and `compare-and-set!`.
 
-The current acceptance has **0 errors and 38 warnings**. The unary
+The current acceptance has **0 errors and 37 warnings**. The unary
 `keyword` contract accepts every input and removes the unchecked input
 warnings at `http.clj:73:73` and `http/routing.clj:126:46`.
+`format` supplies a string to `ex-info` at `http/formats.clj:138:26`,
+removing the unchecked argument warning there.
 
 To review a future checker change, first run plain `run.sh`, inspect
 `current/` against the immutable baseline and existing expected snapshot,

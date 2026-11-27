@@ -319,6 +319,19 @@
   (is (= "text" (apply identity ["text"])))
   (is (thrown? ClassCastException (inc (apply identity ["bad"])))))
 
+(deftest format-checks-a-string-template-and-returns-a-string
+  (let [r (checked "(format \"literal\")
+(apply format [\"value=%s\" 42])
+(apply format \"value=%s\" [:item])
+(format :wrong)
+(apply format [:wrong 42])
+(format)")]
+    (is (= ["string?" "string?" "string?"] (mapv #(type-at r %) [2 3 4])))
+    (is (= [[5 "TSP2345"] [6 "TSP2345"] [7 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics r)))))
+  (is (= "value=42" (apply format ["value=%s" 42])))
+  (is (thrown? ClassCastException (format :wrong))))
+
 (deftest reports-arity-and-element-diagnostics-at-the-source
   (let [forms ["(apply subs [\"abc\"])"
                "(apply subs [\"abc\" \"wrong\"])"

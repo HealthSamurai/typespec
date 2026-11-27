@@ -5,6 +5,7 @@
 
 {clojure.core/str        [& any? :-> string?]
  clojure.core/identity   [any? :-> any?]
+ clojure.core/format     [string? & any? :-> string?]
  clojure.core/int        [(t/or number? java.lang.Character) :-> int?]
  clojure.core/byte       [(t/or number? java.lang.Character) :-> int?]
  clojure.core/inc        ([int? :-> int?] [number? :-> number?])

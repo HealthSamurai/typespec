@@ -3511,7 +3511,10 @@
 
 (doseq [h '[def defonce]]
   (defmethod special h [ctx node _]
-    (some->> (env/definition-initializer node) (infer ctx))
+    (when-let [init (env/definition-initializer node)]
+      (let [actual (infer ctx init)
+            target (second (:children node))]
+        (check-hint! ctx target actual "type of the initializer")))
     t/unknown))
 
 (defmethod special 'let [ctx node _]

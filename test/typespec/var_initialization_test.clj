@@ -43,6 +43,20 @@
     (is (= [["consumer.clj" 2] ["consumer.clj" 7]]
            (mapv (juxt :file (comp :row :pos)) (:diagnostics result))))))
 
+(deftest def-and-defonce-check-their-initializer-hints
+  (let [result (checked "(def ^String good \"ready\")
+(def ^String wrong (identity 42))
+(defonce ^{:tag String} bad-once {:label \"ready\"})
+(defonce ^String maybe nil)
+(def ^String pending)"
+                        "p/good\np/maybe\np/pending")
+        diagnostics (:diagnostics result)]
+    (is (= [["consumer.clj" 4 "TSP721-01"] ["provider.clj" 3 "TSP2322"] ["provider.clj" 4 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= "hint String contradicts the type of the initializer: 42"
+           (:message (second diagnostics))))))
+
 (deftest follows-local-sequences-without-assuming-calls-to-initializers
   (let [result (checked "(declare root)
                          (def snapshot root)

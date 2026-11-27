@@ -96,6 +96,31 @@ p/reassigned")
            (mapv (fn [[row col]] (main/type-at result "consumer.clj" row col))
                  [[4 9] [6 9] [8 1] [9 1]])))))
 
+(deftest literal-const-collections-preserve-map-fields-and-tuple-positions
+  (let [result (checked "(def ^:const deployment {:mode :auto :port 443})
+(def ^:const invalid {:mode :auto :port \"443\"})
+(def ^:const cert [\"root\" 2])
+(def ^:const bad-cert [42 2])
+(def ^:const calculated {:port (+ 400 43)})"
+                        "(clojure.spec.alpha/def ::mode #{:auto :manual})
+(clojure.spec.alpha/def ::port int?)
+(clojure.spec.alpha/fdef deploy :args
+  (clojure.spec.alpha/cat :opts (clojure.spec.alpha/keys :req-un [::mode ::port])
+                         :cert (clojure.spec.alpha/tuple string? int?)) :ret int?)
+(defn deploy [{:keys [port]} [_ generation]] (+ port generation))
+(deploy p/deployment p/cert)
+(deploy p/invalid p/cert)
+(deploy p/deployment p/bad-cert)
+(.size p/deployment)
+p/calculated")
+        diagnostics (:diagnostics result)]
+    (is (= [["consumer.clj" 9 "TSP2322"] ["consumer.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= "value of :port: \"443\" is not assignable to ::port (int?)" (:message (first diagnostics))))
+    (is (= "int" (main/type-at result "consumer.clj" 11 1)))
+    (is (= "t/unknown" (main/type-at result "consumer.clj" 12 1)))))
+
 (deftest follows-local-sequences-without-assuming-calls-to-initializers
   (let [result (checked "(declare root)
                          (def snapshot root)

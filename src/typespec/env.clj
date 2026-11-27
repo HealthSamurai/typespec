@@ -157,21 +157,30 @@
         nil)
       nil)))
 
-(defn- scalar-constant [target initializer]
+(defn- literal-constant? [node]
+  (and (empty? (:directives node)) (not (tag-node node))
+       (case (:op node)
+         (:kw :str :num :bool :char :nil) true
+         (:map :vector :set) (every? literal-constant? (:children node))
+         false)))
+
+(defn- constant-initializer [file target initializer]
   (let [flag (some (fn [metadata]
                      (if (and (= :kw (:op metadata)) (= :const (:val metadata)))
                        {:val true}
                        (attr-get metadata :const)))
                    (:meta target))]
-    (when (and (true? (:val flag)) (empty? (:directives initializer)) (not (tag-node initializer)))
-      (let [value (:val initializer)
-            type (case (:op initializer)
-                   (:kw :str :num :bool) (t/lit value)
-                   :char (t/class-type "java.lang.Character")
-                   :nil t/nil-t
-                   nil)]
-        (when type
-          {:type type :class (some-> value class .getName)})))))
+    (when (and (true? (:val flag)) (literal-constant? initializer))
+      (let [value (:val initializer)]
+        (case (:op initializer)
+          (:kw :str :num :bool) {:type (t/lit value) :class (.getName ^Class (class value))}
+          :char {:type (t/class-type "java.lang.Character") :class "java.lang.Character"}
+          :nil {:type t/nil-t}
+          {:node initializer :file file
+           :class (case (:op initializer)
+                    :map "java.util.Map"
+                    :vector "java.util.List"
+                    :set "java.util.Set")})))))
 
 (defn- var-declarations [files macros]
   (letfn [(collect [by-name file form at-load?]
@@ -191,7 +200,7 @@
                   init? (and at-load?
                              (or (seq factories) (#{'defn 'defn-} operator) data-initializer))
                   hint (when data-initializer (hint-type file target))
-                  constant (when data-initializer (scalar-constant target (definition-initializer form)))
+                  constant (when data-initializer (constant-initializer file target (definition-initializer form)))
                   initializer (cond-> {:file (:file file) :pos (:pos form)}
                                 hint (assoc :hint {:type hint :class (hint-class file (tag-node target))})
                                 constant (assoc :constant constant))

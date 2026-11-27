@@ -240,7 +240,8 @@
 (defn- fresh-problems [ctx actual expected]
   (let [env (:env ctx)
         ms (remove #(= :nil (:t %)) (t/members env expected))]
-    (when (and (:fresh actual) (seq ms) (every? #(= :map (:t %)) ms))
+    (when (and (or (:fresh actual) (::literal-var (meta actual)))
+               (seq ms) (every? #(= :map (:t %)) ms))
       (let [fields #(merge (:opt %) (:req %))
             m (first ms)
             known (concat (keys (:req m)) (keys (:opt m)))]
@@ -255,7 +256,7 @@
              ["TSP2741" (str "required key " k " of " (t/show expected) " is missing")])
            (fresh-field-problems ctx actual (fields m))
            ;; An open inferred shape only describes the keys we have seen.
-           (when (or (not (:inferred m)) (:complete-keys? m))
+           (when (and (:fresh actual) (or (not (:inferred m)) (:complete-keys? m)))
              (for [k (keys (:req actual))
                    :when (and (not (some #{k} known))
                               (not (and (qualified-keyword? k) (get-in env [:specs k])))
@@ -2151,7 +2152,15 @@
                 (swap! *rets* assoc sym ty)
                 ty)))
       (let [{:keys [constant hint]} (env/unique-var-initializer (:env ctx) sym)]
-        (or (:type constant) (:type hint))))))
+        (or (:type constant)
+            (when-let [node (:node constant)]
+              (or (get @*rets* sym)
+                  (let [context {:env (:env ctx) :file (:file constant) :opts (:opts ctx)
+                                 :locals {} :preserve-literals? true}
+                        type (vary-meta (dissoc (quietly context node) :fresh) assoc ::literal-var true)]
+                    (swap! *rets* assoc sym type)
+                    type)))
+            (:type hint))))))
 
 (defn- why-of [ctx init ty]
   (cond
@@ -3287,7 +3296,8 @@
         hinted (if-let [tag (env/tag-node target)]
                  (env/hint-class (:file ctx) tag)
                  (when (= :sym (:op target))
-                   (get-in ctx [:compiler-local-classes (:val target)])))
+                   (or (get-in ctx [:compiler-local-classes (:val target)])
+                       (compiler-var-class ctx (:val target)))))
         cname (if (and hinted (not= hinted inferred) (not (t/primitives hinted))
                        (empty? (java/methods-named inferred mname false))
                        (seq (java/methods-named hinted mname false)))

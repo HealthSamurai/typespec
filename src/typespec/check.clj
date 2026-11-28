@@ -1541,6 +1541,12 @@
 
 (defn- hinted-value-type [env original hint]
   (let [members (t/members env original)
+        present (remove #(= :nil (:t %)) members)
+        [element & others] (distinct (map :java-element-class present))
+        hint (cond-> hint
+               (and (= :class (:t hint)) element (empty? others)
+                    (every? #(t/sub? env % hint) present))
+               (assoc :java-element-class element))
         nil-member (or (first (filter #(= :nil (:t %)) members))
                        ;; An opaque Java return type can absorb nil in a union.
                        (when (:null-return (meta original)) t/nil-t))]

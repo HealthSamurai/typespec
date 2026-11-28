@@ -15,6 +15,22 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest compatible-expression-hints-preserve-java-element-types
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file FileSystems Path]))
+(defn roots [] (.getRootDirectories (FileSystems/getDefault)))
+(defn views [] (.supportedFileAttributeViews (FileSystems/getDefault)))
+(defn name-count [^Path root] (.getNameCount root))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(for [p ^Iterable (a/roots)] (a/name-count p))
+(for [p ^Iterable (a/roots)] (subs p 0))
+(mapv #(subs % 0) ^Iterable (a/views))
+(mapv #(inc %) ^Iterable (a/views))
+(let [^Iterable roots (a/roots)] (for [p roots] (a/name-count p)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-iterable-returns-preserve-element-types-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file FileSystems Path]))
 (defn roots [] (.getRootDirectories (FileSystems/getDefault)))

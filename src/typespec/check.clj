@@ -1542,11 +1542,11 @@
 (defn- hinted-value-type [env original hint]
   (let [members (t/members env original)
         present (remove #(= :nil (:t %)) members)
-        [element & others] (distinct (map :java-element-class present))
+        [facts & others] (distinct (map #(select-keys % [:java-element-class :java-map-classes]) present))
         hint (cond-> hint
-               (and (= :class (:t hint)) element (empty? others)
+               (and (= :class (:t hint)) (seq facts) (empty? others)
                     (every? #(t/sub? env % hint) present))
-               (assoc :java-element-class element))
+               (merge facts))
         nil-member (or (first (filter #(= :nil (:t %)) members))
                        ;; An opaque Java return type can absorb nil in a union.
                        (when (:null-return (meta original)) t/nil-t))]
@@ -3408,19 +3408,23 @@
         (mapv (fn [i arg ty] (or ty (infer ctx arg (java-callback-context possible i)))) (range) args types))
       (mapv #(infer ctx %) args))))
 
-(defn- java-receiver-element [ctx receiver cname owner]
+(defn- java-receiver-fact [ctx receiver cname owner fact]
   (let [env (:env ctx)]
     (when (and receiver (t/sub? env (t/class-type cname) (t/class-type owner)))
-      (:java-element-class (t/remove-nil env receiver)))))
+      (fact (t/remove-nil env receiver)))))
+
+(defn- java-receiver-element [ctx receiver cname owner]
+  (java-receiver-fact ctx receiver cname owner :java-element-class))
 
 (defn- java-read-element [ctx receiver cname mname params]
-  (when-let [owner (case [mname params]
-                     ["next" []] "java.util.Iterator"
-                     ["nextElement" []] "java.util.Enumeration"
-                     ["previous" []] "java.util.ListIterator"
-                     ["get" ["int"]] "java.util.List"
-                     nil)]
-    (java-receiver-element ctx receiver cname owner)))
+  (case [mname params]
+    ["next" []] (java-receiver-element ctx receiver cname "java.util.Iterator")
+    ["nextElement" []] (java-receiver-element ctx receiver cname "java.util.Enumeration")
+    ["previous" []] (java-receiver-element ctx receiver cname "java.util.ListIterator")
+    ["get" ["int"]] (java-receiver-element ctx receiver cname "java.util.List")
+    ["get" ["java.lang.Object"]]
+    (second (java-receiver-fact ctx receiver cname "java.util.Map" :java-map-classes))
+    nil))
 
 (defn- java-returned-element [ctx receiver cname mname params]
   (case [mname params]
@@ -3479,10 +3483,13 @@
               (let [result (first rets)
                     [returned-element & others] (distinct (map #(or (:element-class %)
                                                                    (java-returned-element ctx receiver cname mname (:params %)))
-                                                                candidates))]
+                                                                candidates))
+                    [map-classes & other-maps] (distinct (map :map-classes candidates))]
                 (cond-> result
                   (and (= :class (:t result)) returned-element (empty? others))
-                  (assoc :java-element-class returned-element)))
+                  (assoc :java-element-class returned-element)
+                  (and (= :class (:t result)) map-classes (empty? other-maps))
+                  (assoc :java-map-classes map-classes)))
               t/unknown)))]
     (if (some #(= :never (:t %)) (cons receiver arg-types)) t/never result)))
 
@@ -9276,7 +9283,7 @@
             (t/prim (:kind ty))
             (dissoc ty :items :min-count :max-count :fresh :entry-map))
     :union (apply t/union (map initial-atom-content (:types ty)))
-    (widen (dissoc ty :fresh :java-element-class))))
+    (widen (dissoc ty :fresh :java-element-class :java-map-classes))))
 
 (defn- atom-contents [ctx node ty]
   (let [members (t/members (:env ctx) (eff ctx ty))

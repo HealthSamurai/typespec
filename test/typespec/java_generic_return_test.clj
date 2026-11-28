@@ -15,6 +15,32 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest java-map-get-preserves-its-nullable-value-type-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn environment [] (System/getenv))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Map]))
+(s/fdef prefix :args (s/cat :key string?) :ret (s/nilable string?))
+(defn prefix [key]
+  (when-let [value (.get ^Map (a/environment) key)]
+    (subs value 0)))
+(s/fdef wrong :args (s/cat :key string?) :ret (s/nilable number?))
+(defn wrong [key]
+  (when-let [value (.get ^Map (a/environment) key)]
+    (inc value)))
+(s/fdef unguarded :args (s/cat :key string?) :ret string?)
+(defn unguarded [key] (.get ^Map (a/environment) key))
+(prefix \"PATH\")
+(prefix 42)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 10 "TSP2345"] ["client.clj" 12 "TSP2322"] ["client.clj" 14 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"may return nil" (:message (second issues))))
+    (let [raw (t/class-type "java.util.Map")
+          typed (assoc raw :java-map-classes ["java.lang.String" "java.lang.String"])]
+      (is (= raw (t/union typed raw))))))
+
 (deftest java-collection-streams-retain-elements-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path] [java.util List]))
 (defn lines [^Path path] (Files/readAllLines path))

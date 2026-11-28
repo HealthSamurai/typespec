@@ -60,26 +60,32 @@
     java.util.Set java.util.SortedSet java.util.NavigableSet java.util.Queue java.util.Deque
     java.util.stream.Stream})
 
-(defn- method-element-class [^Class receiver ^Method method]
-  (when (element-parameter-classes (.getReturnType method))
-    (try
-      (let [generic (.getGenericReturnType method)]
-        (when (instance? ParameterizedType generic)
-          (let [[argument] (.getActualTypeArguments ^ParameterizedType generic)
-                argument (if (instance? WildcardType argument)
-                           (let [[upper & more] (.getUpperBounds ^WildcardType argument)]
-                             (when (empty? more) upper))
-                           argument)
-                owner (.getDeclaringClass method)
-                ^Class element (if (and (instance? TypeVariable argument)
-                                        (= owner (.getGenericDeclaration ^TypeVariable argument)))
-                                 (inherited-return receiver owner argument)
-                                 (nominal-class {} argument))]
-            (when (and element (not= Object element))
-              (.getName element)))))
-      (catch TypeNotPresentException _ nil)
-      (catch MalformedParameterizedTypeException _ nil)
-      (catch LinkageError _ nil))))
+(def ^:private map-parameter-classes
+  #{java.util.Map java.util.SortedMap java.util.NavigableMap
+    java.util.concurrent.ConcurrentMap java.util.concurrent.ConcurrentNavigableMap})
+
+(defn- return-argument-class [^Class receiver ^Class owner argument]
+  (let [argument (if (instance? WildcardType argument)
+                   (let [[upper & more] (.getUpperBounds ^WildcardType argument)]
+                     (when (empty? more) upper))
+                   argument)
+        ^Class resolved (if (and (instance? TypeVariable argument)
+                                 (= owner (.getGenericDeclaration ^TypeVariable argument)))
+                          (inherited-return receiver owner argument)
+                          (nominal-class {} argument))]
+    (when (and resolved (not= Object resolved))
+      (.getName resolved))))
+
+(defn- method-argument-classes [^Class receiver ^Method method]
+  (try
+    (let [generic (.getGenericReturnType method)]
+      (when (instance? ParameterizedType generic)
+        (let [owner (.getDeclaringClass method)]
+          (mapv #(return-argument-class receiver owner %)
+                (.getActualTypeArguments ^ParameterizedType generic)))))
+    (catch TypeNotPresentException _ nil)
+    (catch MalformedParameterizedTypeException _ nil)
+    (catch LinkageError _ nil)))
 
 (defn- most-specific [class-of methods]
   (let [classes (distinct (map class-of methods))]
@@ -116,12 +122,18 @@
           by-params (group-by params methods)]
       (mapv (fn [ps]
               (let [^Method m (select-method (get by-params ps))
-                    element (method-element-class c m)]
+                    erased (.getReturnType m)
+                    element-return? (element-parameter-classes erased)
+                    map-return? (map-parameter-classes erased)
+                    arguments (when (or element-return? map-return?) (method-argument-classes c m))
+                    element (when element-return? (first arguments))]
                 (cond-> {:params ps
                          :varargs (.isVarArgs m)
                          :ret (method-return c m)
                          :declaring (.getName (.getDeclaringClass m))}
-                  element (assoc :element-class element))))
+                  element (assoc :element-class element)
+                  (and map-return? (= 2 (count arguments)) (some some? arguments))
+                  (assoc :map-classes arguments))))
             (distinct (map params methods))))))
 
 (defn method-names [cname]

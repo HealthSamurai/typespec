@@ -22,6 +22,35 @@
 (s/fdef middleware :args (s/cat :x ::middleware) :ret any?)
 (defn middleware [x] x)"))
 
+(deftest integer-range-specs-check-bounds-and-fixed-precision
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::limit (s/int-in 1 5))
+(s/def ::narrow (s/int-in 2 4))
+(s/def ::config (s/keys :req-un [::limit]))
+(s/fdef read-limit :args (s/cat :input ::config) :ret ::limit)
+(defn read-limit [{:keys [limit]}] limit)
+(s/fdef narrow :args (s/cat :n ::narrow) :ret ::limit)
+(defn narrow [n] n)
+(s/fdef broken :args (s/cat) :ret ::limit)
+(defn broken [] 5)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/read-limit {:limit 1}))
+(inc (a/read-limit {:limit 4}))
+(inc (a/narrow 3))
+(a/read-limit {:limit 0})
+(a/read-limit {:limit 5})
+(a/read-limit {:limit 2N})
+(a/narrow 4)")
+        diagnostics (:diagnostics (check/check-files [api client] {}))
+        range-spec (s/int-in 1 5)]
+    (is (= [["api.clj" 10 "TSP2322"] ["client.clj" 5 "TSP2322"] ["client.clj" 6 "TSP2322"]
+            ["client.clj" 7 "TSP2322"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (every? #(re-find #"s/int-in" (:message %)) diagnostics))
+    (is (= [true true false false false false]
+           (mapv #(s/valid? range-spec %) [1 4 0 5 2N 2.0])))))
+
 (deftest spec-predicate-types-agree-with-runtime-on-known-values
   (let [cases (concat
                (for [value [:get :post :put :delete :patch :head :trace "get" nil false]]

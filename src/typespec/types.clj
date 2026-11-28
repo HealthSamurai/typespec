@@ -282,6 +282,27 @@
                        ((or (when ambiguous-number-box? magnitude) exact) val)))
                    predicates))))
 
+(defn- fixed-int-range [start end]
+  (when (and (integer? start) (integer? end))
+    (if (< start end)
+      (assoc (prim :int) :int-range [start end])
+      never)))
+
+(defn- literal-in-int-range? [{:keys [val ambiguous-number-box?]} [start end :as expected]]
+  (or (nil? expected)
+      (and (integer? val)
+           (<= start val)
+           (< val end)
+           (if ambiguous-number-box?
+             (inconclusive! :integer-representation)
+             (int? val)))))
+
+(defn- int-range-sub? [actual [start end :as expected]]
+  (or (nil? expected)
+      (if-let [[actual-start actual-end] actual]
+        (and (<= start actual-start) (<= actual-end end))
+        (inconclusive! :integer-range))))
+
 (defn map-of-entry [env ty k]
   (when (and (not= 0 (:max-count ty))
              (not= :mismatch (:status (sub-result env (if (nil? k) nil-t (lit k)) (:k ty)))))
@@ -524,12 +545,14 @@
       (= :lit st) (if (= :lit tt)
                     (= (:val s) (:val t))
                     (and (numeric-literal-fits? s (:numeric-predicates t))
+                         (literal-in-int-range? s (:int-range t))
                          (sub1? env (cond-> (lit-prim (:val s))
                                       (contains? t :qualified?) (assoc :qualified? (name-qualification s)))
-                                t)))
+                                (dissoc t :int-range))))
       (= :lit tt) false
       (= :prim st) (case tt
                      :prim (and (prim-sub? (:name s) (:name t))
+                                (int-range-sub? (:int-range s) (:int-range t))
                                 (or (not (contains? t :qualified?))
                                     (= (:qualified? s) (:qualified? t))))
                      :class (or (prim-is-class? (:name s) (:name t))
@@ -829,12 +852,14 @@
        (when (and min-count (not= min-count counted-max)) (str " :min-count " min-count))
        (when max-count (str " :max-count " max-count))))
 
-(defn- show-primitive [{primitive :name :keys [numeric-predicates] :as ty}]
-  (let [base (str (when (contains? ty :qualified?)
-                    (if (:qualified? ty) "qualified-" "simple-"))
-                  (name primitive) "?")]
+(defn- show-primitive [{primitive :name :keys [numeric-predicates int-range] :as ty}]
+  (let [base (if-let [[start end] int-range]
+               (str "(s/int-in " (pr-str start) " " (pr-str end) ")")
+               (str (when (contains? ty :qualified?)
+                      (if (:qualified? ty) "qualified-" "simple-"))
+                    (name primitive) "?"))]
     (if-let [[predicate & more] (seq (sort numeric-predicates))]
-      (if (and (empty? more) (= primitive (first (numeric-predicate-rules predicate))))
+      (if (and (nil? int-range) (empty? more) (= primitive (first (numeric-predicate-rules predicate))))
         (str predicate)
         (str "(s/and " base " " (str/join " " (cons predicate more)) ")"))
       base)))
@@ -1493,6 +1518,7 @@
                            (or (packed-regex-type ctx form) (p (second form)))
                            (fail))
         :s/with-gen (if (= 3 (count form)) (p (second form)) (fail))
+        :s/int-in (or (when (= 3 (count form)) (fixed-int-range (second form) (nth form 2))) (fail))
         :s/keys (if-let [options (spec-keys-options (rest form))] (parse-keys options) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
         (:s/coll-of :s/every) (if-let [options (when (next form) (spec-option-map (drop 2 form)))]

@@ -152,6 +152,39 @@
 (def ^:private import-vars-heads
   '#{potemkin/import-vars potemkin.namespaces/import-vars})
 
+(defn- clj-macro-body [file body]
+  (if (= 'net.cgrand.macrovich/case (head file body))
+    (let [options (rest (:children body))
+          pairs (partition 2 options)
+          keys (map (comp :val first) pairs)]
+      (when (and (even? (count options)) (every? #{:clj :cljs :cljd} keys)
+                 (= (count keys) (count (distinct keys))))
+        (some (fn [[key branch]] (when (= :clj (:val key)) branch)) pairs)))
+    body))
+
+(defn- import-vars-forwarder? [file form]
+  (let [[arity & other-arities] (:arities (defn-parts form))
+        {[ampersand parameter & extra] :children} (:params arity)
+        [body & more] (:body arity)
+        template (:syntax-template (clj-macro-body file body))
+        [_ splice & args] (:children template)
+        [forwarded & splice-extra] (:children splice)]
+    (and (empty? other-arities) (empty? extra) (empty? more)
+         (= '& (:val ampersand)) (simple-symbol? (:val parameter))
+         (not (#{'& '&env '&form} (:val parameter)))
+         (import-vars-heads (head file template))
+         (= :unquote-splicing (:op splice))
+         (= :sym (:op forwarded)) (= (:val parameter) (:val forwarded))
+         (empty? args) (empty? splice-extra))))
+
+(defn- import-vars-forwarders [files]
+  (into #{}
+        (for [file files form (declaration-forms file)
+              :when (= 'defmacro (head file form))
+              :let [sym (var-name file (second (:children form)))]
+              :when (and sym (import-vars-forwarder? file form))]
+          sym)))
+
 (defn- import-var-group [prefix node]
   (case (:op node)
     :sym (let [sym (:val node)
@@ -183,13 +216,16 @@
   [node]
   (mapcat import-var-clause (rest (:children node))))
 
-(defn- var-imports [files ns-defs]
+(defn- var-imports [files ns-defs forwarders]
   (into {}
         (for [file files
               form (mapcat #(tree-seq (fn [node] (= 'do (head file node)))
                                        (fn [node] (rest (:children node))) %)
                            (declaration-forms file))
-              :when (import-vars-heads (head file form))
+              :let [op (head file form)
+                    qualified (when op (if (qualified-symbol? op) op
+                                           (symbol (str (:ns file)) (name op))))]
+              :when (or (import-vars-heads op) (contains? forwarders qualified))
               {:keys [source target]} (imported-vars form)
               :let [source (resolve-sym file source)]
               :when (qualified-symbol? source)
@@ -822,7 +858,8 @@
                                :when sym]
                            sym))
         names (namespace-vars files macros)
-        imports (var-imports files (:ns-defs names))
+        forwarders (import-vars-forwarders files)
+        imports (var-imports files (:ns-defs names) forwarders)
         origins (into {} (keep (fn [target]
                                  (when-let [source (import-origin imports target)]
                                    [target source])))
@@ -843,7 +880,8 @@
         contracts (externs/normalize-contracts (:specs acc) contracts)
         operator-env {:specs (merge (:specs contracts) (:specs acc))}
         env (assoc names :specs (:specs acc) :opaque-fdefs (:opaque-fdefs acc)
-                   :macros macros :root-definitions (:root-definitions acc)
+                   :macros macros :import-vars-forwarders forwarders
+                   :root-definitions (:root-definitions acc)
                    :protocols (:protocols acc)
                    :atom-initializers (into {} (filter (fn [[sym]] (= 1 (get-in acc [:root-definitions sym]))))
                                             (:atom-initializers acc))

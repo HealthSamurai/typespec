@@ -28,6 +28,8 @@ origin: Typespec
 
 На уровне namespace `check` индексирует литеральные имена из `potemkin/import-vars` и `potemkin.namespaces/import-vars`. Поддерживаются квалифицированные символы, группы, aliases, `:refer` и `:rename`. Вызов через цепочку реэкспортов использует сигнатуру исходного Var. Реэкспорт исходного `defmacro` остаётся вызовом макроса и получает `TSP7031`, когда у вызова нет правила.
 
+Макрос с единственным rest-параметром может передавать его в `import-vars` через syntax quote и `~@`. Это правило также действует для ветки `:clj` литерального `net.cgrand.macrovich/case`, как в `metabase.util.namespaces/import-fns`.
+
 ## Объявления функций с синтаксисом Malli
 
 В `typespec.edn` можно указать форму top-level макроса. Например, для Metabase:

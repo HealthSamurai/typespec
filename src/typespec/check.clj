@@ -10196,6 +10196,7 @@
             contract (when contract-sym (get-in ctx [:env :macro-contracts contract-sym]))
             spec-contract (when-not (:guards-disabled? ctx)
                             (get-in ctx [:env :spec-macro-contracts contract-sym]))
+            import-forwarder? (contains? (get-in ctx [:env :import-vars-forwarders]) contract-sym)
             r (cond (= :malli-defn (:shape contract))
                     (do (report! ctx h "TSP7031"
                                  (str "macro " sym " does not match the supported top-level Malli declaration")
@@ -10203,6 +10204,7 @@
                         t/unknown)
                     contract (check-macro-body ctx node contract)
                     has-rule? (special ctx node head)
+                    import-forwarder? (special ctx node 'potemkin/import-vars)
                     spec-contract (check-spec-macro ctx node contract-sym spec-contract args)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
                     (and (not own?) (not extern?) (core/stdlib-macro? core-sym)) t/unknown
@@ -10431,7 +10433,8 @@
         [env0 env-diags] (env/build files (:extern-contracts opts))
         compiled (macros/compile-contracts
                   (get opts :macro-contracts {}) env0
-                  #(not= (get-method special %) (get-method special ::none)))
+                  #(or (contains? (:import-vars-forwarders env0) %)
+                       (not= (get-method special %) (get-method special ::none))))
         env-diags (concat env-diags (:diagnostics compiled))
         guard-env (assoc env0 :macro-contracts (:contracts compiled)
                              :spec-macro-contracts (macros/infer-spec-contracts env0 files)

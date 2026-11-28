@@ -58,6 +58,43 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest source-forwarders-reexport-vars-through-the-jvm-branch
+  (let [wrapper (parse/parse-string
+                 "wrapper.clj"
+                 "(ns wrapper (:require [potemkin :as p] [net.cgrand.macrovich :as m]))
+(defmacro direct [& forms] `(p/import-vars ~@forms))
+(defmacro import-fns
+  \"Forward the original forms.\"
+  {:style/indent [:form]}
+  [& forms]
+  (m/case :cljs (throw (Exception. \"must not run\")) :clj `(p/import-vars ~@forms)))
+(defmacro unrelated [& forms]
+  (m/case :cljs `(p/import-vars ~@forms) :clj nil))
+(defmacro add-extra [& forms] `(p/import-vars [unknown hidden] ~@forms))")
+        origin (parse/parse-string
+                "origin.clj"
+                "(ns origin (:require [clojure.spec.alpha :as s]))
+(s/fdef size :args (s/cat :value string?) :ret int?)
+(defn size [value] (count value))")
+        facade (parse/parse-string
+                "facade.clj"
+                "(ns facade (:require [wrapper :as w :refer [direct]] [origin :as impl]))
+(w/import-fns [impl size])
+(direct [impl :refer [size] :rename {size another}])
+(w/unrelated [impl :refer [size] :rename {size unrelated}])
+(w/add-extra [impl size])")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [facade :as f]))
+(inc (f/size \"good\"))
+(f/another 42)
+(f/unrelated \"good\")")
+        ds (:diagnostics (check/check-files [client facade origin wrapper] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2305"]
+            ["facade.clj" 4 "TSP7031"] ["facade.clj" 5 "TSP7031"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest malli-declaration-contracts-check-bodies-and-index-functions
   (let [api (parse/parse-string
              "api.clj"

@@ -10022,11 +10022,13 @@
       (infer ctx h))
     (cond
       (nil? h) {:t :coll :kind :seq :of t/never :jvm-class "clojure.lang.IPersistentList"}
-      (= :kw (:op h)) (let [[m default] args
-                            ty (infer ctx m)]
-                        (if default
-                          (read-key ctx ty (:val h) h (infer ctx default) t/unknown)
-                          (read-key ctx ty (:val h) h)))
+      (= :kw (:op h))
+      (let [[source default :as inputs] (mapv #(infer ctx %) args)]
+        (cond
+          (not (#{1 2} (count inputs))) (apply-arity! ctx node (parse/unparse h) [1 2] (count inputs))
+          (some #(= :never (:t %)) inputs) t/never
+          default (read-key ctx source (:val h) h default t/unknown)
+          :else (read-key ctx source (:val h) h)))
       (not= :sym (:op h))
       (let [types (when (inline-callback? ctx h) (mapv #(infer ctx %) args))
             ft (t/resolve-t (:env ctx) (eff ctx (infer ctx h (some-> types direct-callback-context))))]

@@ -114,6 +114,32 @@
     (is (= (repeat 5 "t/never")
            (mapv #(main/type-at result "api.clj" % 3) [5 8 11 14 17])))))
 
+(deftest keyword-calls-check-arity-and-evaluate-the-default-eagerly
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::value int?)
+(s/fdef read-value :args (s/cat :input (s/keys :req-un [::value])) :ret int?)
+(defn read-value [{:keys [value] :as input}]
+  (:value input value))
+(s/fdef halt-on-default :args (s/cat) :ret int?)
+(defn halt-on-default []
+  (if (:value {:value 5} (throw (Exception. \"default evaluated\"))) :wrong 1))
+(s/fdef halt-on-target :args (s/cat) :ret int?)
+(defn halt-on-target []
+  (if (:value (throw (Exception. \"target evaluated\"))) :wrong 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/read-value {:value 4}))
+(inc (a/halt-on-default))
+(inc (a/halt-on-target))
+(a/read-value {:value \"bad\"})
+(:value)
+(:value {:value 4} 2 :extra)")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 5 "TSP2322"] ["client.clj" 6 "TSP2554"] ["client.clj" 7 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["::value" "t/never" "t/never"]
+           (mapv #(main/type-at result "api.clj" % 3) [5 8 11])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

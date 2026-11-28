@@ -111,6 +111,12 @@
 (def potemkin-record-macros
   '#{potemkin/defrecord+ potemkin.types/defrecord+})
 
+(def potemkin-protocol-macros
+  '#{potemkin/defprotocol+ potemkin.types/defprotocol+})
+
+(defn- protocol-declaration? [head]
+  (or (= 'defprotocol head) (contains? potemkin-protocol-macros head)))
+
 (defn- record-factories [file form]
   (let [[_ target fields] (:children form)]
     (when (and (var-name file target) (= :vector (:op fields))
@@ -182,7 +188,7 @@
                     (when (and (= :list (:op form)) (= :sym (:op h)) (= :sym (:op nm))
                                (.startsWith (name (:val h)) "def"))
                       (cons (:val nm)
-                            (when (= 'defprotocol (head file form))
+                            (when (protocol-declaration? (head file form))
                               (keys (protocol-methods file forms))))))))
         (declaration-forms file)))
 
@@ -741,7 +747,7 @@
                  (not opaque?) (update :opaque-fdefs dissoc sym)))
              acc))
 
-         (= 'defprotocol h)
+         (protocol-declaration? h)
          (let [[_ nm & forms] (:children form)]
            (if (and (= :sym (:op nm)) (simple-symbol? (:val nm)))
              (assoc-in acc [:protocols (symbol (str (:ns file)) (name (:val nm)))] (protocol-methods file forms))

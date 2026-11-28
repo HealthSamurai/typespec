@@ -16,6 +16,35 @@
                       (parse/parse-string "display.clj" provider)]
                      {:track-uses true}))
 
+(deftest potemkin-protocols-use-method-arities-and-spec
+  (let [api (parse/parse-string
+             "api.cljc"
+             "(ns api (:require [potemkin :as p] [clojure.spec.alpha :as s]))
+(#?(:clj p/defprotocol+ :cljs defprotocol) Display
+  (render [this] [this prefix])
+  (ready? [this]))
+(s/fdef render :args (s/cat :this any? :prefix (s/? string?)) :ret string?)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [api :as a]))
+(def display (reify a/Display
+  (render [_] \"ready\")
+  (render [_ prefix] (str prefix \"ready\"))
+  (ready? [_] true)))
+(subs (a/render display \"prefix\") 0)
+(a/render display 42)
+(a/ready? display)
+(a/ready? display 42)
+(reify a/Display
+  (render [_] 42)
+  (render [_ prefix] (str prefix \"ready\"))
+  (ready? [_] true))")
+        ds (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP430-03"] ["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2554"]
+            ["client.clj" 11 "TSP2322"] ["client.clj" 13 "TSP430-03"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest checks-literal-extend-methods-including-a-forname-array
   (let [r (checked "(extend String api/Display
   {:render (fn ([this] this) ([this prefix] (str prefix this)))})

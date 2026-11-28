@@ -16,6 +16,9 @@ origin: Clojure
 Если `s/fdef` задаёт только `:ret`, этот тип действует для каждой арности
 из `defprotocol`. Типы остальных параметров выводятся из их хинтов и тела.
 
+Те же правила действуют для `potemkin/defprotocol+` и `potemkin.types/defprotocol+`,
+включая выбор макроса в ветке `:clj` внутри головы формы.
+
 ```clojure example
 (ns example (:require [clojure.spec.alpha :as s]))
 

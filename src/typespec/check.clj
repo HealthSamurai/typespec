@@ -3881,7 +3881,7 @@
 (def ^:private opaque-declarations
   (into '#{ns comment declare require import in-ns defmacro defprotocol defrecord deftype defmulti
            definterface clojure.spec.alpha/def clojure.spec.alpha/fdef}
-        env/potemkin-record-macros))
+        (concat env/potemkin-record-macros env/potemkin-protocol-macros)))
 
 (doseq [h opaque-declarations]
   (defmethod special h [_ _ _] t/unknown))

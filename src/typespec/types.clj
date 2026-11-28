@@ -33,7 +33,8 @@
 
 ;; These facts do not change the nominal type.
 (defn strip [t]
-  (dissoc t :platform :as :generic-failure :exact-array? :array-length :ambiguous-number-box? :regex-groups))
+  (dissoc t :platform :as :generic-failure :exact-array? :array-length :ambiguous-number-box?
+          :regex-groups :sequential?))
 
 (defn union [& ts]
   (let [[flat nullable?]
@@ -55,6 +56,7 @@
                                     (not (:exact-array? x)) (dissoc :exact-array?)
                                     (not= (:array-length %) (:array-length x)) (dissoc :array-length)
                                     (not= (:regex-groups %) (:regex-groups x)) (dissoc :regex-groups)
+                                    (not (:sequential? x)) (dissoc :sequential?)
                                     (not= (literal-number-class %) (literal-number-class x))
                                     (assoc :ambiguous-number-box? true)))
                          nullable?)
@@ -145,6 +147,8 @@
   "The class that guarantees a collection predicate."
   {:map "clojure.lang.IPersistentMap" :vector "clojure.lang.IPersistentVector" :set "clojure.lang.IPersistentSet"
    :seq "clojure.lang.ISeq" :coll "clojure.lang.IPersistentCollection"})
+
+(def ^:private sequential-class "clojure.lang.Sequential")
 
 (defn class-type [n]
   (cond (= n "void") nil-t
@@ -246,6 +250,9 @@
 (defn- inconclusive! [reason]
   (when *inconclusive* (swap! *inconclusive* conj reason))
   false)
+
+(defn- inconclusive-sequence-kind! [kind target]
+  (and (= :seq kind) (= sequential-class target) (inconclusive! :sequence-kind)))
 
 (defn- prim-sub? [a b]
   (or (= a b)
@@ -451,7 +458,8 @@
                      :prim (and (prim-sub? (:name s) (:name t))
                                 (or (not (contains? t :qualified?))
                                     (= (:qualified? s) (:qualified? t))))
-                     :class (prim-is-class? (:name s) (:name t))
+                     :class (or (prim-is-class? (:name s) (:name t))
+                                (inconclusive-sequence-kind! (:name s) (:name t)))
                      ;; A known kind never fits a different :kind (set? is not a vector).
                      :coll (and (contains? #{:vector :set :seq :coll} (:name s))
                                 (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
@@ -465,7 +473,9 @@
                                         :else true))
                      false)
       (= :class st) (case tt
-                      :class (class-sub? (:name s) (:name t))
+                      :class (or (class-sub? (:name s) (:name t))
+                                 (when (= "clojure.lang.ISeq" (:name s))
+                                   (inconclusive-sequence-kind! :seq (:name t))))
                       :atom (and (class-sub? (:name s) "clojure.lang.Atom")
                                  (inconclusive! :atom-content))
                       :prim (class-is-prim? (:name s) (:name t))
@@ -516,9 +526,11 @@
                                     (every? #(sub? env % (:of t)) items)
                                     (or (= 0 (:max-count s)) (sub? env (:of s) (:of t))))))
                      :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
-                     :class (if-let [c (:jvm-class s)]
-                              (class-sub? c (:name t))
-                              (prim-is-class? (or (:kind s) :coll) (:name t)))
+                     :class (or (and (:sequential? s) (= sequential-class (:name t)))
+                                (if-let [c (:jvm-class s)]
+                                  (class-sub? c (:name t))
+                                  (or (prim-is-class? (or (:kind s) :coll) (:name t))
+                                      (inconclusive-sequence-kind! (:kind s) (:name t)))))
                      false)
       (= :fn st) (case tt
                     :fn (boolean (fn-sub? env s t))
@@ -746,19 +758,20 @@
     double? :double float? :double number? :number pos? :number
     keyword? :keyword
     symbol? :symbol boolean? :boolean uuid? :uuid inst? :inst
-    map? :map vector? :vector set? :set seq? :seq sequential? :coll coll? :coll
+    map? :map vector? :vector set? :set seq? :seq coll? :coll
     fn? :fn ifn? :fn})
 
 (defn- builtin-predicate-type [predicate]
   (if-let [primitive (pred-prims predicate)]
     (cond-> (prim primitive)
-      (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'sequential? 'fn?} predicate)
+      (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'fn?} predicate)
       (with-meta {::unchecked-contract true}))
     (case predicate
       any? any
       some? some-t
       nil? nil-t
       seqable? seqable-type
+      sequential? (assoc (class-type sequential-class) :as "sequential?")
       associative? (class-type "clojure.lang.Associative")
       indexed? (class-type "clojure.lang.Indexed")
       list? (class-type "clojure.lang.IPersistentList")
@@ -850,7 +863,7 @@
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
-                   (contains? '#{list? vector? map? set? seqable? associative? indexed? string? keyword? symbol? boolean?
+                   (contains? '#{list? vector? map? set? seqable? sequential? associative? indexed? string? keyword? symbol? boolean?
                                  true? false? nil? some? any? char? bytes? class? int? number?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 

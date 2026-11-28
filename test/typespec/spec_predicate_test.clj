@@ -483,6 +483,35 @@
     (is (= "42 is not assignable to :api/input (seqable?)" (:message (first diagnostics))))
     (is (= "true is not assignable to seqable?" (:message (peek diagnostics))))))
 
+(deftest sequential-spec-checks-the-jvm-marker-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::ordered sequential?)
+(s/def ::wrapped #(clojure.core/sequential? %))
+(s/fdef preserve :args (s/cat :value ::ordered) :ret ::ordered)
+(defn preserve [value] value)
+(s/fdef render :args (s/cat :value ::wrapped) :ret string?)
+(defn render [value] (str value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/preserve [1 2])
+(a/preserve '(1 2))
+(a/preserve (map inc [1 2]))
+(a/preserve {:a 1})
+(a/preserve #{1})
+(a/render [1])
+(a/render #{1})
+(a/preserve (java.util.ArrayList.))
+(defn by-kind [^clojure.lang.ISeq x] (a/preserve x))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 10 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= #{:sequence-kind} (:reasons (peek diagnostics)))))
+  (is (sequential? (map inc [1 2])))
+  (is (not (sequential? {:a 1})))
+  (is (not (sequential? (java.util.ArrayList.)))))
+
 (deftest associative-and-indexed-specs-check-collection-capabilities
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::entries #(associative? %))

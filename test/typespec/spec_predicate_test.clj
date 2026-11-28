@@ -388,6 +388,38 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest spec-and-combines-map-checks-when-earlier-specs-preserve-values
+  (let [base (parse/parse-string "base.clj" "(ns base (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::identity (s/keys :req-un [::id]))
+(s/def ::unchanged (s/nonconforming ::identity))")
+        details (parse/parse-string "details.clj" "(ns details (:require [clojure.spec.alpha :as s]))
+(s/def ::name string?)
+(s/def ::named (s/keys :req-un [::name]))")
+        api (parse/parse-string "api.clj" "(ns api (:require [base :as b] [details :as d] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/def ::row (s/and ::b/unchanged ::d/named))
+(s/def ::prefixed (s/and map? (s/nonconforming ::b/identity) ::d/named))
+(s/fdef render :args (s/cat :m ::row) :ret string?)
+(defn render [{:keys [id name]}] (str (inc id) (str/trim name)))
+(s/fdef prefixed :args (s/cat :m ::prefixed) :ret string?)
+(defn prefixed [{:keys [id name]}] (str (inc id) (str/trim name)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render {:id 1 :name \"Ada\"})
+(a/render {:id 1})
+(a/render {:name \"Ada\"})
+(a/render {:id 1 :name 42})
+(a/prefixed {:id 1 :name \"Ada\"})
+(a/prefixed {:id 1})")
+        {:keys [env diagnostics]} (check/check-files [client api details base] {})
+        signature (get-in env [:vars 'api/render :type])
+        dependencies (contracts/dependency-paths (:specs env) signature)]
+    (is (= [["client.clj" 3 "TSP2741"] ["client.clj" 4 "TSP2741"]
+            ["client.clj" 5 "TSP2322"] ["client.clj" 7 "TSP2741"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [:api/row :base/unchanged :base/identity] (get dependencies :base/identity)))
+    (is (= [:api/row :details/named] (get dependencies :details/named)))))
+
 (deftest collection-kind-resolves-in-the-spec-namespace
   (let [api (parse/parse-string "api.clj" "(ns api
   (:refer-clojure :exclude [vector?] :rename {set? allowed-set?})

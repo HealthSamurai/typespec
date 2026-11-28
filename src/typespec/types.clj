@@ -929,14 +929,34 @@
                      (parse-type ctx form)))
       nil)))
 
+(defn- map-input-shape [type]
+  (when (and type (every? #(= :map (:t %)) (members {} type))) type))
+
+(defn- nonconforming-map-input [ctx form seen]
+  (cond
+    (qualified-keyword? form) (named-spec-input ctx form seen nonconforming-map-input)
+    (and (seq? form) (= :s/nonconforming (type-form-op ctx (first form))) (= 2 (count form)))
+    (map-input-shape (conjunction-input-shape ctx (second form) seen))))
+
+(defn- nonconforming-map-conjunction [ctx forms]
+  (let [preserving (vec (take-while some? (map #(nonconforming-map-input ctx % #{}) forms)))]
+    (when (seq preserving)
+      (let [last-shape (map-input-shape (conjunction-input-shape ctx (nth forms (count preserving) nil) #{}))
+            shapes (cond-> preserving last-shape (conj last-shape))]
+        (when (< 1 (count shapes))
+          (with-meta {:t :merge :types shapes}
+            {::referenced-specs (into #{} (mapcat #(-> % meta ::referenced-specs)) shapes)}))))))
+
 (defn- spec-conjunction-type [ctx forms]
   ;; The first transforming spec can still constrain the original input
   ;; when all earlier predicates preserve it.
-  (let [prefix (seq (take-while some? (map #(transparent-predicate-type ctx % #{}) forms)))]
+  (let [prefix (seq (take-while some? (map #(transparent-predicate-type ctx % #{}) forms)))
+        remaining (drop (count prefix) forms)
+        map-shape (nonconforming-map-conjunction ctx remaining)]
     (if prefix
       (let [leading (first forms)
             refined (reduce refine-predicate-type prefix)
-            shape (conjunction-input-shape ctx (nth forms (count prefix) nil) #{})
+            shape (or map-shape (conjunction-input-shape ctx (first remaining) #{}))
             refined (if (and shape (= :proved (:status (contract-sub-result shape refined))))
                       shape
                       refined)
@@ -945,7 +965,7 @@
                    refined)
             references (into #{} (mapcat #(-> % meta ::referenced-specs)) (cons refined prefix))]
         (cond-> type (seq references) (vary-meta assoc ::referenced-specs references)))
-      (parse-type ctx (first forms)))))
+      (or map-shape (parse-type ctx (first forms))))))
 
 (defn- flat-keys [x] (cond (keyword? x) [x] (seq? x) (mapcat flat-keys (rest x)) :else []))
 

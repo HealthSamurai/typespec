@@ -1237,6 +1237,31 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest contains-reports-unsupported-containers-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::some-index (s/or :array #(instance? int/1 %) :text string? :invalid keyword?))
+(s/fdef hit? :args (s/cat :target ::some-index) :ret boolean?)
+(defn hit? [target] (contains? target 0))
+(defn label [] :unknown)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(contains? [42] 0)
+(contains? #{42} 42)
+(contains? \"text\" 0)
+(contains? (int-array [42]) 0)
+(contains? (java.util.HashSet.) 0)
+(contains? (java.util.HashMap.) :value)
+(contains? nil :value)
+(contains? 42 0)
+(contains? (a/label) 0)
+(contains? (list 1 2) 0)
+(a/hit? \"abc\")
+(a/hit? (int-array [42]))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["api.clj" 4 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 10 "TSP2345"] ["client.clj" 11 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest find-reports-unsupported-containers-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (defn rows [] {:value 42})

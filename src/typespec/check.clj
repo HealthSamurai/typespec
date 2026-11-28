@@ -4510,19 +4510,24 @@
     ;; entryAt uses the converted index to read the slot but returns the original key.
     (found-map-entry key-type value (not= :present position))))
 
-(defn- unsupported-find-member? [member]
+(def ^:private associative-lookup-classes [clojure.lang.Associative java.util.Map])
+(def ^:private membership-lookup-classes (conj associative-lookup-classes clojure.lang.IPersistentSet java.util.Set))
+
+(defn- unsupported-lookup-member? [member supported-classes]
   (or (contains? #{:string :boolean :double :keyword :symbol :uuid}
                  (:name (if (= :lit (:t member)) (t/lit-prim (:val member)) member)))
       (when-let [^Class cls (if (= :class (:t member))
                              (t/load-class (:name member))
                              (t/literal-number-class member))]
         (and (Modifier/isFinal (.getModifiers cls))
-             (not (.isAssignableFrom clojure.lang.Associative cls))
-             (not (.isAssignableFrom java.util.Map cls))))))
+             (not-any? #(.isAssignableFrom ^Class % cls) supported-classes)))))
+
+(defn- constructed-list-node? [ctx node]
+  (and (not (:guards-disabled? ctx)) (= 'list (builtin-head ctx node))))
 
 (defn- unsupported-find-literal? [ctx source]
   (or (and (= :set (:op source)) (empty? (:directives source)) (not (env/tag-node source)))
-      (and (not (:guards-disabled? ctx)) (= 'list (builtin-head ctx source)))))
+      (constructed-list-node? ctx source)))
 
 (defmethod special 'find [ctx node _]
   (let [args (args-of node)
@@ -4539,7 +4544,7 @@
             target (first args)
             unsupported? (unsupported-find-literal? ctx target)
             {supported false unsupported true}
-            (group-by #(boolean (or unsupported? (unsupported-find-member? %)))
+            (group-by #(boolean (or unsupported? (unsupported-lookup-member? % associative-lookup-classes)))
                       (t/members env source))]
         (when-let [bad (first unsupported)]
           (report! ctx target "TSP2345" (str "find cannot look up an entry in " (t/show bad))))
@@ -4551,6 +4556,26 @@
                     (find-vector-entry ctx member key)
                     (find-map-entry ctx member key))))
          (or (t/assumption source) (t/assumption key-type)))))))
+
+(defmethod special 'contains? [ctx node _]
+  (let [[target :as args] (args-of node)
+        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count args))
+      (do (report! ctx node "TSP2554" "contains? expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [unsupported? (constructed-list-node? ctx target)
+            {supported false unsupported true}
+            (group-by #(boolean (or unsupported?
+                                    (and (not (indexed-get-source? %))
+                                         (unsupported-lookup-member? % membership-lookup-classes))))
+                      (t/members (:env ctx) source))]
+        (when-let [bad (first unsupported)]
+          (report! ctx target "TSP2345" (str "contains? cannot test membership in " (t/show bad))))
+        (if (seq supported) (t/prim :boolean) t/never)))))
 
 (defn- set-type? [member]
   (or (= :set (:kind member)) (= (t/prim :set) (t/strip member))))

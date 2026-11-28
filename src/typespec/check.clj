@@ -926,22 +926,19 @@
     :present [member nil]
     :possible [(collection-with-position member index) (collection-without-position member index)]))
 
-(defn- presence-contexts [ctx source key-node & [vector-positions?]]
+(defn- presence-contexts [ctx source key-node]
   (when-not (:guards-disabled? ctx)
     (if-some [key (if (literal-node? key-node)
                     (map-lookup-key (literal-type (:val key-node)))
                     (or (stable-map-key key-node)
                         (map-lookup-key (stable-local-member ctx key-node))))]
       (let [env (:env ctx)
-            index (when (and vector-positions? (integer? key)) (lookup-index key))]
+            index (when (integer? key) (lookup-index key))]
         (refine-path ctx source (fn [member]
                                   (if (and (some? index) (= :vector (:kind member)))
                                     (vector-presence-parts index member)
                                     (presence-parts env key member)))))
       (computed-presence-contexts ctx source key-node))))
-
-(defn- contains-contexts [ctx source key-node]
-  (presence-contexts ctx source key-node true))
 
 (defn- logical-contexts [ctx args and?]
   (let [proceed (if and? first second)
@@ -1077,7 +1074,7 @@
       (or (count-order-contexts ctx h a b) [ctx ctx])
 
       (and (= 'contains? h) (= 2 (count args)))
-      (or (contains-contexts ctx a b) [ctx ctx])
+      (or (presence-contexts ctx a b) [ctx ctx])
 
       (and (= 'instance? h) (= 2 (count args)) (= :sym (:op a)))
       (or (when-let [c (t/resolve-class (:imports (:file ctx)) (:val a))]
@@ -4457,25 +4454,6 @@
     :map-of (found-map-entry key-type (read-map-of ctx source key-type t/never) true)
     t/unknown))
 
-(defmethod special 'find [ctx node _]
-  (let [args (args-of node)
-        [source key-type :as types] (mapv #(eff ctx (infer ctx %)) args)
-        key-type (quoted-map-key-type (second args) key-type)]
-    (cond
-      (not= 2 (count args))
-      (do (report! ctx node "TSP2554" "find expects two arguments") t/unknown)
-
-      (some #{t/never} types) t/never
-
-      :else
-      (let [env (:env ctx)]
-        (t/with-assumption
-         (apply t/union
-                (for [member (t/members env source)
-                      key (t/members env key-type)]
-                  (find-map-entry ctx member key)))
-         (or (t/assumption source) (t/assumption key-type)))))))
-
 (defn- vector-element-at [member index]
   (cond
     (= :absent (length/position member index)) t/never
@@ -4524,6 +4502,34 @@
                    (disjoint-scalars? env key (t/prim :number))) not-found
 
                :else (t/union element not-found))))))
+
+(defn- find-vector-entry [ctx source key-type]
+  (let [value (read-indexed-get ctx [source] key-type t/never)
+        index (when (= :lit (:t key-type)) (indexed-get-index source (:val key-type)))
+        position (indexed-get-position (sequence-member-bounds source) index)]
+    ;; entryAt uses the converted index to read the slot but returns the original key.
+    (found-map-entry key-type value (not= :present position))))
+
+(defmethod special 'find [ctx node _]
+  (let [args (args-of node)
+        [source key-type :as types] (mapv #(eff ctx (infer ctx %)) args)
+        key-type (quoted-map-key-type (second args) key-type)]
+    (cond
+      (not= 2 (count args))
+      (do (report! ctx node "TSP2554" "find expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [env (:env ctx)]
+        (t/with-assumption
+         (apply t/union
+                (for [member (t/members env source)
+                      key (t/members env key-type)]
+                  (if (vector-member? member)
+                    (find-vector-entry ctx member key)
+                    (find-map-entry ctx member key))))
+         (or (t/assumption source) (t/assumption key-type)))))))
 
 (defn- set-type? [member]
   (or (= :set (:kind member)) (= (t/prim :set) (t/strip member))))

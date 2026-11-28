@@ -1237,6 +1237,36 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest find-on-vectors-preserves-the-entry-and-guards-its-position
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::row (s/tuple string? int?))
+(s/fdef width :args (s/cat :row ::row) :ret int?)
+(defn width [row] (val (find row 1)))
+(s/fdef absent :args (s/cat :row ::row) :ret nil?)
+(defn absent [row] (find row 2))
+(s/fdef item :args (s/cat :xs (s/coll-of int? :kind vector?)) :ret int?)
+(defn item [xs] (if-some [entry (find xs 1)] (+ (val entry) (get xs 1)) 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/width [\"ok\" 42]))
+(inc (val (find [42] 4294967296)))
+(let [[i n] (find [42] 4294967296)] (+ i n))
+(subs (val (find [42] 0)) 0)
+(val (find [42] 0.9))
+(val (find [42] 1))
+(val (find [42] false))
+(a/width [42 \"bad\"])
+(a/item [1])
+(a/item [\"bad\"])")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[5 "TSP2345"] [6 "TSP2531"] [7 "TSP2531"] [8 "TSP2531"]
+            [9 "TSP2345"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues)))
+  (is (= (t/lit 4294967296) (infer-type "(key (find [42] 4294967296))")))
+  (is (= clojure.lang.BigInt
+         (t/literal-number-class (infer-type "(key (find [42] -4294967296N))")))))
+
 (deftest find-guards-refine-integer-and-boolean-keys-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::flags (s/map-of boolean? int?))

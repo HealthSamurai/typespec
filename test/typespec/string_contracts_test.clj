@@ -191,6 +191,38 @@
   (is (thrown? NullPointerException (str/replace-first "abc" "a" nil)))
   (is (thrown? ClassCastException (str/replace-first "abc" #"a" (fn [_] 42)))))
 
+(deftest regex-replacements-use-the-known-match-shape
+  (let [patterns (parse/parse-string "patterns.clj" "(ns patterns)
+(def simple #\"b\")
+(def captured (re-pattern \"(a)?b\"))")
+        api (parse/parse-string "api.clj" "(ns api (:require [patterns :as p] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef replace-text :args (s/cat :text string?) :ret string?)
+(defn replace-text [text] (str/replace text p/simple (fn [match] (subs match 0))))
+(s/fdef word :args (s/cat :match string?) :ret string?)
+(defn word [match] (str/upper-case match))
+(s/fdef grouped :args (s/cat :match (s/tuple string? (s/nilable string?))) :ret string?)
+(defn grouped [[full piece]] (str full (or piece \"\")))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [patterns :as p] [clojure.string :as str]))
+(a/replace-text \"b\")
+(str/replace-first \"b\" p/simple a/word)
+(str/replace \"b\" p/captured a/grouped)
+(str/replace \"b\" p/captured (fn [[full _]] (str/trim full)))
+(str/replace \"b\" p/captured (fn [[_ piece]] (str/trim piece)))
+(str/replace \"b\" p/captured (fn [groups] (str (nth groups 5))))
+(str/replace-first \"b\" p/captured a/word)
+(str/replace \"b\" p/simple a/grouped)
+(str/replace \"b\" p/captured \"$1\")
+(str/replace-first \"b\" p/simple (fn [_] (StringBuilder. \"not String\")))")
+        issues (:diagnostics (check/check-files [client api patterns] {}))]
+    (is (= [[6 "TSP2531"] [7 "TSP330-02"] [8 "TSP2345"] [9 "TSP2345"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (re-find #"\(s/tuple string\? \(s/nilable string\?\)\)" (:message (nth issues 2)))))
+  (is (= "B" (str/replace "b" #"b" str/upper-case)))
+  (is (= "B" (str/replace-first "b" #"(a)?b" (fn [[whole part]] (str/upper-case (or part whole))))))
+  (is (thrown? NullPointerException (str/replace "b" #"(a)?b" (fn [[_ part]] (str/trim part))))))
+
 (deftest string-index-contracts-check-search-inputs-and-nullable-results
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
 (s/fdef needle-index :args (s/cat :text some? :needle char?) :ret (s/nilable int?))
@@ -914,9 +946,11 @@
   (is (thrown? NullPointerException (str/replace nil #"x" "_"))))
 
 (deftest honest-incomplete-boundaries
-  ;; Regex groups reach the callback as a string or a vector.
   (is (some #(= "TSP210-01" (:code %))
-            (diagnostics "(replace \"abc\" #\"(a)\" (fn [x] (s/trim x)))"))))
+            (diagnostics "(defn replace-with [^java.util.regex.Pattern pattern]
+                           (replace \"abc\" pattern (fn [x] (s/trim x))))")))
+  (is (= ["TSP2345"]
+         (mapv :code (diagnostics "(replace \"abc\" #\"(a)\" (fn [x] (s/trim x)))")))))
 
 (deftest replace-reports-arguments-from-the-closest-overload
   (is (= [["TSP2345" "\"_\" is not assignable to java.lang.Character"]]

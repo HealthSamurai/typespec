@@ -3509,6 +3509,31 @@
       (and (some? groups) (= "java.util.regex.Pattern" (:name ret)))
       (assoc :regex-groups groups))))
 
+(doseq [operation '[clojure.string/replace clojure.string/replace-first]]
+  (defmethod special operation [ctx node _]
+    (let [[text pattern replacement :as args] (args-of node)
+          head (first (:children node))
+          {:keys [type]} (read-var ctx (:val head) head :call)]
+      (if (not= 3 (count args))
+        (call-fn ctx node (str (:val head)) type args)
+        (let [text-type (infer ctx text)
+              pattern-type (infer ctx pattern)
+              groups (:regex-groups (t/resolve-t (:env ctx) pattern-type))
+              input (when (and (some? groups) (< groups map-path-budget))
+                      (cond-> (regex-match-type groups)
+                        (pos? groups) (vary-meta assoc ::t/tuple-contract true)))
+              type (cond-> type
+                     input (update :arities
+                                   (fn [arities]
+                                     (mapv #(if (= :fn (get-in % [:params 2 :t]))
+                                              (assoc-in % [:params 2 :arities 0 :params 0] input)
+                                              %)
+                                           arities))))
+              expected (when (and input (callback-node? ctx replacement))
+                         (direct-callback-context [input] false))
+              replacement-type (infer ctx replacement expected)]
+          (call-fn ctx node (str (:val head)) type args [text-type pattern-type replacement-type]))))))
+
 (defmethod special '. [ctx node _]
   (let [[receiver raw-member & trailing :as args] (args-of node)
         grouped? (= :list (:op raw-member))

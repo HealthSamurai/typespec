@@ -30,6 +30,26 @@
     (is (= #{:unknown} (get-in result [:diagnostics 3 :reasons])))
     (is (= [7 29 "TSP210-01" :error] (last (issues (checked source {:strict true})))))))
 
+(deftest generic-calls-propagate-an-aborting-argument
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn label {:t/sig '(t/all [a] [a :-> string?])} [input] \"value\")
+(defn pair-label {:t/sig '(t/all [a] [a int? :-> string?])} [input n] \"pair\")")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef fail-first :args (s/cat) :ret int?)
+(defn fail-first []
+  (if (a/label (throw (Exception. \"stop\"))) :wrong 1))
+(s/fdef fail-last :args (s/cat) :ret int?)
+(defn fail-last []
+  (if (a/pair-label :input (throw (Exception. \"stop\"))) :wrong 1))
+(subs (a/label :input) 0)
+(inc (a/label :input))
+(a/pair-label :input \"bad\")")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["t/never" "t/never"] (mapv #(main/type-at result "client.clj" % 3) [4 7])))))
+
 (deftest ordinary-calls-propagate-failure-to-evaluate-eager-forms
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef accept :args (s/cat :value int?) :ret int?)

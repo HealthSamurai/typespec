@@ -1905,12 +1905,14 @@
       (let [entries (concat (map #(hash-map :type %) captured)
                             (if typed-args (map #(hash-map :type %) typed-args)
                                 (map #(hash-map :node %) arg-nodes)))
-            [state] (constrain-generic-arguments ctx state ar entries)
-            ret (generic-result ctx node label state)
-            steps (get-in ftype [:body :arities 0 :composition])]
-        (if (and steps (not (:generic-failure ret)))
-          (or (run-composition ctx node steps ret) (assoc t/unknown :generic-failure true))
-          ret)))))
+            [state types] (constrain-generic-arguments ctx state ar entries)]
+        (if (some #(= :never (:t %)) types)
+          t/never
+          (let [ret (generic-result ctx node label state)
+                steps (get-in ftype [:body :arities 0 :composition])]
+            (if (and steps (not (:generic-failure ret)))
+              (or (run-composition ctx node steps ret) (assoc t/unknown :generic-failure true))
+              ret)))))))
 
 (defn- closest-arity-index [arg-nodes problems]
   (let [positions (zipmap arg-nodes (range))

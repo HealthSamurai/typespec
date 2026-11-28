@@ -190,6 +190,27 @@
   (is (thrown? NullPointerException (str/replace-first "abc" "a" nil)))
   (is (thrown? ClassCastException (str/replace-first "abc" #"a" (fn [_] 42)))))
 
+(deftest string-index-contracts-check-search-inputs-and-nullable-results
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef needle-index :args (s/cat :text some? :needle char?) :ret (s/nilable int?))
+(defn needle-index [text needle] (str/index-of text needle))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(when-some [i (a/needle-index :text \\t)] (inc i))
+(when-some [i (str/last-index-of (StringBuilder. \"aaa\") \"a\" 1.5)] (inc i))
+(inc (str/index-of \"abc\" \"missing\"))
+(str/index-of \"abc\" (StringBuilder. \"a\"))
+(str/last-index-of \"abc\" \"a\" \"0\")
+(str/index-of nil \\a)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2531"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= 1 (str/index-of :text \t)))
+  (is (= 1 (str/last-index-of (StringBuilder. "aaa") "a" 1.5)))
+  (is (nil? (str/index-of "abc" "missing")))
+  (is (thrown? ClassCastException (str/index-of "abc" (StringBuilder. "a")))))
+
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
   (let [writer (java.io.StringWriter.)]

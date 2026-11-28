@@ -24,6 +24,10 @@
  clojure.string/starts-with? [some? string? :-> boolean?]
  clojure.string/ends-with?  [some? string? :-> boolean?]
  clojure.string/includes?   [some? java.lang.CharSequence :-> boolean?]
+ clojure.string/index-of    ([some? (t/or string? char?) :-> (s/nilable int?)]
+                             [some? (t/or string? char?) number? :-> (s/nilable int?)])
+ clojure.string/last-index-of ([some? (t/or string? char?) :-> (s/nilable int?)]
+                               [some? (t/or string? char?) number? :-> (s/nilable int?)])
  ;; Correlated pairs, not independent unions. A Pattern callback must handle
  ;; both ungrouped matches and vectors with nullable unmatched groups.
  clojure.string/replace     ([some? java.lang.Character java.lang.Character :-> string?]

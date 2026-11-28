@@ -715,8 +715,8 @@
   (is (= (t/lit :missing) (infer-type "(get-in \"x\" [4294967297] :missing)")))
   (let [m (assoc (map-type {0 (t/lit :zero) 4294967296 (t/lit :wide)} {})
                  :map-index {:t :map-of :k (t/prim :int) :v (t/lit :unlisted)})]
-    (is (= #{(t/lit :wide) (t/lit :missing)}
-           (alternatives (infer-type "(get-in m [4294967296] :missing)" {'m m}))))))
+    (is (= (t/lit :wide)
+           (infer-type "(get-in m [4294967296] :missing)" {'m m})))))
 
 (deftest get-in-guards-track-missing-vector-positions-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
@@ -1236,6 +1236,26 @@
   (if (contains? m \"n\") (update-in m [key] (fn [n] (if (nil? n) 1 (inc n)))) m))")
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
+
+(deftest get-in-preserves-numeric-map-fields-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn config [] {1 {:port 42 :label nil} 4294967296 {:port 7}})
+(defn vector-config [] [{:port 9}])
+(s/fdef port :args (s/cat) :ret int?)
+(defn port [] (get-in (config) [1 :port] :missing))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (get-in (a/config) [1 :port] :missing))
+(inc (get-in (a/config) [4294967296 :port] :missing))
+(inc (get-in (a/vector-config) [4294967296 :port] :missing))
+(inc (get-in (a/config) [1 :label] 99))
+(inc (get-in (a/config) [2 :port] :missing))
+(subs (get-in (a/config) [1 :port] :missing) 0)
+(inc (a/port))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2531"] ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"42 is not assignable to string" (:message (last issues))))))
 
 (deftest dictionary-value-guards-narrow-spec-contracts-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))

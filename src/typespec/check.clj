@@ -4595,10 +4595,11 @@
                                        (t/members env (:of member)))
                                t/unknown (:of member))
                          t/never)
-                 :map (if-let [index-type (:map-index member)]
-                        (or (get (:req member) key) (get (:opt member) key)
-                            (t/map-of-entry env index-type key) t/never)
-                        (if (:complete-keys? member) t/never t/unknown))
+                 :map (or (get (:req member) key)
+                          (get (:opt member) key)
+                          (if-let [index-type (:map-index member)]
+                            (or (t/map-of-entry env index-type key) t/never)
+                            (if (:complete-keys? member) t/never t/unknown)))
                  :map-of (read-map-of ctx member (t/lit key) t/never)
                  :prim (if (#{:map :set :coll} (:name member)) t/unknown t/never)
                  :any t/any
@@ -4613,9 +4614,10 @@
     (let [members (t/members (:env ctx) source)]
       {:type (numeric-path-value ctx members value)
        :optional? (not (every? (fn [member]
-                                 (and (indexed-get-source? member)
-                                      (= :present (indexed-get-position (sequence-member-bounds member)
-                                                                        (indexed-get-index member value)))))
+                                 (or (and (= :map (:t member)) (contains? (:req member) value))
+                                     (and (indexed-get-source? member)
+                                          (= :present (indexed-get-position (sequence-member-bounds member)
+                                                                            (indexed-get-index member value))))))
                                members))})
     (key-info ctx source value node true)))
 

@@ -145,6 +145,10 @@
 (defn- indexed-map-entry [env index k]
   (if-let [value (t/map-of-entry env index k)] [:opt value] [:absent nil]))
 
+(defn- java-map-value-type [member]
+  (when-let [cname (second (:java-map-classes member))]
+    (t/platform (t/class-type cname) (java/short-name cname))))
+
 (defn- lookup-key [ctx ty k & [path?]]
   (let [env (:env ctx)
         ms (remove #(= :nil (:t %)) (t/members env ty))
@@ -162,7 +166,8 @@
                            :else [:missing nil])
                 :map-of (indexed-map-entry env m k)
                 :coll (if (and path? (nil? (:kind m))) loose [:not-map nil])
-                (:unknown :any :class :var :rigid :ivar) loose
+                :class (if-let [value (java-map-value-type m)] [:opt value] loose)
+                (:unknown :any :var :rigid :ivar) loose
                 :prim (if (or (= :map (:name m)) (and path? (= :coll (:name m))))
                         loose
                         [:not-map nil])
@@ -4830,10 +4835,6 @@
          (apply t/union (map #(read-literal-map-key ctx source % not-found) keys))
          (or (t/assumption source) (t/assumption key-type)))
         (read-map-of ctx source key-type not-found)))))
-
-(defn- java-map-value-type [member]
-  (when-let [cname (second (:java-map-classes member))]
-    (t/platform (t/class-type cname) (java/short-name cname))))
 
 (defn- read-java-map-get [members not-found]
   (apply t/union not-found (keep java-map-value-type members)))

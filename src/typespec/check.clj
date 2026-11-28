@@ -4785,12 +4785,20 @@
          (or (t/assumption source) (t/assumption key-type)))
         (read-map-of ctx source key-type not-found)))))
 
+(defn- java-map-value-type [member]
+  (when-let [cname (second (:java-map-classes member))]
+    (t/platform (t/class-type cname) (java/short-name cname))))
+
+(defn- read-java-map-get [members not-found]
+  (apply t/union not-found (keep java-map-value-type members)))
+
 (defn- get-source-kind [member]
   (cond
     (#{:nil :never} (:t member)) (:t member)
     (indexed-get-source? member) :indexed
     (set-type? member) :set
     (or (#{:map :map-of} (:t member)) (= (t/prim :map) (t/strip member))) :map
+    (second (:java-map-classes member)) :java-map
     (or (= {:t :class :name "java.lang.Object"} (t/strip member))
         (unsupported-lookup-member? member get-lookup-classes)) :fallback
     :else :other))
@@ -4820,6 +4828,9 @@
           (= #{:set} kinds)
           (t/with-assumption (read-set-get ctx members key-type not-found) assumption)
 
+          (= #{:java-map} kinds)
+          (t/with-assumption (read-java-map-get (:java-map groups) not-found) assumption)
+
           (= #{:fallback} kinds)
           (t/with-assumption not-found assumption)
 
@@ -4829,6 +4840,7 @@
                   (for [[kind group] groups]
                     (case kind
                       :map (read-map-get ctx (apply t/union group) k key-type not-found)
+                      :java-map (read-java-map-get group not-found)
                       :set (read-set-get ctx group key-type not-found)
                       :indexed (read-indexed-get ctx group key-type not-found)
                       (:nil :fallback) not-found

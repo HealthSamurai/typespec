@@ -282,6 +282,8 @@
         em (t/members env expected)
         source (first am)
         target (first em)
+        map-source (when (and (= :map-of (:t target)) (length/constrained? target))
+                     (t/map-length source))
         a (:items source)
         e (:items target)]
     (when (= 1 (count am) (count em))
@@ -300,7 +302,10 @@
              (or (nil? (:kind target)) (= (:kind source) (:kind target)))
              (or (length/constrained? target) (and e (length/constrained? source)))
              (not (length/subset? source target)))
-        ["TSP330-01" (length-message source target)]))))
+        ["TSP330-01" (length-message source target)]
+
+        (and map-source (not (length/subset? map-source target)))
+        ["TSP330-01" (length-message map-source target)]))))
 
 (defn- problems
   "Why a value of type `actual` (written as `node`) cannot be used as `expected`. Empty when it can."
@@ -587,8 +592,11 @@
       (when (:complete-keys? shape) t/never)))
 
 (defn- indexed-map-shape [index]
-  (t/with-assumption (assoc empty-map-shape :complete-keys? false :map-index index)
-                     (t/assumption index)))
+  (t/with-assumption
+   (if (= 0 (:max-count index))
+     empty-map-shape
+     (assoc empty-map-shape :complete-keys? false :map-index (dissoc index :min-count :max-count)))
+   (t/assumption index)))
 
 (defn- map-index-domain [shape]
   (when-let [index (:map-index shape)]
@@ -4407,18 +4415,26 @@
     (when (every? #(and (some? %) (every? seq %)) paths)
       (bounded-combinations paths))))
 
+(defn- grow-map-of [ty]
+  (if (length/constrained? ty)
+    (let [[lo hi] (length/bounds ty)]
+      (length/with-bounds ty (max 1 lo) (some-> hi inc')))
+    ty))
+
 (defn- map-path-entry [ctx member key-type]
   (let [env (:env ctx)
         k (:val key-type)
         m (if (= :nil (:t member)) empty-map-shape member)]
     (case (:t m)
       :map-of
-      [(if (some? k)
-         (t/union (or (t/map-of-entry env m k) t/never) t/nil-t)
-         (read-map-of ctx m key-type t/nil-t))
-       (fn [value]
-         (cond-> (update m :v t/union value)
-           (not (t/sub? env key-type (:k m))) (update :k t/union key-type)))]
+      (if (= 0 (:max-count m))
+        (recur ctx empty-map-shape key-type)
+        [(if (some? k)
+           (t/union (or (t/map-of-entry env m k) t/never) t/nil-t)
+           (read-map-of ctx m key-type t/nil-t))
+         (fn [value]
+           (grow-map-of (cond-> (update m :v t/union value)
+                          (not (t/sub? env key-type (:k m))) (update :k t/union key-type))))])
 
       :map
       (if (some? k)
@@ -4521,9 +4537,12 @@
                           (let [domain (map-index-domain shape)] (recur domain domain))
 
                           (and (= :map-of (:t shape)) (nil? literal-key))
-                          (if (and (t/sub? env kt (:k shape)) (t/sub? env vt (:v shape)))
-                            base
-                            (-> shape (update :k t/union (widen kt)) (update :v t/union (widen vt))))
+                          (let [fits? (and (t/sub? env kt (:k shape)) (t/sub? env vt (:v shape)))]
+                            (if (and fits? (not (length/constrained? shape)))
+                              base
+                              (grow-map-of (cond-> shape
+                                             (not fits?) (update :k t/union (widen kt))
+                                             (not fits?) (update :v t/union (widen vt))))))
                           (= :vector (:kind shape))
                           (let [index (:val kt)
                                 present? (and (= :lit (:t kt)) (integer? index)
@@ -8185,6 +8204,7 @@
     (cond
       (some #{t/never} [target entry]) t/never
       (or (= t/nil-t entry) (= (t/lit "") entry)) target
+      (and (= :map-of (:t entry)) (= 0 (:max-count entry))) target
       (some? key) (assoc-key-type ctx target key value)
       (and (= :map (:t entry)) (:complete-keys? entry) (empty? (:opt entry)))
       (reduce-kv #(assoc-key-type ctx %1 %2 %3) target (:req entry))
@@ -8491,6 +8511,7 @@
 (defn- initial-atom-content [ty]
   (case (:t ty)
     :map (t/prim :map)
+    :map-of (dissoc ty :min-count :max-count :fresh)
     :coll (if (and (= :never (:t (:of ty))) (:kind ty))
             (t/prim (:kind ty))
             (dissoc ty :items :min-count :max-count :fresh :entry-map))

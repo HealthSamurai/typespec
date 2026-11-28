@@ -1559,6 +1559,51 @@
             "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest map-of-count-bounds-check-cross-namespace-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::labels (s/map-of keyword? string? :min-count 1 :max-count 2))
+(s/def ::many (s/map-of keyword? string? :min-count 2))
+(s/fdef render :args (s/cat :labels ::labels) :ret string?)
+(defn render [labels] (str labels))
+(s/fdef use-many :args (s/cat :labels ::many) :ret string?)
+(defn use-many [labels] (render labels))
+(s/def ::pair (s/map-of keyword? string? :count 2))
+(s/def ::empty (s/map-of keyword? string? :count 0))
+(s/fdef pair-label :args (s/cat :labels ::pair) :ret string?)
+(defn pair-label [labels] (render labels))
+(s/fdef empty-label :args (s/cat :labels ::empty) :ret string?)
+(defn empty-label [labels] (str labels))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(a/render {:name \"Ada\"})
+(a/render {:name \"Ada\" :surname \"Lovelace\"})
+(a/render {})
+(a/render {:first \"Ada\" :middle \"Augusta\" :last \"Byron\"})
+(a/render {:first 1})
+(a/pair-label {:first \"Ada\" :last \"Lovelace\"})
+(a/pair-label {:first \"Ada\"})
+(a/pair-label {:first \"Ada\" :middle \"Augusta\" :last \"Byron\"})
+(a/empty-label {})
+(s/fdef grow :args (s/cat :m ::a/empty) :ret string?)
+(defn grow [m] (a/empty-label (assoc-in m [:x] \"x\")))
+(defn from-hint [^clojure.lang.IPersistentMap m] (a/render m))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 7 "TSP330-01"]
+            ["client.clj" 4 "TSP330-01"] ["client.clj" 5 "TSP330-01"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 8 "TSP330-01"]
+            ["client.clj" 9 "TSP330-01"] ["client.clj" 12 "TSP330-01"]
+            ["client.clj" 13 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "expected collection length 1 to 2, got 3" (:message (nth issues 2))))
+    (is (= #{:collection-length} (:reasons (peek issues)))))
+  (let [ranged (s/map-of keyword? string? :min-count 1 :max-count 2)
+        pair (s/map-of keyword? string? :count 2)]
+    (is (s/valid? ranged {:name "Ada"}))
+    (is (s/valid? pair (sorted-map :first "Ada" :last "Lovelace")))
+    (is (not (s/valid? ranged {})))
+    (is (not (s/valid? pair {:name "Ada"})))
+    (is (not (s/valid? pair {:first "Ada" :middle "Augusta" :last "Byron"})))))
+
 (deftest conj-with-nil-returns-a-list-in-prepending-order
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::items (s/nilable (s/tuple int?)))

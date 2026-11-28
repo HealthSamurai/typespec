@@ -254,6 +254,25 @@
   (when-not (= :mismatch (:status (sub-result env (lit k) (:k ty))))
     (:v ty)))
 
+(defn map-length [ty]
+  (case (:t ty)
+    :map (let [required (count (:req ty))]
+           (length/with-bounds {} required
+                               (when (:complete-keys? ty)
+                                 (+ required (count (remove #{never} (vals (:opt ty))))))))
+    :map-of ty
+    nil))
+
+(defn- map-length-fits? [source target]
+  (or (not (length/constrained? target))
+      (let [actual (map-length source)
+            [minimum] (length/bounds actual)
+            maximum (:max-count target)]
+        (or (length/subset? actual target)
+            (and (= :map (:t source)) (not (:complete-keys? source))
+                 (or (nil? maximum) (<= minimum maximum))
+                 (inconclusive! :collection-length))))))
+
 (defn- map-fields-fit? [env fields target]
   (every? (fn [[k v]]
             (or (= :never (:t v))
@@ -438,13 +457,17 @@
                                       *strict-shapes* (inconclusive! :unsupported)
                                       :else true))
                      :map-of (and (= :map (:name s))
-                                  (if *strict-shapes* (inconclusive! :unsupported) true))
+                                  (cond (length/constrained? t) (inconclusive! :collection-length)
+                                        *strict-shapes* (inconclusive! :unsupported)
+                                        :else true))
                      false)
       (= :class st) (case tt
                       :class (class-sub? (:name s) (:name t))
                       :atom (and (class-sub? (:name s) "clojure.lang.Atom")
                                  (inconclusive! :atom-content))
                       :prim (class-is-prim? (:name s) (:name t))
+                      :map-of (and (length/constrained? t) (class-is-prim? (:name s) :map)
+                                   (inconclusive! :collection-length))
                       :coll (cond
                               (and (:items t) (class-is-prim? (:name s) :vector))
                               (inconclusive! :tuple-length)
@@ -455,15 +478,18 @@
       (= :map st) (case tt
                     :map (map-sub? env s t)
                     :prim (contains? #{:map :coll} (:name t))
-                    :map-of (and (map-fields-fit? env (concat (:req s) (:opt s)) t)
+                    :map-of (and (map-length-fits? s t)
+                                 (map-fields-fit? env (concat (:req s) (:opt s)) t)
                                  (if-let [index (:map-index s)]
-                                   (sub? env index t)
+                                   (sub? env index (dissoc t :min-count :max-count))
                                    (or (not *strict-shapes*) (:complete-keys? s)
                                        (inconclusive! :unsupported))))
                     :class (prim-is-class? :map (:name t))
                     false)
       (= :map-of st) (case tt
-                       :map-of (and (sub? env (:k s) (:k t)) (sub? env (:v s) (:v t)))
+                       :map-of (and (map-length-fits? s t)
+                                    (or (= 0 (:max-count s))
+                                        (and (sub? env (:k s) (:k t)) (sub? env (:v s) (:v t)))))
                        :prim (contains? #{:map :coll} (:name t))
                        :map (if (:map-index t)
                               (map-sub? env {:map-index s} t)
@@ -651,6 +677,10 @@
          (map class-type ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"
                           "[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])))
 
+(defn- show-count-bounds [ty]
+  (str (when-let [lo (:min-count ty)] (str " :min-count " lo))
+       (when-let [hi (:max-count ty)] (str " :max-count " hi))))
+
 (defn show
   "Prints a type in the type language, so it can be pasted back into code."
   [t]
@@ -690,12 +720,11 @@
                   (when (seq (:req t)) (str " :req [" (str/join " " (map show-kw (keys (:req t)))) "]"))
                   (when (seq (:opt t)) (str " :opt [" (str/join " " (map show-kw (keys (:opt t)))) "]"))
                   ")"))
-      :map-of (str "(s/map-of " (show (:k t)) " " (show (:v t)) ")")
+      :map-of (str "(s/map-of " (show (:k t)) " " (show (:v t)) (show-count-bounds t) ")")
       :coll (if (and (:items t) (::tuple-contract (meta t)))
               (str "(s/tuple" (apply str (map #(str " " (show %)) (:items t))) ")")
               (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?"))
-                   (when-let [lo (:min-count t)] (str " :min-count " lo))
-                   (when-let [hi (:max-count t)] (str " :max-count " hi))
+                   (show-count-bounds t)
                    ")"))
       :fn (if-let [ars (seq (:arities t))]
             (let [ar (fn [a] (str "[" (str/join " " (concat (map show (:params a))
@@ -1115,32 +1144,34 @@
                        ty)))]
     (or (= a b) (= (normalize a) (normalize b)))))
 
-(defn- collection-type [ctx form inner {:keys [kind min-count max-count count] :as opts}]
+(defn- collection-bounds [{:keys [min-count max-count count]} exact?]
+  (when (every? #(and (integer? %) (<= 0 % Integer/MAX_VALUE)) (remove nil? [min-count max-count count]))
+    (let [lower (max (or min-count 0) (or count 0))
+          upper (if (and exact? (some? count)) (min count (or max-count count)) max-count)]
+      (when (or (nil? upper) (<= lower upper)) [lower upper]))))
+
+(defn- collection-type [ctx form inner {:keys [kind count] :as opts}]
   (let [kinds '{coll? nil vector? :vector set? :set list? :seq seq? :seq}
         kind-name (if kind (core-name ctx kind) 'coll?)
         kind-type (get kinds kind-name)
         ;; Spec uses bounded-count for :count. An uncounted seq can satisfy
         ;; it with additional elements, so only counted kinds get an upper bound.
-        exact? (and (some? count) (#{:vector :set} kind-type))
-        declared (remove nil? [min-count max-count count])]
-    (if (and (contains? kinds kind-name)
-             (every? #(and (integer? %) (<= 0 % Integer/MAX_VALUE)) declared))
-      (let [lower (max (or min-count 0) (or count 0))
-            upper (if exact? (min count (or max-count count)) max-count)]
-        (if (and upper (> lower upper))
-          (do ((:fail ctx) form) unknown)
-          (cond-> (length/with-bounds {:t :coll :of (parse-type ctx inner) :kind kind-type} lower upper)
-            (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
-                (= 'list? kind-name)
-                (and (some? count) (not exact?))
-                (= :s/every (type-form-op ctx (first form))))
-            (with-meta {::unchecked-contract true}))))
+        exact? (#{:vector :set} kind-type)]
+    (if-let [[lower upper] (when (contains? kinds kind-name) (collection-bounds opts exact?))]
+      (cond-> (length/with-bounds {:t :coll :of (parse-type ctx inner) :kind kind-type} lower upper)
+        (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
+            (= 'list? kind-name)
+            (and (some? count) (not exact?))
+            (= :s/every (type-form-op ctx (first form))))
+        (with-meta {::unchecked-contract true}))
       (do ((:fail ctx) form) unknown))))
 
 (defn- map-of-type [ctx [_ key value :as form] {:keys [kind] :as options}]
   (let [kind-name (if (contains? options :kind) (core-name ctx kind) 'map?)]
     (case kind-name
-      map? {:t :map-of :k (parse-type ctx key) :v (parse-type ctx value)}
+      map? (if-let [[lower upper] (collection-bounds options true)]
+             (length/with-bounds {:t :map-of :k (parse-type ctx key) :v (parse-type ctx value)} lower upper)
+             (do ((:fail ctx) form) unknown))
       (vector? set? list? seq?)
       (collection-type ctx form (list 'clojure.spec.alpha/tuple key value) options)
       (do ((:fail ctx) form) unknown))))

@@ -8178,6 +8178,30 @@
               :else (append-to-vectors ctx target vectors (or (map-entry-sequence member) member)))))
    (or (t/assumption target) (t/assumption source))))
 
+(defn- conj-map-value [ctx node target entry]
+  (let [[key value] (:items entry)
+        key (when (and (= :vector (:kind entry)) (= 2 (count (:items entry))))
+              (selector-literal-key (t/resolve-t (:env ctx) key)))]
+    (cond
+      (some #{t/never} [target entry]) t/never
+      (or (= t/nil-t entry) (= (t/lit "") entry)) target
+      (some? key) (assoc-key-type ctx target key value)
+      (and (= :map (:t entry)) (:complete-keys? entry) (empty? (:opt entry)))
+      (reduce-kv #(assoc-key-type ctx %1 %2 %3) target (:req entry))
+      :else (if-let [domain (map-conj-domain target)]
+              (conj-map-step ctx node domain [entry])
+              t/unknown))))
+
+(defn- conj-map-values [ctx target nodes types]
+  (let [env (:env ctx)]
+    (reduce (fn [target [node entry]]
+              (if-let [pairs (bounded-combinations [[(t/members env target) (t/members env entry)]])]
+                (t/with-assumption
+                 (apply t/union (map (fn [[target entry]] (conj-map-value ctx node target entry)) pairs))
+                 (or (t/assumption target) (t/assumption entry)))
+                t/unknown))
+            target (map vector nodes types))))
+
 (defmethod special 'conj [ctx node _]
   (let [[c & xs] (args-of node)
         cty (infer ctx c)
@@ -8188,6 +8212,7 @@
       (nil? c) (length/with-bounds (t/tuple []) 0 0)
       (= t/never cty) t/never
       (empty? xs) cty
+      (every? #(#{:map :map-of} (:t %)) members) (conj-map-values ctx cty xs xts)
       (some :map-index members) (t/prim :map)
       (every? vector-member? members)
       (let [items (vec xts)]

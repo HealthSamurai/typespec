@@ -2117,7 +2117,10 @@
 
 (defn- widen [ty]
   (cond-> (case (:t ty)
-            :lit (t/with-assumption (t/lit-prim (:val ty)) (t/assumption ty))
+            ;; s/invalid? needs the exact sentinel through inferred returns.
+            :lit (if (= conform/invalid-key (:val ty))
+                   ty
+                   (t/with-assumption (t/lit-prim (:val ty)) (t/assumption ty)))
             :union (apply t/union (map widen (:types ty)))
             ty)
     (:platform ty) (assoc :platform true)))

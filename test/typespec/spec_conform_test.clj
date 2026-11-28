@@ -23,7 +23,7 @@
 (defn ranged [value] (s/conform ::limit value))
 (s/fdef ranged-row :args (s/cat :value any?))
 (defn ranged-row [value] (s/conform ::row value))")
-        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+        direct-source "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
 (s/fdef as-number :args (s/cat :value any?) :ret (s/nilable number?))
 (defn as-number [value]
   (let [n (s/conform ::a/limit value)]
@@ -40,12 +40,17 @@
     (when-not (s/invalid? row) (subs (first row) 0))))
 (as-number 2)
 (as-number 5)
-(as-row [2 \"ready\"])")
-        issues (:diagnostics (check/check-files [api client] {}))
+(as-row [2 \"ready\"])"
+        wrapper-source (-> direct-source
+                           (str/replace "(s/conform ::a/limit value)" "(a/ranged value)")
+                           (str/replace "(s/conform ::a/row value)" "(a/ranged-row value)"))
         range-spec (s/int-in 1 5)]
-    (is (= [["client.clj" 8 "TSP2345"] ["client.clj" 15 "TSP2345"]]
-           (mapv (juxt :file (comp :row :pos) :code) issues))
-        (pr-str issues))
+    (doseq [source [direct-source wrapper-source]]
+      (let [client (parse/parse-string "client.clj" source)
+            issues (:diagnostics (check/check-files [api client] {}))]
+        (is (= [["client.clj" 8 "TSP2345"] ["client.clj" 15 "TSP2345"]]
+               (mapv (juxt :file (comp :row :pos) :code) issues))
+            (pr-str issues))))
     (is (= [2 ::s/invalid ::s/invalid]
            (mapv #(s/conform range-spec %) [2 5 2N])))
     (is (= [2 "ready"] (s/conform (s/tuple range-spec string?) [2 "ready"])))))

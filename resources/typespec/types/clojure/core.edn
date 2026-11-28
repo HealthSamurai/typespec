@@ -35,6 +35,10 @@
  clojure.core/list       [& any? :-> list?]
  clojure.core/subs       ([string? int? :-> string?] [string? int? int? :-> string?])
  clojure.core/re-matcher [java.util.regex.Pattern java.lang.CharSequence :-> java.util.regex.Matcher]
+ clojure.core/re-find   ([java.util.regex.Matcher
+                          :-> (s/nilable (t/or string? (s/coll-of (s/nilable string?) :kind vector? :min-count 2)))]
+                         [java.util.regex.Pattern java.lang.CharSequence
+                          :-> (s/nilable (t/or string? (s/coll-of (s/nilable string?) :kind vector? :min-count 2)))])
  clojure.core/name       [(t/or string? clojure.lang.Named) :-> string?]
  clojure.core/namespace  [clojure.lang.Named :-> (s/nilable string?)]
  clojure.core/keyword    ([(t/or string? keyword? symbol?) :-> keyword?]

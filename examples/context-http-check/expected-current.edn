@@ -1,6 +1,6 @@
 {:review
- "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check. The slurp return type resolves two previously unchecked string calls. Two TSP210-01 messages reflect the some? receiver contract for string predicates. F233 checks the set and first composition in select-accept-header. The TSP210-01 at http/formats.clj:204:19 includes false in the blank? input type.",
- :counts {:warning 37},
+ "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check. The slurp return type resolves two previously unchecked string calls. Two TSP210-01 messages reflect the some? receiver contract for string predicates. F233 checks the set and first composition in select-accept-header. The TSP210-01 at http/formats.clj:204:19 includes false in the blank? input type. The re-find call at http/routing.clj:73 checks its Pattern and CharSequence arguments.",
+ :counts {:warning 39},
  :coverage
  [{:file "src/http.clj",
    :opaque-nodes 1,
@@ -287,6 +287,20 @@
    "compatibility not checked: t/unknown to (t/or string? clojure.lang.Named) (unknown)"
    #{:unknown}
    "616013205f0672707738d943643dd47a"]
+  ["src/http/routing.clj"
+   {:row 73, :col 48, :end-row 73, :end-col 52}
+   :warning
+   "TSP210-01"
+   "compatibility not checked: t/unknown to java.util.regex.Pattern (unknown)"
+   #{:unknown}
+   "f961b19d1bdb5e9af66b23aac74c7b67"]
+  ["src/http/routing.clj"
+   {:row 73, :col 53, :end-row 73, :end-col 54}
+   :warning
+   "TSP210-01"
+   "compatibility not checked: t/unknown to java.lang.CharSequence (unknown)"
+   #{:unknown}
+   "c16b041f4f11a63de738d61fe310306d"]
   ["src/http/routing.clj"
    {:row 74, :col 104, :end-row 74, :end-col 107}
    :warning

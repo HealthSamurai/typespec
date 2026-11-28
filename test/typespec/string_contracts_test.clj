@@ -235,6 +235,34 @@
     (is (nil? (spit writer "text")))
     (is (= "text" (.toString writer)))))
 
+(deftest regex-find-infers-nullable-matches-and-capture-positions
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef head :args (s/cat :source java.lang.CharSequence) :ret (s/nilable string?))
+(defn head [source] (re-find #\"[^-]+\" source))
+(s/fdef groups :args (s/cat :source java.lang.CharSequence) :ret (s/nilable (s/tuple string? (s/nilable string?))))
+(defn groups [source] (re-find #\"(a)?b\" source))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(when-some [head (a/head (StringBuilder. \"part-2\"))] (str/trim head))
+(when-let [[whole optional] (re-find #\"(a)?b\" \"b\")] (str/trim whole))
+(when-let [head (re-find #\"(?:x)+\" \"xx\")] (str/trim head))
+(when-let [[whole optional] (re-find #\"(a)?b\" \"b\")] (str/trim optional))
+(str/trim (re-find #\"x\" \"empty\"))
+(re-find \"x\" \"x\")
+(re-find #\"x\" 42)
+(re-find #\"x\")
+(re-find (re-matcher #\"(x)\" \"x\"))
+(when-let [[whole optional] (a/groups \"b\")] (str/trim whole))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2531"] ["client.clj" 6 "TSP2531"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= "part" (re-find #"[^-]+" (StringBuilder. "part-2"))))
+  (is (= ["b" nil] (re-find #"(a)?b" "b")))
+  (is (= "xx" (re-find #"(?:x)+" "xx")))
+  (is (nil? (re-find #"x" "empty")))
+  (is (thrown? ClassCastException (re-find #"x" 42))))
+
 (deftest regex-matcher-carries-its-class-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef matcher :args (s/cat :source java.lang.CharSequence) :ret java.util.regex.Matcher)

@@ -15,7 +15,8 @@
             [typespec.guards :as guards]
             [typespec.macro-contracts :as macros])
   (:import [clojure.lang Reflector]
-           [java.lang.reflect Modifier]))
+           [java.lang.reflect Modifier]
+           [java.util.regex Pattern PatternSyntaxException]))
 
 (def ^:dynamic *diags* nil)
 (def ^:dynamic *types* nil)
@@ -3420,6 +3421,34 @@
 
 (defmulti special (fn [_ctx _node head] head) :default ::none)
 (defmethod special ::none [_ _ _] ::none)
+
+(defn- regex-literal-groups [node]
+  (when (and (= :regex (:op node)) (empty? (:directives node)) (not (env/tag-node node)))
+    (when-let [pattern (:pattern node)]
+      (try
+        (.groupCount (.matcher (Pattern/compile pattern) ""))
+        (catch PatternSyntaxException _ nil)
+        (catch StackOverflowError _ nil)))))
+
+(defn- regex-match-type [groups]
+  (let [text (t/prim :string)]
+    (if (zero? groups)
+      text
+      (t/tuple (into [text] (repeat groups (t/union text t/nil-t)))))))
+
+(defmethod special 're-find [ctx node _]
+  (let [head (first (:children node))
+        args (args-of node)
+        {:keys [type]} (read-var ctx (:val head) head :call)
+        groups (when (= 2 (count args)) (regex-literal-groups (first args)))
+        type (if (and (some? groups) (< groups map-path-budget))
+               (update type :arities
+                       (fn [arities]
+                         (mapv #(if (= 2 (t/arity-minimum %))
+                                  (assoc % :ret (t/union t/nil-t (regex-match-type groups))) %)
+                               arities)))
+               type)]
+    (call-fn ctx node (str (:val head)) type args)))
 
 (defmethod special '. [ctx node _]
   (let [[receiver raw-member & trailing :as args] (args-of node)

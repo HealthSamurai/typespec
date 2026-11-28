@@ -98,7 +98,7 @@
       :fn {:op :fn-lit :children (convert-seq (n/children x) opts) :pos pos}
       :deref {:op :list :pos pos
               :children (into [{:op :sym :val 'clojure.core/deref :pos pos}] (convert-seq (n/children x) opts))}
-      :regex {:op :regex :pos pos}
+      :regex {:op :regex :pattern (second (n/sexpr x opts)) :pos pos}
       :namespaced-map (some-> (last (convert-seq (n/children x) opts)) (assoc :pos pos))
       :reader-macro (reader-macro x opts)
       {:op :opaque :pos pos})))

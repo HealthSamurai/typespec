@@ -32,6 +32,7 @@ origin: TypeScript
 `clojure.core/boolean` принимает одно значение, включая `nil`, и возвращает `boolean?`. Этот тип виден в проверке `s/fdef` и обычных вызовов.
 
 `clojure.core/re-matcher` проверяет `Pattern` и `CharSequence`, включая `StringBuilder`, и передаёт тип результата `Matcher` в Java interop и возвращаемые значения `s/fdef`.
+`re-find` проверяет обе арности и учитывает `nil` при отсутствии совпадения. Для regex-литерала чекер получает число групп из JVM `Pattern`. Совпадение без групп имеет тип `String`, а для групп выводится вектор, где полное совпадение присутствует и захваченные группы могут быть `nil`.
 
 Контракты `clojure.string/starts-with?`, `ends-with?` и `includes?` принимают
 любой первый аргумент, кроме `nil`. Clojure вызывает на нём `.toString`.

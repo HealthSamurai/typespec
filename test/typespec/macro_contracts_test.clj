@@ -445,6 +445,27 @@ api/delayed")
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest core-match-checks-literal-branches-and-preserves-opaque-pattern-syntax
+  (let [provider (parse/parse-string
+                  "provider.clj"
+                  "(ns provider (:require [clojure.core.match :as m]))
+(defn label [value]
+  (m/match [value] [(:or :left :right)] \"found\" :else \"absent\"))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [provider :as p] [clojure.core.match :refer [match]]))
+(subs (p/label :left) 0)
+(inc (p/label :other))
+(inc (match [:left] [(:or :left :right)] 41 :else (inc \"unreachable\")))
+(match [:left] [:left] (inc \"branch\") :else 0)
+(match (inc \"input\") _ 0)
+(match [1] [(value :guard odd?)] (inc \"opaque\") :else 0)")
+        ds (:diagnostics (check/check-files [client provider] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP7031"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest explicit-macro-contracts-on-the-reexport-take-precedence
   (let [provider (parse/parse-string "provider.clj" "(ns provider)
 (defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")

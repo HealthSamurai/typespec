@@ -4422,6 +4422,58 @@
       (when (and (seq leaves) (every? finite-value? leaves))
         (distinct (map :val leaves))))))
 
+(defn- match-literal? [pattern]
+  (contains? #{:kw :str :bool :nil} (:op pattern)))
+
+(defn- match-pattern-values [pattern]
+  (cond
+    (= '_ (:val pattern)) :wildcard
+    (match-literal? pattern) #{(:val pattern)}
+    (= :list (:op pattern))
+    (let [[head & alternatives] (:children pattern)]
+      (when (and (= :or (:val head)) (seq alternatives) (every? match-literal? alternatives))
+        (into #{} (map :val) alternatives)))))
+
+(defn- match-row-values [vector-input? pattern]
+  (cond
+    (= :else (:val pattern)) :wildcard
+    (not vector-input?) (match-pattern-values pattern)
+    (and (= :vector (:op pattern)) (= 1 (count (:children pattern))))
+    (match-pattern-values (first (:children pattern)))))
+
+(defn- infer-match-branches [ctx actual rows]
+  (let [leaves (mapcat expand-boolean (t/members (:env ctx) (eff ctx actual)))
+        values (when (every? #(#{:nil :lit} (:t %)) leaves) (into #{} (map :val) leaves))]
+    (loop [[[patterns result] & more] rows, remaining values, results []]
+      (cond
+        (or (nil? result) (and remaining (empty? remaining))) (apply t/union results)
+        (= :wildcard patterns) (apply t/union (conj results (infer ctx result)))
+        :else (let [matches? (or (nil? remaining) (some #(contains? remaining %) patterns))]
+                (recur more (when remaining (reduce disj remaining patterns))
+                       (cond-> results matches? (conj (infer ctx result)))))))))
+
+(defmethod special 'clojure.core.match/match [ctx node _]
+  (let [[input & clauses] (args-of node)
+        vector-input? (= :vector (:op input))
+        occurrences (if vector-input? (:children input) (when input [input]))
+        types (mapv #(infer ctx %) occurrences)
+        pairs (partition 2 clauses)
+        rows (mapv (fn [[pattern result]] [(match-row-values vector-input? pattern) result]) pairs)]
+    (cond
+      (nil? input)
+      (do (report! ctx node "TSP2554" "match expects at least one argument") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      (and (= 1 (count occurrences)) (or (not vector-input?) (even? (count clauses))) (every? first rows)
+           (not-any? #(= :else (:val (first %))) (butlast pairs)))
+      (infer-match-branches ctx (first types) rows)
+
+      :else
+      (do (report! ctx (first (:children node)) "TSP7031"
+                   "match uses unsupported patterns: its result branches are not checked" :severity :warning)
+          t/unknown))))
+
 (defn- condp-clauses [nodes]
   (loop [[test branch result & more :as left] nodes out []]
     (cond

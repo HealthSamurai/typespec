@@ -69,6 +69,16 @@
                                        (or conform-keys into) (dissoc :min-count))
                                      assoc ::structured true)
                           t/unknown))
+                      :s/coll-of
+                      (let [[item & options] args
+                            {:keys [into]} (when (even? (count options)) (apply hash-map options))
+                            input (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
+                            kind (:kind input)]
+                        (if (and (= :coll (:t input)) (#{:vector :set :seq} kind) (nil? into))
+                          (vary-meta (cond-> (assoc (dissoc input :distinct?) :of (child item))
+                                       (= :set kind) (dissoc :min-count))
+                                     assoc ::structured true)
+                          t/unknown))
                       t/unknown))
                   :else t/unknown)))]
       (let [result (output context form #{})]

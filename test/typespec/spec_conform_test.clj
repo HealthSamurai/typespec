@@ -15,6 +15,45 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-preserves-element-and-collection-types-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::item (s/or :text string? :count int?))
+(s/def ::items (s/coll-of ::item :kind vector? :min-count 1))
+(s/def ::labels (s/coll-of ::item :kind list?))
+(s/fdef format-n :args (s/cat :n int?) :ret string?)
+(defn format-n [n] (str n))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef print-items :args (s/cat :raw any?) :ret (s/coll-of string? :kind vector?))
+(defn print-items [raw]
+  (let [items (s/conform ::a/items raw)]
+    (if (s/invalid? items)
+      []
+      (mapv (fn [[tag x]] (case tag :text (subs x 0) :count (a/format-n x))) items))))
+(s/fdef print-labels :args (s/cat :raw any?) :ret seq?)
+(defn print-labels [raw]
+  (let [items (s/conform ::a/labels raw)]
+    (if (s/invalid? items) ()
+      (for [[tag x] items] (case tag :text (subs x 0) :count (a/format-n x))))))
+(s/fdef wrong :args (s/cat :raw any?) :ret any?)
+(defn wrong [raw]
+  (let [items (s/conform ::a/items raw)]
+    (when-not (s/invalid? items)
+      (mapv (fn [[tag x]] (case tag :text (a/format-n x) :count (a/format-n x))) items))))
+(print-items [\"ok\" 42])")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 17 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [output (fn [spec]
+                 (first (filter #(= :coll (:t %))
+                                (t/members {}
+                                           (conform/value-result {} {:aliases {'s 'clojure.spec.alpha}} spec)))))
+        set-output (output '(s/coll-of (s/conformer (constantly :one)) :kind set? :count 2))
+        distinct-input (output '(s/coll-of (s/conformer (constantly :one))
+                                         :kind vector? :count 2 :distinct true))]
+    (is (= [nil 2] ((juxt :min-count :max-count) set-output)))
+    (is (= [2 2 nil] ((juxt :min-count :max-count :distinct?) distinct-input)))))
+
 (deftest conform-preserves-dictionary-value-and-key-types-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::payload (s/or :text string? :amount int?))

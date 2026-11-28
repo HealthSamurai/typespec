@@ -13,6 +13,30 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest comprehensions-reject-proven-non-seqable-sources
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef source :args (s/cat :text? boolean?) :ret (s/or :values (s/coll-of string? :kind vector?) :invalid boolean?))
+(defn source [text?] (if text? [\"ok\"] false))
+(defn tag [] :bad)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(for [n 42] (inc n))
+(doseq [flag false] (str flag))
+(for [x (a/tag)] (name x))
+(for [c \"abc\"] (str c))
+(for [n (int-array [1 2])] (inc n))
+(for [row nil] (inc row))
+(s/fdef conditional :args (s/cat :flag boolean?) :ret (s/coll-of string? :kind seq?))
+(defn conditional [flag] (for [x (a/source flag)] (subs x 0)))
+(s/fdef invalid-body :args (s/cat :flag boolean?) :ret any?)
+(defn invalid-body [flag] (for [x (a/source flag)] (inc x)))
+(s/fdef numeric-source :args (s/cat :value number?) :ret seq?)
+(defn numeric-source [value] (for [x value] x))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= (mapv #(vector % "TSP2345") [2 3 4 9 11 11]) (locations issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (= "string? is not assignable to number?" (:message (last issues))))))
+
 (deftest empty-comprehension-inputs-keep-bottom-through-destructuring
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::empty (s/map-of string? int? :count 0))

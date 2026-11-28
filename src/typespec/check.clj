@@ -2382,7 +2382,15 @@
                 (and sym (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) sym))))
           ctx (partition 2 (:children bindings))))
 
-(defn- bind-seq-pairs [ctx bindings]
+(defn- non-seqable-input? [member]
+  (case (:t member)
+    :lit (not (seqable? (:val member)))
+    :prim (contains? #{:boolean :double :keyword :symbol :uuid} (:name member))
+    :class (when-let [^Class cls (t/load-class (:name member))]
+             (and (Modifier/isFinal (.getModifiers cls)) (not (t/sub? {} member t/seqable-type))))
+    false))
+
+(defn- bind-seq-pairs [ctx head bindings]
   (reduce (fn [ctx [p init]]
             (if (= :kw (:op p))
               (case (:val p)
@@ -2390,7 +2398,11 @@
                 (:when :while) (or (first (condition-contexts ctx init)) ctx)
                 ctx)
               (let [source (infer ctx init)
-                    elements (for [member (t/members (:env ctx) source)
+                    {compatible false incompatible true} (group-by #(boolean (non-seqable-input? %))
+                                                                    (t/members (:env ctx) source))
+                    _ (when-let [bad (first incompatible)]
+                        (report! ctx init "TSP2345" (str head " cannot sequence " (t/show bad))))
+                    elements (for [member compatible
                                    :let [member (or (map-entry-sequence member) member)]
                                    :when (not= 0 (second (sequence-member-bounds member)))]
                                (member-element member))]
@@ -4237,12 +4249,12 @@
 
 (defmethod special 'doseq [ctx node _]
   (let [[bindings & body] (args-of node)]
-    (infer-body (bind-seq-pairs ctx bindings) body)
+    (infer-body (bind-seq-pairs ctx 'doseq bindings) body)
     t/nil-t))
 
 (defmethod special 'for [ctx node _]
   (let [[bindings & body] (args-of node)]
-    {:t :coll :kind :seq :of (widen (dissoc (infer-body (bind-seq-pairs ctx bindings) body) :fresh))}))
+    {:t :coll :kind :seq :of (widen (dissoc (infer-body (bind-seq-pairs ctx 'for bindings) body) :fresh))}))
 
 (defmethod special 'dotimes [ctx node _]
   (let [[bindings & body] (args-of node)

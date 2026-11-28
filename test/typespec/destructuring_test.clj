@@ -34,6 +34,26 @@
         (pr-str issues))
     (is (re-find #"may return nil" (:message (second issues))))))
 
+(deftest java-map-computed-destructuring-preserves-the-value-type
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn environment [] (System/getenv))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :key string?) :ret string?)
+(defn render [key]
+  (let [{text key :or {text \"\"}} (a/environment)] (subs text 0)))
+(s/fdef wrong :args (s/cat :key string?) :ret (s/nilable number?))
+(defn wrong [key]
+  (let [{text key} (a/environment)] (when-some [value text] (inc value))))
+(s/fdef required :args (s/cat :key string?) :ret string?)
+(defn required [key] (let [{text key} (a/environment)] text))
+(render \"PATH\")
+(render 42)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2322"] ["client.clj" 11 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"may return nil" (:message (second issues))))))
+
 (deftest conditional-forms-preserve-aborting-destructuring-branches
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::label string?)

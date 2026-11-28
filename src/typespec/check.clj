@@ -1231,7 +1231,9 @@
         (bind-map-entry ctx pattern selector key source why (when-not (integer? key) (project key)) defaults)
         (let [selected (if (and (seq keys) (every? some? keys))
                          (select-map-entries ctx source selector selector-type keys)
-                         {:type (read-map-of ctx source selector-type t/never) :optional? true})]
+                         {:type (or (java-map-value-type (t/remove-nil (:env ctx) source))
+                                    (read-map-of ctx source selector-type t/never))
+                          :optional? true})]
           (bind-map-entry ctx pattern selector (str "value selected by " (parse/unparse selector))
                           source why nil defaults selected))))))
 

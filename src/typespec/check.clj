@@ -2389,7 +2389,12 @@
                 :let (bind-pairs ctx init)
                 (:when :while) (or (first (condition-contexts ctx init)) ctx)
                 ctx)
-              (bind-pattern ctx p (elem-type ctx (infer ctx init)))))
+              (let [source (infer ctx init)
+                    elements (for [member (t/members (:env ctx) source)
+                                   :let [entries (map-entry-sequence member)]
+                                   :when (not= 0 (:max-count entries))]
+                               (member-element (or entries member)))]
+                (bind-pattern ctx p (t/with-assumption (apply t/union elements) (t/assumption source))))))
           ctx (partition 2 (:children bindings))))
 
 (defn- body-initializers [ctx form]
@@ -8216,14 +8221,17 @@
 
 (defn- map-entry-sequence [member]
   (let [source (or (:entry-map member) member)
-        closed? (and (= :map (:t source)) (:complete-keys? source))]
-    (when (or closed? (= :map-of (:t source)))
-      (let [entries (when closed? (remove (comp #{t/never} val) (concat (:req source) (:opt source))))
-            [lo hi] (if (and closed? (= :map (:t member)))
-                      [(count (:req source)) (count entries)]
-                      (length/bounds member))
-            element (if closed?
-                      (apply t/union (map #(found-map-entry (t/lit (key %)) (val %) false) entries))
+        row? (= :map (:t source))
+        index (:map-index source)]
+    (when (or (and row? (or (:complete-keys? source) index)) (= :map-of (:t source)))
+      (let [[lo hi] (length/bounds (if (= :map (:t member)) (t/map-length source) member))
+            element (if row?
+                      (apply t/union
+                             (concat (for [[key value] (concat (:req source) (:opt source))
+                                           :when (not= t/never value)]
+                                       (found-map-entry (t/lit key) value false))
+                                     (when (and index (not= 0 (:max-count index)) (not= t/never (:v index)))
+                                       [(found-map-entry (:k index) (:v index) false)])))
                       (found-map-entry (:k source) (:v source) false))]
         (length/with-bounds {:t :coll :kind :seq :of element} lo hi)))))
 

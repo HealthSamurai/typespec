@@ -13,6 +13,28 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest map-comprehensions-destructure-typed-entries
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::counts (s/map-of string? int? :min-count 1))
+(s/fdef counts :args (s/cat) :ret ::counts)
+(defn counts [] {\"a\" 2 \"b\" 3})
+(s/fdef report :args (s/cat :counts ::counts) :ret (s/coll-of string? :kind seq?))
+(defn report [counts] (for [[label n] counts :when (pos? n)] (str (subs label 0) (inc n))))
+(defn mixed [^String key] {:fixed 42 key 1})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(doseq [[label n] (a/counts)] (subs label 0) (inc n))
+(doseq [[_ n] (a/counts)] (subs n 0))
+(for [[_ n] {\"wrong\" \"text\"}] (inc n))
+(a/report {\"a\" 1})
+(a/report {\"a\" \"bad\"})
+(doseq [[_ n] (a/mixed \"x\")] (inc n))
+(doseq [[_ n] (a/mixed \"x\")] (subs n 0))
+(mapv #(subs % 0) (a/report (a/counts)))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= (mapv #(vector % "TSP2345") [3 4 6 8]) (locations issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))))
+
 (deftest destructured-parameters-accept-extra-literal-keys-across-namespaces
   (let [api (parse/parse-string
              "storage.clj"

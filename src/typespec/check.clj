@@ -286,18 +286,20 @@
         map-source (when (and (= :map-of (:t target)) (length/constrained? target))
                      (t/map-length source))
         a (:items source)
-        e (:items target)]
+        e (:items target)
+        packed? (and (= :sequential (:kind target)) (#{:seq :vector :sequential} (:kind source)))]
     (when (= 1 (count am) (count em))
       (cond
-        (and a e (= :vector (:kind source) (:kind target)))
-        (if (not= (count a) (count e))
-          ["TSP330-01" (str "expected vector length " (count e) ", got " (count a))]
-          (first (keep-indexed (fn [i item]
-                                (let [target (nth e i)]
-                                  (when (= :mismatch (:status (t/sub-result env item target)))
-                                    ["TSP2345" (str "vector element " i ": " (show-ref ctx (eff ctx item))
-                                                     " is not assignable to " (show-ref ctx target))])))
-                              a)))
+        (and a e (or packed? (= :vector (:kind source) (:kind target))))
+        (let [label (if packed? "sequence" "vector")]
+          (if (not= (count a) (count e))
+            ["TSP330-01" (str "expected " label " length " (count e) ", got " (count a))]
+            (first (keep-indexed (fn [i item]
+                                  (let [target (nth e i)]
+                                    (when (= :mismatch (:status (t/sub-result env item target)))
+                                      ["TSP2345" (str label " element " i ": " (show-ref ctx (eff ctx item))
+                                                       " is not assignable to " (show-ref ctx target))])))
+                                a))))
 
         (and (= :coll (:t source) (:t target))
              (or (nil? (:kind target)) (= (:kind source) (:kind target)))
@@ -5838,7 +5840,7 @@
     (when (and (integer? n) (<= 0 n Integer/MAX_VALUE)) n)))
 
 (defn- exact-count-type [member]
-  (when-not (:platform member)
+  (when-not (or (:platform member) (= :sequential (:kind member)))
     (let [size (or (exact-sequence-length member)
                    (when (and (= :lit (:t member)) (string? (:val member))) (count (:val member)))
                    (when-let [bounds (t/map-length member)]

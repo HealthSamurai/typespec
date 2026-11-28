@@ -178,6 +178,8 @@
   (let [actual (:items a)
         expected (:items b)]
     (cond
+      (and (not= (:kind a) (:kind b)) (or (= :sequential (:kind a)) (= :sequential (:kind b))))
+      (leaf a b)
       (and expected (nil? actual) (not (length/constrained? a))) (leaf a b)
       (and expected (not= (:kind a) (:kind b))) (mismatch a b)
 

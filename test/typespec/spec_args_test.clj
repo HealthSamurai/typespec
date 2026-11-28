@@ -819,8 +819,51 @@
 (a/inner [\"valid\" 3])
 (a/inner \"not a packed value\" 3)")
         r (check/check-files [api client] {})]
-    (is (= [["api.clj" 6 "TSP9002"] ["api.clj" 7 "TSP210-01"]
+    (is (= [["api.clj" 7 "TSP210-01"]
             ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2554"]
             ["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2554"]]
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
-        (pr-str (:diagnostics r)))))
+        (pr-str (:diagnostics r)))
+    (is (= #{:sequence-kind} (get-in r [:diagnostics 0 :reasons])))))
+
+(deftest packed-spec-regexes-check-one-sequential-argument
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::request (s/spec (s/cat :label string? :count int?)))
+(s/def ::optional (s/nonconforming (s/cat :count (s/? int?))))")
+        api (parse/parse-string "api.clj" "(ns api (:require [domain :as d] [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef render :args (s/cat :request ::d/request) :ret string?)
+(defn render [[label n]] (str (str/trim label) (inc n)))
+(s/fdef optional :args (s/cat :value ::d/optional) :ret int?)
+(defn optional [value] (if-let [[n] (seq value)] n 0))
+(s/fdef unpack :args (s/cat :request (s/spec (s/cat :label string? :count int?))) :ret int?)
+(defn unpack [request] (nth request 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render [\"ok\" 1])
+(a/render '(\"ok\" 1))
+(a/render [\"bad\" \"1\"])
+(a/render '(\"short\"))
+(a/render \"ab\")
+(a/render nil)
+(a/render #{\"ok\" 1})
+(a/render [\"ok\" 1] :extra)
+(a/optional [])
+(a/optional nil)
+(a/optional (list 1))
+(a/optional [\"bad\"])
+(a/unpack [\"ok\" 1])
+(a/unpack [\"ok\" :bad])")
+        issues (:diagnostics (check/check-files [client api domain] {}))]
+    (is (= [[4 "TSP2345"] [5 "TSP330-01"] [6 "TSP2345"] [7 "TSP2345"]
+            [8 "TSP2345"] [9 "TSP2554"] [13 "TSP2345"] [15 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (= "expected sequence length 2, got 1" (:message (second issues)))))
+  (let [spec (s/spec (s/cat :label string? :count int?))
+        custom (reify clojure.lang.Sequential
+                 clojure.lang.Seqable
+                 (seq [_] (seq ["ok" 1])))]
+    (is (= [true true false false true]
+           (mapv #(s/valid? spec %) [["ok" 1] (list "ok" 1) ["ok"] "ok" custom])))
+    (is (= 1 (nth custom 1)))
+    (is (thrown? UnsupportedOperationException (count custom)))))

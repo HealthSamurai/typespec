@@ -436,6 +436,17 @@
         b (atom-content-shape env (:of expected))]
     (if (and a b) (= a b) (inconclusive! :atom-content))))
 
+(defn- positional-kind-fits? [source target]
+  (or (= (:kind source) (:kind target))
+      (and (= :sequential (:kind target))
+           (case (:kind source)
+             :vector true
+             :seq (if-let [class-name (:jvm-class source)]
+                    (class-sub? class-name sequential-class)
+                    (inconclusive! :sequence-kind))
+             nil (inconclusive! :sequence-kind)
+             false))))
+
 (defn- sub1? [env s t]
   (let [st (:t s) tt (:t t)]
     (cond
@@ -478,12 +489,17 @@
                      :class (or (prim-is-class? (:name s) (:name t))
                                 (inconclusive-sequence-kind! (:name s) (:name t)))
                      ;; A known kind never fits a different :kind (set? is not a vector).
-                     :coll (and (contains? #{:vector :set :seq :coll} (:name s))
+                     :coll (if (= :sequential (:kind t))
+                             (case (:name s)
+                               :vector (inconclusive! :tuple-length)
+                               (:seq :coll) (inconclusive! :sequence-kind)
+                               false)
+                             (and (contains? #{:vector :set :seq :coll} (:name s))
                                 (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
                                 (cond (:items t) (inconclusive! :tuple-length)
                                       (length/constrained? t) (inconclusive! :collection-length)
                                       *strict-shapes* (inconclusive! :unsupported)
-                                      :else true))
+                                      :else true)))
                      :map-of (and (= :map (:name s))
                                   (cond (length/constrained? t) (inconclusive! :collection-length)
                                         *strict-shapes* (inconclusive! :unsupported)
@@ -499,6 +515,10 @@
                       :map-of (and (length/constrained? t) (class-is-prim? (:name s) :map)
                                    (inconclusive! :collection-length))
                       :coll (cond
+                              (and (= :sequential (:kind t)) (class-sub? (:name s) sequential-class))
+                              (inconclusive! :tuple-length)
+                              (and (= :sequential (:kind t)) (class-is-prim? (:name s) :seq))
+                              (inconclusive! :sequence-kind)
                               (and (:items t) (class-is-prim? (:name s) :vector))
                               (inconclusive! :tuple-length)
                               (and (length/constrained? t)
@@ -529,25 +549,39 @@
       (= :atom st) (and (= :class tt) (class-sub? "clojure.lang.Atom" (:name t)))
       (= :coll st) (case tt
                      :coll (if-let [positions (:items t)]
-                             (cond (:items s) (and (= (:kind s) (:kind t))
-                                                   (length/subset? s t)
+                             (cond (:items s) (and (length/subset? s t)
+                                                   (positional-kind-fits? s t)
                                                    (every? true? (map #(sub? env %1 %2) (:items s) positions)))
                                    (and (length/constrained? s) (not (length/subset? s t))) false
-                                   (and (length/subset? s t) (= (:kind s) (:kind t)))
+                                   (and (length/subset? s t) (positional-kind-fits? s t))
                                    (every? #(sub? env (:of s) %) positions)
+                                   (= :sequential (:kind t))
+                                   (when (positional-kind-fits? s t)
+                                     (inconclusive! :tuple-length))
                                    (#{nil :vector} (:kind s)) (inconclusive! :tuple-length)
                                    :else false)
-                             (and (or (nil? (:kind t)) (= (:kind s) (:kind t)))
-                                  (length/subset? s t)
-                                  (not (length/repeated-item? s t))
-                                  (if-let [items (:items s)]
-                                    (every? #(sub? env % (:of t)) items)
-                                    (or (= 0 (:max-count s)) (sub? env (:of s) (:of t))))))
-                     :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
+                             (if (= :sequential (:kind s))
+                               (when (#{nil :vector :seq} (:kind t))
+                                 (inconclusive! :sequence-kind))
+                               (and (or (nil? (:kind t)) (= (:kind s) (:kind t)))
+                                    (length/subset? s t)
+                                    (not (length/repeated-item? s t))
+                                    (if-let [items (:items s)]
+                                      (every? #(sub? env % (:of t)) items)
+                                      (or (= 0 (:max-count s)) (sub? env (:of s) (:of t)))))))
+                     :prim (if (= :sequential (:kind s))
+                             (when (#{:coll :vector :seq} (:name t))
+                               (inconclusive! :sequence-kind))
+                             (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}}
+                                             (:kind s) #{:coll}) (:name t)))
                      :class (if-let [c (:jvm-class s)]
                               (class-sub? c (:name t))
-                              (or (prim-is-class? (or (:kind s) :coll) (:name t))
-                                  (inconclusive-sequence-kind! (:kind s) (:name t))))
+                              (if (= :sequential (:kind s))
+                                (or (class-sub? sequential-class (:name t))
+                                    (when (#{counted-class "clojure.lang.IPersistentCollection"} (:name t))
+                                      (inconclusive! :sequence-kind)))
+                                (or (prim-is-class? (or (:kind s) :coll) (:name t))
+                                    (inconclusive-sequence-kind! (:kind s) (:name t)))))
                      false)
       (= :fn st) (case tt
                     :fn (boolean (fn-sub? env s t))
@@ -586,13 +620,16 @@
         (when-let [origin (some-> (:actual result) meta ::platform-origin)]
           (assoc result :platform-origin origin))))))
 
+(declare seqable-type)
+
 (defn- ordinary-sub? [env s t]
   (if (> *depth* 12)
     (inconclusive! :depth)
     (binding [*depth* (inc *depth*)]
       (let [tt (members env t)]
         (every? (fn [s1]
-                  (or (some #(sub1? env s1 %) tt)
+                  (or (and (= :sequential (:kind s1)) (every? (set tt) (:types seqable-type)))
+                      (some #(sub1? env s1 %) tt)
                       ;; A structural value can be covered by several alternatives
                       ;; even when it is not contained in any one of them.
                       (when (and *contract-subtyping* (#{:map :coll} (:t s1))
@@ -771,8 +808,13 @@
                   (when (seq (:opt t)) (str " :opt [" (str/join " " (map show-kw (keys (:opt t)))) "]"))
                   ")"))
       :map-of (str "(s/map-of " (show (:k t)) " " (show (:v t)) (show-count-bounds t) ")")
-      :coll (if (and (:items t) (::tuple-contract (meta t)))
+      :coll (cond
+              (= :sequential (:kind t))
+              (str "(s/spec (s/cat"
+                   (apply str (map-indexed #(str " :arg" (inc %1) " " (show %2)) (:items t))) "))")
+              (and (:items t) (::tuple-contract (meta t)))
               (str "(s/tuple" (apply str (map #(str " " (show %)) (:items t))) ")")
+              :else
               (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?"))
                    (show-count-bounds t)
                    (when (:distinct? t) " :distinct true")
@@ -1168,6 +1210,17 @@
         (mapv #(assoc % :ret ret) branches)
         (do ((:fail ctx) args) nil)))))
 
+(defn- packed-regex-type [ctx form]
+  (let [ctx (if (:regex-expansion-budget ctx)
+              ctx
+              (assoc ctx :active-regex-specs #{} :regex-expansion-budget (volatile! 256)))
+        {source :context regex :form} (resolve-regex ctx form true)]
+    (when-let [branches (when regex (regex-form-branches source regex))]
+      (when-not (some regex-tail? branches)
+        (let [positions (map :params branches)
+              shapes (map #(assoc (tuple %) :kind :sequential) positions)]
+          (apply union (cond-> shapes (some empty? positions) (conj nil-t))))))))
+
 (defn parse-sig
   "[A B :-> R], [A & B :-> R], or a list of such vectors."
   [ctx form]
@@ -1299,8 +1352,10 @@
         :s/and (vary-meta (if (:spec? ctx) (spec-conjunction-type ctx (rest form)) (p (second form)))
                           assoc ::shape-form (first form) ::unchecked-contract true)
         (:t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
-        :s/spec (p (second form))
-        :s/nonconforming (if (= 2 (count form)) (p (second form)) (fail))
+        :s/spec (or (packed-regex-type ctx form) (p (second form)))
+        :s/nonconforming (if (= 2 (count form))
+                           (or (packed-regex-type ctx form) (p (second form)))
+                           (fail))
         :s/with-gen (if (= 3 (count form)) (p (second form)) (fail))
         :s/keys (if-let [options (spec-keys-options (rest form))] (parse-keys options) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}

@@ -92,6 +92,34 @@
   (is (= [0 1] (vec (reductions (fn [_ x] (reduced x)) 0 [1 2 3]))))
   (is (thrown? clojure.lang.ArityException (first (reductions inc [])))))
 
+(deftest count-returns-known-jvm-lengths-at-contract-boundaries
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::two #{2})
+(s/fdef require-two :args (s/cat :amount ::two) :ret int?)
+(defn require-two [amount] amount)
+(s/fdef pair-size :args (s/cat :pair (s/tuple string? int?)) :ret ::two)
+(defn pair-size [pair] (count pair))
+(s/fdef table-size :args (s/cat :table (s/map-of keyword? string? :count 2)) :ret ::two)
+(defn table-size [table] (count table))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/require-two (count [1 2]))
+(a/require-two (count {:x 1 :y 2}))
+(a/require-two (count (int-array 2)))
+(a/require-two (count \"🐈\"))
+(a/require-two (a/pair-size [\"name\" 4]))
+(a/require-two (a/table-size {:x \"1\" :y \"2\"}))
+(a/require-two (count nil))
+(a/require-two (count [1]))
+(defn possible-one [flag] (a/require-two (count (if flag [1] [1 2]))))
+(defn always-two [flag] (a/require-two (count (if flag [1 2] {:x 1 :y 2}))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "0 is not assignable to :api/two (2)" (:message (first issues)))))
+  (is (= 2 (count "🐈")))
+  (is (= Integer (class (count [1 2])))))
+
 (deftest count-checks-direct-and-higher-order-jvm-inputs
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef count-sequence :args (s/cat :values (s/nilable (s/coll-of int? :kind vector?))) :ret int?)

@@ -5843,6 +5843,29 @@
             nil)]
     (when (and (integer? n) (<= 0 n Integer/MAX_VALUE)) n)))
 
+(defn- exact-count-type [member]
+  (when-not (:platform member)
+    (let [size (or (exact-sequence-length member)
+                   (when (and (= :lit (:t member)) (string? (:val member))) (count (:val member)))
+                   (when-let [bounds (t/map-length member)]
+                     (let [[lo hi] (length/bounds bounds)]
+                       (when (= lo hi) lo))))]
+      (when (and (integer? size) (<= 0 size Integer/MAX_VALUE))
+        (t/lit (int size))))))
+
+(defmethod special 'count [ctx node _]
+  (let [head (first (:children node))
+        args (args-of node)
+        {:keys [type]} (read-var ctx (:val head) head :call)
+        arg-types (mapv #(infer ctx %) args)
+        result (call-fn ctx node (str (:val head)) type args arg-types)]
+    (or (when (= 1 (count arg-types))
+          (let [source (first arg-types)
+                counts (mapv exact-count-type (t/members (:env ctx) source))]
+            (when (every? some? counts)
+              (t/with-assumption (apply t/union counts) (t/assumption source)))))
+        result)))
+
 (defn- shared-length [lengths]
   (when (and (some? (first lengths)) (apply = lengths))
     (first lengths)))

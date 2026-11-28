@@ -12,6 +12,22 @@
   (let [facts (meta type)]
     (or (::predicate-result facts) (::original-value facts))))
 
+(defn- retain-through-predicate [env previous result]
+  (if (and (unchanged-value? result) (not (#{:unknown :any} (:t previous))))
+    (cond
+      (t/sub? env previous result) previous
+
+      (and (t/nilable? env previous)
+           (not-any? t/may-be-nil-leaf? (t/members env result)))
+      (let [present (t/remove-nil env previous)]
+        (if (t/sub? env present result)
+          (with-meta present (cond-> (merge (meta present) (meta previous))
+                               (::nonnil-tagged (meta previous)) (assoc ::tagged true)))
+          result))
+
+      :else result)
+    result))
+
 (defn- conformed-entry [key value conform-keys?]
   (cond
     (or (and conform-keys? (::tagged (meta key))) (::tagged (meta value)))
@@ -69,16 +85,11 @@
                                 t/unknown))
                       :s/spec (child (first args))
                       :s/with-gen (if (= 2 (count args)) (child (first args)) t/unknown)
-                      :s/and (vary-meta
-                              (reduce (fn [previous spec]
-                                       (let [result (child spec)]
-                                         (if (and (::predicate-result (meta result))
-                                                  (not (#{:unknown :any} (:t previous)))
-                                                  (t/sub? env previous result))
-                                           previous
-                                           result)))
-                                      t/unknown args)
-                              dissoc ::keys-output)
+                      :s/and (let [stages (mapv child args)
+                                   result (reduce #(retain-through-predicate env %1 %2) t/unknown stages)]
+                               (cond-> (vary-meta result dissoc ::keys-output)
+                                 (not-every? unchanged-value? stages)
+                                 (vary-meta dissoc ::predicate-result ::original-value)))
                       :s/nonconforming (if (= 1 (count args))
                                         (vary-meta (t/parse-type (assoc context :fail (constantly nil) :spec? true)
                                                                  (first args))
@@ -88,8 +99,12 @@
                                    (vary-meta result assoc ::predicate-result true)
                                    t/unknown)
                       :s/nilable (if (= 1 (count args))
-                                   (vary-meta (t/union t/nil-t (child (first args)))
-                                              assoc ::structured true)
+                                   (let [value (child (first args))
+                                         facts (meta value)]
+                                     (vary-meta (t/union t/nil-t value) assoc
+                                                ::structured true
+                                                ::predicate-result (unchanged-value? value)
+                                                ::nonnil-tagged (or (::tagged facts) (::nonnil-tagged facts))))
                                    t/unknown)
                       :s/tuple (vary-meta (tuple (mapv child args)) assoc ::structured true)
                       :s/keys (let [shapes (t/members env (t/parse-type (assoc context :fail (constantly nil)) form))

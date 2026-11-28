@@ -15,6 +15,33 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-predicates-can-exclude-nil-without-losing-transformation
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::choice (s/or :text string? :count int?))
+(s/def ::item (s/and (s/nilable ::choice) vector?))
+(s/def ::rows (s/map-of string? ::item :into [] :min-count 1))
+(s/def ::unchanged (s/map-of string? (s/and int? number?) :into [] :min-count 1))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :raw any?) :ret string?)
+(defn render [raw]
+  (let [out (s/conform ::a/rows raw)]
+    (if (s/invalid? out) \"invalid\"
+      (let [[label [tag x]] (nth out 0)]
+        (str label (case tag :text (subs x 0) :count (a/accept x)))))))
+(defn wrong [raw]
+  (let [out (s/conform ::a/rows raw)]
+    (when-not (s/invalid? out) (key (nth out 0)))))
+(s/fdef label :args (s/cat :raw any?) :ret string?)
+(defn label [raw]
+  (let [out (s/conform ::a/unchanged raw)]
+    (if (s/invalid? out) \"invalid\" (key (nth out 0)))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest conform-merge-uses-the-last-keys-spec-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::payload (s/or :text string? :count int?))

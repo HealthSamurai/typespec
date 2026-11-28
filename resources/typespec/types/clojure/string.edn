@@ -22,7 +22,7 @@
  clojure.string/join        ([seqable? :-> string?]
                             [t/unknown seqable? :-> string?])
  clojure.string/split       ([java.lang.CharSequence java.util.regex.Pattern :-> (s/coll-of string? :kind vector?)]
-                            [java.lang.CharSequence java.util.regex.Pattern int? :-> (s/coll-of string? :kind vector?)])
+                            [java.lang.CharSequence java.util.regex.Pattern number? :-> (s/coll-of string? :kind vector?)])
  clojure.string/split-lines [java.lang.CharSequence :-> (s/coll-of string? :kind vector?)]
  ;; These predicates invoke .toString on the receiver and pass the needle as is.
  clojure.string/starts-with? [some? string? :-> boolean?]

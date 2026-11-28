@@ -21,6 +21,7 @@
                 "(blank? nil)" "(blank? false)" "(s/blank? (StringBuilder.))"
                 "(s/split (StringBuilder. \"a,b\") #\",\")"
                 "(s/split \"a,b\" #\",\" 2)"
+                "(s/split \"a,b\" #\",\" 1.5)"
                 "(s/split-lines (StringBuilder. \"a\\nb\"))"
                 "(s/starts-with? (StringBuilder. \"ab\") \"a\")"
                 "(s/ends-with? (StringBuilder. \"ab\") \"b\")"
@@ -47,7 +48,7 @@
                 "(join 42)" "(join false)" "(join (Object.))" "(join (new Object))"
                 "(join (java.lang.Object.))" "(join (new java.lang.Object))"
                 "(s/split \"abc\" \",\")" "(s/split nil #\",\")"
-                "(s/split \"abc\" #\",\" 1.5)" "(s/split-lines nil)"
+                "(s/split \"abc\" #\",\" \"1.5\")" "(s/split-lines nil)"
                 "(s/starts-with? \"abc\" (StringBuilder. \"a\"))"
                 "(s/ends-with? \"abc\" nil)" "(s/includes? nil \"a\")"
                 "(replace \"abc\" \\a \"x\")" "(replace \"abc\" \"a\" \\x)"
@@ -267,6 +268,39 @@
   (is (= "" (str/escape "" 42)))
   (is (thrown? NullPointerException (str/escape nil {})))
   (is (thrown? IllegalArgumentException (str/escape "abc" []))))
+
+(deftest split-checks-jvm-int-casts-and-propagates-limit-bounds
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef head-one :args (s/cat :text string?) :ret (s/tuple string?))
+(defn head-one [text] (str/split text #\",\" 1.5))
+(s/fdef wrong-two :args (s/cat :text string?) :ret (s/tuple string? string?))
+(defn wrong-two [text] (str/split text #\",\" 1))
+(s/fdef take-first :args (s/cat :text string?) :ret string?)
+(defn take-first [text] (first (str/split text #\",\" -1)))
+(defn limited [^CharSequence text] (str/split text #\",\" 2))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(a/head-one \"a,b\")
+(a/take-first \"a,b\")
+(nth (a/limited \"a,b\") 2)
+(str/split \"a,b,c\" #\",\" 5/2)
+(str/split \"a,b,c\" #\",\" 2M)
+(str/split \"a,b,c\" #\",\" \"2\")
+(str/split \"a,b,c\" #\",\" \\u0002)
+(str/split \"a,b,c\" #\",\" 2147483648)
+(str/split \"a,b,c\" #\",\" ##Inf)
+(str/split \",\" #\",\" ##NaN)
+(str/split \",\" #\",\" 0.5)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 5 "TSP330-01"] ["client.clj" 4 "TSP330-02"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"]
+            ["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"JVM int: 2147483648" (:message (nth issues 4)))))
+  (is (= ["a,b"] (str/split "a,b" #"," 1.5)))
+  (is (= ["" ""] (str/split "," #"," -1)))
+  (is (= [] (str/split "," #"," 0.5)))
+  (is (thrown? ArithmeticException (str/split "a,b" #"," 2147483648))))
 
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))

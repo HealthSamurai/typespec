@@ -9337,6 +9337,20 @@
       (let [inputs (or arg-types (mapv #(infer ctx %) args))]
         (or (callable-data-result ctx node target label type args inputs) t/unknown)))))
 
+(defmethod special 'clojure.string/split [ctx node _]
+  (let [[inputs result] (core-call-result ctx node)
+        {:keys [t val]} (when (= 3 (count inputs)) (single-member ctx (peek inputs)))]
+    (if (and (= :lit t) (number? val))
+      (if-some [limit (checked-int-index val)]
+        (if (or (zero? limit) (not= :coll (:t result)))
+          result
+          (t/with-assumption (length/with-bounds result 1 (when (pos? limit) limit))
+                             (or (t/assumption result) (t/assumption (peek inputs)))))
+        (do (report! ctx (peek (args-of node)) "TSP2345"
+                     (str "split limit cannot be represented as a JVM int: " (pr-str val)))
+            t/never))
+      result)))
+
 (defmethod special 'clojure.string/escape [ctx node _]
   (let [[text mapper :as args] (args-of node)]
     (if (not= 2 (count args))

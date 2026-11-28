@@ -158,12 +158,25 @@
 (defn- literal-type [v]
   (if (nil? v) t/nil-t (t/lit v)))
 
+(defn- value-kind [{:keys [t kind name]}]
+  (case t
+    :prim name
+    (:map :map-of) :map
+    :coll (or kind :coll)
+    nil))
+
 (defn- definitely-disjoint? [a b]
-  (and (= :prim (:t a) (:t b))
-       (#{:string :keyword :symbol :boolean :number :int :double} (:name a))
-       (#{:string :keyword :symbol :boolean :number :int :double} (:name b))
-       (not= (:name a) (:name b))
-       (not (and (#{:number :int :double} (:name a)) (#{:number :int :double} (:name b))))))
+  (let [scalars #{:string :keyword :symbol :boolean :number :int :double}
+        numbers #{:number :int :double}
+        non-collection-scalars #{:string :keyword :symbol :boolean :double}
+        collections #{:map :vector :set :seq :coll}
+        left (value-kind a)
+        right (value-kind b)]
+    ;; A Number or BigInteger subclass can implement a collection interface.
+    (or (and (non-collection-scalars left) (collections right))
+        (and (collections left) (non-collection-scalars right))
+        (and (scalars left) (scalars right) (not= left right)
+             (not (and (numbers left) (numbers right)))))))
 
 (def ^:private vague-tags #{:any :unknown :rigid :var :ivar :all})
 

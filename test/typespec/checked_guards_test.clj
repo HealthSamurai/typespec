@@ -1,8 +1,10 @@
 (ns typespec.checked-guards-test
   (:require [clojure.test :refer [deftest is testing]]
             [typespec.check :as check]
+            [typespec.guards :as guards]
             [typespec.main :as main]
-            [typespec.parse :as parse]))
+            [typespec.parse :as parse]
+            [typespec.types :as t]))
 
 (defn- check-source [source]
   (check/check-files
@@ -11,6 +13,34 @@
    {:strict-nil true}))
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
+
+(deftest scalar-and-collection-predicates-preserve-filtered-tuple-fields
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::entry (s/tuple string? int?))
+(s/def ::item (s/or :entry ::entry :label string? :flag boolean?))
+(s/def ::items (s/coll-of ::item :kind vector?))
+(s/fdef retries :args (s/cat :items ::items) :ret (s/coll-of number? :kind vector?))
+(defn retries [items] (mapv (fn [[_ retry-count]] (inc retry-count)) (filter vector? items)))
+(s/fdef bad :args (s/cat :items ::items) :ret any?)
+(defn bad [items] (mapv (fn [[_ retry-count]] (subs retry-count 1)) (filter vector? items)))
+(s/fdef no-maps :args (s/cat :items (s/coll-of string? :kind vector?)) :ret (s/coll-of map? :kind seq? :min-count 1))
+(defn no-maps [items] (filter map? items))
+(s/fdef no-labels :args (s/cat :items (s/coll-of ::entry :kind vector?)) :ret (s/coll-of string? :kind seq? :min-count 1))
+(defn no-labels [items] (filter string? items))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/retries [[\"retry\" 2] \"other\" false])
+(a/retries [[\"retry\" \"2\"]])")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 8 "TSP2345"] ["api.clj" 10 "TSP330-01"] ["api.clj" 12 "TSP330-01"]
+            ["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= (repeat 2 "expected collection length at least 1, got 0")
+           (map :message (take 2 (rest issues))))))
+  (doseq [kind [:int :number]]
+    (let [input (t/prim kind)]
+      (is (= [(t/prim :vector) input]
+             (guards/split {} [:predicate 'clojure.core/vector?] input))))))
 
 (deftest non-nil-guards-preserve-evidence-for-unknown-values
   (let [api (parse/parse-string

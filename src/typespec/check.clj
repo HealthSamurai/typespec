@@ -4425,32 +4425,55 @@
 (defn- match-literal? [pattern]
   (contains? #{:kw :str :bool :nil} (:op pattern)))
 
-(defn- match-pattern-values [pattern]
-  (cond
-    (= '_ (:val pattern)) :wildcard
-    (match-literal? pattern) #{(:val pattern)}
-    (= :list (:op pattern))
-    (let [[head & alternatives] (:children pattern)]
-      (when (and (= :or (:val head)) (seq alternatives) (every? match-literal? alternatives))
-        (into #{} (map :val) alternatives)))))
+(defn- match-pattern [ctx pattern]
+  (let [value (:val pattern)]
+    (cond
+      (= '_ value) '_
+      (match-literal? pattern) #{value}
+      (and (= :sym (:op pattern)) (simple-symbol? value) (not= '& value)
+           (not (contains? (:locals ctx) value))) value
+      (= :list (:op pattern))
+      (let [[head & alternatives] (:children pattern)]
+        (when (and (= :or (:val head)) (seq alternatives) (every? match-literal? alternatives))
+          (into #{} (map :val) alternatives))))))
 
-(defn- match-row-values [vector-input? pattern]
+(defn- match-row [ctx vector-input? width pattern]
   (cond
-    (= :else (:val pattern)) :wildcard
-    (not vector-input?) (match-pattern-values pattern)
-    (and (= :vector (:op pattern)) (= 1 (count (:children pattern))))
-    (match-pattern-values (first (:children pattern)))))
+    (= :else (:val pattern)) (vec (repeat width '_))
+    (not vector-input?) (when-let [pattern (match-pattern ctx pattern)] [pattern])
+    (and (= :vector (:op pattern)) (= width (count (:children pattern))))
+    (let [patterns (mapv #(match-pattern ctx %) (:children pattern))
+          bindings (filter #(and (simple-symbol? %) (not= '_ %)) patterns)]
+      (when (and (every? some? patterns) (= (count bindings) (count (distinct bindings))))
+        patterns))))
+
+(defn- match-column [ctx actual pattern]
+  (cond
+    (= '_ pattern) {:certain? true}
+    (symbol? pattern) {:certain? true :bindings {pattern actual}}
+    :else (let [members (t/members (:env ctx) (eff ctx actual))
+                matches (fn [type] (and (finite-value? type) (contains? pattern (:val type))))]
+            (when (some #(or (matches %) (not (finite-value? %))) members)
+              {:certain? (every? matches members)}))))
+
+(defn- match-columns [ctx state patterns]
+  (let [columns (mapv #(match-column ctx %1 %2) state patterns)]
+    (when (every? some? columns)
+      {:state state
+       :certain? (every? :certain? columns)
+       :bindings (into {} (mapcat :bindings) columns)})))
 
 (defn- infer-match-branches [ctx actual rows]
-  (let [leaves (mapcat expand-boolean (t/members (:env ctx) (eff ctx actual)))
-        values (when (every? #(#{:nil :lit} (:t %)) leaves) (into #{} (map :val) leaves))]
-    (loop [[[patterns result] & more] rows, remaining values, results []]
-      (cond
-        (or (nil? result) (and remaining (empty? remaining))) (apply t/union results)
-        (= :wildcard patterns) (apply t/union (conj results (infer ctx result)))
-        :else (let [matches? (or (nil? remaining) (some #(contains? remaining %) patterns))]
-                (recur more (when remaining (reduce disj remaining patterns))
-                       (cond-> results matches? (conj (infer ctx result)))))))))
+  (let [domains (mapv #(mapcat expand-boolean (t/members (:env ctx) (eff ctx %))) actual)
+        states (or (bounded-combinations [domains]) [actual])]
+    (loop [[[patterns result] & more] rows, remaining states, results []]
+      (if (and result (seq remaining))
+        (let [matched (keep #(match-columns ctx % patterns) remaining)
+              certain (into #{} (comp (filter :certain?) (map :state)) matched)
+              bindings (apply merge-with t/union (map :bindings matched))]
+          (recur more (remove certain remaining)
+                 (cond-> results (seq matched) (conj (infer (reduce-kv bind ctx bindings) result)))))
+        (apply t/union results)))))
 
 (defmethod special 'clojure.core.match/match [ctx node _]
   (let [[input & clauses] (args-of node)
@@ -4458,16 +4481,16 @@
         occurrences (if vector-input? (:children input) (when input [input]))
         types (mapv #(infer ctx %) occurrences)
         pairs (partition 2 clauses)
-        rows (mapv (fn [[pattern result]] [(match-row-values vector-input? pattern) result]) pairs)]
+        rows (mapv (fn [[pattern result]] [(match-row ctx vector-input? (count types) pattern) result]) pairs)]
     (cond
       (nil? input)
       (do (report! ctx node "TSP2554" "match expects at least one argument") t/unknown)
 
       (some #{t/never} types) t/never
 
-      (and (= 1 (count occurrences)) (or (not vector-input?) (even? (count clauses))) (every? first rows)
+      (and (seq occurrences) (or (not vector-input?) (even? (count clauses))) (every? first rows)
            (not-any? #(= :else (:val (first %))) (butlast pairs)))
-      (infer-match-branches ctx (first types) rows)
+      (infer-match-branches ctx types rows)
 
       :else
       (do (report! ctx (first (:children node)) "TSP7031"

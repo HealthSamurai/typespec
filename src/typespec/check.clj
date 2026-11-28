@@ -4723,6 +4723,9 @@
   (or (literal-map-key-type? ty)
       (and (= :prim (:t ty)) (#{:keyword :string :symbol} (:name ty)))))
 
+(defn- path-write-key-type? [ty]
+  (or (some? (map-lookup-key ty)) (map-path-key-type? ty)))
+
 (defn- fixed-map-key-sequences [ctx path path-type supported-key?]
   (let [env (:env ctx)
         key-nodes (concat (path-key-nodes path) (repeat path))
@@ -4800,7 +4803,8 @@
                                [unchecked])
                              :never []
                              (:any :unknown :class :var :rigid :ivar) [unchecked]
-                             (if (and (= :prim (:t member)) (= :map (:name member)))
+                             (if (or (and (= :prim (:t member)) (= :map (:name member)))
+                                     (and (integer? k) (vector-member? member)))
                                [unchecked]
                                (do (report! ctx key "TSP2339" (str "cannot write " (or k (t/show key-type)) " into " (t/show member)))
                                    []))))
@@ -4838,7 +4842,7 @@
           (report! ctx node "TSP2554" (str (if update? "update-in" "assoc-in") " is called with " (count arguments) " argument(s)"))
           t/unknown)
       (let [path-type (eff ctx (infer ctx path))
-            paths (fixed-map-key-sequences ctx path path-type map-path-key-type?)
+            paths (fixed-map-key-sequences ctx path path-type path-write-key-type?)
             paths (when (every? seq paths) paths)
             arg-types (mapv #(infer ctx %) args)]
         (write-map-paths ctx mty path-type paths value arg-types update?)))))

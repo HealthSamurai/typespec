@@ -841,7 +841,7 @@
   (is (= (t/union (t/prim :int) t/nil-t)
          (infer-type "(:k (cond-> {} flag (assoc :k 1)))" {'flag (t/prim :boolean)})))
   (is (= t/unknown (infer-type "(get-in (assoc {} k 1) [:a] :missing)" {'k t/unknown})))
-  (is (= t/unknown (infer-type "(assoc-in {} [:a 0] 1)")))
+  (is (= (t/lit 1) (infer-type "(get-in (assoc-in {} [:a 0] 1) [:a 0])")))
   (is (= t/unknown (infer-type "(update-in {} ks identity)"))))
 
 (deftest typed-map-path-writes-preserve-shape-and-check-the-leaf-contract
@@ -1236,6 +1236,31 @@
   (if (contains? m \"n\") (update-in m [key] (fn [n] (if (nil? n) 1 (inc n)))) m))")
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
+
+(deftest map-path-writes-preserve-integer-and-boolean-keys-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::row (s/map-of boolean? int?))
+(s/def ::table (s/map-of int? ::row))
+(s/def ::path (s/tuple #{1} false?))
+(s/fdef add :args (s/cat :m ::table :path ::path) :ret ::table)
+(defn add [m path] (update-in m path (fnil inc 0)))
+(s/fdef bad :args (s/cat :m ::table :path ::path) :ret ::table)
+(defn bad [m path] (assoc-in m path \"wrong\"))
+(s/fdef explode :args (s/cat :m ::table :path ::path) :ret ::table)
+(defn explode [m path] (update-in m path subs 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (get-in (assoc-in {} [1 false] 3) [1 false] :missing))
+(inc (get-in (update-in {} [1 false] (fnil inc 0)) [1 false] :missing))
+(subs (get-in (assoc-in {} [1 false] 3) [1 false] \"missing\") 0)
+(a/add {1 {false 3}} [1 false])
+(a/add {1 {false \"bad\"}} [1 false])
+(assoc-in [1 2] [0] 42)
+(inc (get-in (assoc-in {} [4294967296 :field] 42) [4294967296 :field] :missing))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["api.clj" 8 "TSP2322"] ["api.clj" 10 "TSP2322"] ["api.clj" 10 "TSP2345"]
+            ["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
 
 (deftest get-in-returns-the-stored-set-member-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))

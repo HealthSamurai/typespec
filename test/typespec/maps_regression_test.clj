@@ -428,6 +428,32 @@
         (pr-str issues))
     (is (= ["nil?" "1N"] (mapv #(main/type-at result "client.clj" % 1) [10 11])))))
 
+(deftest get-checks-arity-and-eager-arguments
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef abort :args (s/cat) :ret string?)
+(defn abort [] (get {:field 1} :field (throw (IllegalArgumentException.))))
+(s/fdef fallback :args (s/cat) :ret string?)
+(defn fallback [] (get {:field \"ok\"} :missing \"fallback\"))
+(defn receiver-abort [] (get (throw (IllegalArgumentException.)) :field 2))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(subs (a/fallback) 1)
+(get)
+(get {})
+(get {:field 1} :field nil :extra)
+(get {:field 1} :field nil (subs 42 0))
+(inc (get [1] 0 5))
+(inc (get #{:ready} :missing 2))
+(inc (get {:field \"text\"} :field))")
+        result (check/check-files [client api] {})
+        issues (:diagnostics result)]
+    (is (= [[3 1 "TSP2554"] [4 1 "TSP2554"] [5 1 "TSP2554"] [6 1 "TSP2554"]
+            [6 34 "TSP2345"] [9 6 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (= ["t/never" "t/never"]
+           (mapv (fn [[row col]] (main/type-at result "api.clj" row col)) [[3 16] [6 25]])))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

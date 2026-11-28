@@ -4518,27 +4518,31 @@
                (typed-set-call-result ctx member key-type not-found))))))
 
 (defmethod special 'get [ctx node _]
-  (let [[m k default] (args-of node)
-        mty (infer ctx m)
-        source (eff ctx mty)
-        env (:env ctx)
-        members (t/members env source)
-        indexed? (and (some indexed-get-source? members)
-                      (every? #(or (indexed-get-source? %) (#{:nil :never} (:t %))) members))
-        sets? (and (some set-type? members)
-                   (every? #(or (set-type? %) (#{:nil :never} (:t %))) members))]
-    (if (and (= :kw (:op k)) (not indexed?) (not sets?))
-      (if default
-        (read-key ctx mty (:val k) k (infer ctx default) t/unknown)
-        (read-key ctx mty (:val k) k))
-      (let [key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
+  (let [[m k default & extra :as arguments] (args-of node)
+        mty (infer ctx m)]
+    (if (or (nil? k) (seq extra))
+      (do (run! #(infer ctx %) (rest arguments))
+          (report! ctx node "TSP2554" (str "get is called with " (count arguments) " argument(s)"))
+          t/unknown)
+      (let [source (eff ctx mty)
+            key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
             not-found (if default (infer ctx default) t/nil-t)
-            keys (when (some #(= :map (:t %)) members)
+            env (:env ctx)
+            members (t/members env source)
+            indexed? (and (some indexed-get-source? members)
+                          (every? #(or (indexed-get-source? %) (#{:nil :never} (:t %))) members))
+            sets? (and (some set-type? members)
+                       (every? #(or (set-type? %) (#{:nil :never} (:t %))) members))
+            map-key? (and (= :kw (:op k)) (not indexed?) (not sets?))
+            keys (when (and (not map-key?) (some #(= :map (:t %)) members))
                    (finite-map-keys env key-type map-lookup-key))
             assumption (or (t/assumption source) (t/assumption key-type))]
         (cond
           (some #{t/never} [source key-type not-found])
           t/never
+
+          map-key?
+          (read-key ctx mty (:val k) k not-found t/unknown)
 
           keys
           (t/with-assumption

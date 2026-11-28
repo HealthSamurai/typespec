@@ -55,6 +55,8 @@ Solver теперь ограниченно раскрывает env specs и п�
 
 `:macro-contracts` в typespec.edn позволяет явно доверить схему `{:shape :binding-body :bindings [type ...] :ret type}` qualified non-core макросу. Проверяется первое vector-binding из различных простых символов и оставшееся тело. Без macroexpand/eval; деструктуризация/rest не поддержаны. Некорректная конфигурация — TSP9004, форма вызова — TSP7032. Контракт не устанавливает тип результата macro expression или generated Vars. Пример: examples/context-web-pg/typespec.edn.
 
+Форма `{:shape :malli-defn}` включает проверку объявлений функций с парами `:- schema`. Для приватного варианта добавьте `:private? true`. Типы по-прежнему выводятся из Spec, сигнатур, type hints и тела функции. [Настройка для Metabase](../features/F610-macro-contracts.md)
+
 Общий набор после расширения: 75 тестов / 386 assertions плюс golden/CLI PASS. Web+PG статически: 0 errors/0 warnings, negative fixtures: два TSP2345.
 
 ## После независимого review (docs/review-fable-5.2.md)

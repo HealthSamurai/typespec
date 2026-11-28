@@ -75,7 +75,8 @@
         [doc more] (if (= :str (:op (first more))) [(first more) (rest more)] [nil more])
         [attr more] (if (= :map (:op (first more))) [(first more) (rest more)] [nil more])]
     {:name nm
-     :private? (or (= 'defn- (:val h)) (boolean (some #(= :private (:val %)) (:meta nm))))
+     :private? (boolean (or (#{'defn- 'clojure.core/defn-} (:val h))
+                            (some #(= :private (:val %)) (:meta nm))))
      :attr attr
      :arities (function-arities more)}))
 

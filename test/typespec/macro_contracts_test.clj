@@ -58,6 +58,56 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest malli-declaration-contracts-check-bodies-and-index-functions
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns api (:refer-clojure :exclude [defn-])
+  (:require [schema.declarations :as m :refer [defn-]] [clojure.spec.alpha :as s]))
+(s/def ::code int?)
+(s/fdef code :args (s/cat :m (s/keys :req-un [::code])) :ret int?)
+(m/defn code :- :int
+  \"Read a code.\"
+  {:private false}
+  [{:keys [code]} :- [:map [:code :int]]]
+  (inc code))
+(defn- label
+  ([^String x :- :string] (.toUpperCase x))
+  ([[^String x :- :string :as pair :- [:tuple :string]] & more :- [:* :string]]
+    (.toUpperCase x)))
+(m/defn wrong [^String x :- external.schema/name] (inc x))
+(m/defn unsupported [x :-] (inc \"hidden\"))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [api :as a]))
+(inc (a/code {:code 42}))
+(a/code {:code \"bad\"})
+(a/code)")
+        config '{schema.declarations/defn {:shape :malli-defn}
+                 schema.declarations/defn- {:shape :malli-defn :private? true}}
+        result (check/check-files [client api] {:macro-contracts config})
+        ds (:diagnostics result)]
+    (is (= [["api.clj" 14 "TSP2345"] ["api.clj" 15 "TSP7031"]
+            ["client.clj" 3 "TSP2322"] ["client.clj" 4 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))
+    (is (true? (get-in result [:env :vars 'api/label :private?])))
+    (is (nil? (find-ns 'schema.declarations)))))
+
+(deftest qualified-core-defn-keeps-its-rule-with-a-local-malli-defn
+  (let [source (parse/parse-string
+                "source.clj"
+                "(ns fixture.declarations (:refer-clojure :exclude [defn])
+  (:require [clojure.core :as core]))
+(defmacro defn [& forms] forms)
+(core/defn ordinary [] (inc \"bad\"))
+(fixture.declarations/defn annotated [] (inc \"bad\"))")
+        ds (:diagnostics
+            (check/check-files [source]
+                               {:macro-contracts '{fixture.declarations/defn {:shape :malli-defn}}}))]
+    (is (= [[4 "TSP2345"] [5 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest core-wrapper-bodies-use-their-original-positions
   (let [r (checked "\n(time (inc \"bad\"))
 (clojure.core/future (inc \"bad\") :done)
@@ -189,6 +239,8 @@ api/delayed")
               {'system/defstart (assoc contract :bindings ['bogus?])}
               {'system/defstart (assoc contract :ret :missing/type)}
               {'system/defstart (assoc contract :ret '(t/or map? :missing/type))}
+              {'system/defstart {:shape :malli-defn :private? :yes}}
+              {'system/defstart {:shape :malli-defn :expand 'evil/run}}
               {'clojure.core/let contract}]]
     (is (contains? (codes (checked "" cs)) "TSP9004") (pr-str cs))))
 

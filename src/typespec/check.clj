@@ -10182,7 +10182,8 @@
         (call-typed-value ctx node h (get-in ctx [:locals (:val h)]) args nil))
       :else
       (let [sym (:val h) n (name sym) head (env/head file node)
-            own? (and (nil? (namespace (env/resolve-sym file sym)))
+            resolved (env/resolve-sym file sym)
+            own? (and (nil? (namespace resolved))
                       (contains? (get-in (:env ctx) [:ns-defs (:ns file)]) head))
             core-sym (if (namespace head) head (symbol "clojure.core" (name head)))
             extern? (= :extern (get-in ctx [:env :vars core-sym :source]))
@@ -10190,12 +10191,17 @@
             ;; An unqualified, unreferred head names a contract only when this
             ;; namespace itself defines that macro: never a function or core form.
             local-sym (symbol (str (:ns file)) (name head))
-            contract-sym (cond (namespace head) head
+            contract-sym (cond (namespace resolved) resolved
                                (contains? (:macros (:env ctx)) local-sym) local-sym)
             contract (when contract-sym (get-in ctx [:env :macro-contracts contract-sym]))
             spec-contract (when-not (:guards-disabled? ctx)
                             (get-in ctx [:env :spec-macro-contracts contract-sym]))
-            r (cond contract (check-macro-body ctx node contract)
+            r (cond (= :malli-defn (:shape contract))
+                    (do (report! ctx h "TSP7031"
+                                 (str "macro " sym " does not match the supported top-level Malli declaration")
+                                 :severity :warning)
+                        t/unknown)
+                    contract (check-macro-body ctx node contract)
                     has-rule? (special ctx node head)
                     spec-contract (check-spec-macro ctx node contract-sym spec-contract args)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
@@ -10421,7 +10427,8 @@
 (defn check-files
   "Checks parsed files. With ::diagnostics-only, omit expression types and the signature index."
   [files opts]
-  (let [[env0 env-diags] (env/build files (:extern-contracts opts))
+  (let [files (macros/normalize-definitions files (:macro-contracts opts))
+        [env0 env-diags] (env/build files (:extern-contracts opts))
         compiled (macros/compile-contracts
                   (get opts :macro-contracts {}) env0
                   #(not= (get-method special %) (get-method special ::none)))

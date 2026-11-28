@@ -1,7 +1,7 @@
 (ns typespec.macro-contracts
   "Source-derived Spec checks and opt-in, trusted binding-body assumptions.
   No macros are loaded, expanded or executed. Contracts describe only body locals
-  and its expected return, not the macro expression's value or generated vars.
+  and its expected return, or the shape of a function declaration.
   :macro-contracts {qualified/macro {:shape :binding-body
                                    :bindings [type-at-index-0 ...] :ret type}}.
   Only a first argument vector of distinct simple symbols is supported; remaining
@@ -10,6 +10,82 @@
             [clojure.walk :as walk]
             [typespec.env :as env]
             [typespec.types :as t]))
+
+(defn- malli-definition? [contract]
+  (and (map? contract)
+       (= :malli-defn (:shape contract))
+       (every? #{:shape :private?} (keys contract))
+       (boolean? (get contract :private? false))))
+
+(declare ^:private strip-malli-bindings)
+
+(defn- strip-malli-pattern [node]
+  (case (:op node)
+    :sym (when (simple-symbol? (:val node)) node)
+    :vector (strip-malli-bindings node)
+    :map (let [pairs (for [[key value] (partition 2 (:children node))]
+                       [(if (#{:vector :map} (:op key)) (strip-malli-pattern key) key) value])]
+           (when (every? first pairs)
+             (assoc node :children (vec (mapcat identity pairs)))))
+    :kw (when (= :as (:val node)) node)
+    nil))
+
+(defn- strip-malli-bindings [params]
+  (loop [[binding & more] (:children params) result []]
+    (if binding
+      (let [[separator schema & tail] more
+            annotated? (= :- (:val separator))
+            pattern (strip-malli-pattern binding)]
+        (when (and pattern (or (not annotated?) (and schema (not (#{'& :as} (:val pattern))))))
+          (recur (if annotated? tail more) (conj result pattern))))
+      (assoc params :children result))))
+
+(defn- malli-arity [[params & body]]
+  (when (= :vector (:op params))
+    (when-let [params (strip-malli-bindings params)]
+      (into [params] body))))
+
+(defn- malli-declaration [form private?]
+  (let [[head name & tail] (:children form)
+        tail (if (= :- (:val (first tail))) (drop 2 tail) tail)
+        [doc tail] (if (= :str (:op (first tail))) [(first tail) (rest tail)] [nil tail])
+        [attr tail] (if (= :map (:op (first tail))) [(first tail) (rest tail)] [nil tail])
+        arities (cond
+                  (= :vector (:op (first tail))) (malli-arity tail)
+                  (seq tail) (let [trailing (when (= :map (:op (last tail))) (last tail))
+                                   forms (if trailing (butlast tail) tail)
+                                   bodies (mapv (fn [arity]
+                                                  (when (= :list (:op arity))
+                                                    (when-let [body (malli-arity (:children arity))]
+                                                      (assoc arity :children body))))
+                                                forms)]
+                               (when (and (seq forms) (every? some? bodies))
+                                 (cond-> bodies trailing (conj trailing)))))]
+    (when (and (= :sym (:op name)) (simple-symbol? (:val name)) arities)
+      (let [head (assoc head :val (if private? 'clojure.core/defn- 'clojure.core/defn))
+            prefix (cond-> [head name] doc (conj doc) attr (conj attr))]
+        (assoc form :children (into prefix arities))))))
+
+(defn normalize-definitions
+  "Apply inert declaration shapes to top-level forms before building the Var index."
+  [files config]
+  (let [definitions (when (map? config)
+                      (into {} (filter (fn [[sym contract]]
+                                         (and (qualified-symbol? sym)
+                                              (not= "clojure.core" (namespace sym))
+                                              (malli-definition? contract))))
+                            config))]
+    (if (seq definitions)
+      (mapv (fn [file]
+              (update file :forms
+                      (fn [forms]
+                        (mapv (fn [form]
+                                (if-let [contract (get definitions (env/head file form))]
+                                  (or (malli-declaration form (:private? contract)) form)
+                                  form))
+                              forms))))
+            files)
+      files)))
 
 (defn compile-contracts
   "Validate inert contract data against collected specs. Invalid entries are never
@@ -47,13 +123,17 @@
               (throw (ex-info "names a function, not a macro; its calls are checked by its signature" {})))
             (when (built-in? sym)
               (throw (ex-info "this form already has a built-in rule" {})))
-            (when-not (and (map? contract)
-                           (= #{:shape :bindings :ret} (set (keys contract)))
-                           (= :binding-body (:shape contract))
-                           (vector? (:bindings contract)))
-              (throw (ex-info "expected exactly {:shape :binding-body :bindings [types...] :ret type}" {})))
-            (assoc acc sym {:bindings (mapv parse (:bindings contract))
-                            :ret (parse (:ret contract))})
+            (cond
+              (malli-definition? contract) (assoc acc sym contract)
+              (and (map? contract)
+                   (= #{:shape :bindings :ret} (set (keys contract)))
+                   (= :binding-body (:shape contract))
+                   (vector? (:bindings contract)))
+              (assoc acc sym {:bindings (mapv parse (:bindings contract))
+                              :ret (parse (:ret contract))})
+              :else
+              (throw (ex-info (str "expected {:shape :binding-body :bindings [types...] :ret type}"
+                                   " or {:shape :malli-defn :private? boolean} (private? is optional)") {})))
             (catch Exception e
               (error! (str "macro contract " (pr-str sym) ": " (.getMessage e)))
               acc))) {} config))

@@ -3299,6 +3299,13 @@
       (and (= "java.util.Objects" (:declaring m)) (= "requireNonNull" (:name m)))
       (java-required-value ctx (first arg-types))
 
+      (and (= "java.util.Objects" (:declaring m)) (= "requireNonNullElse" (:name m)))
+      (let [[value fallback] arg-types
+            present (java-required-value ctx value)]
+        (if (some t/may-be-nil-leaf? (t/members (assoc (:env ctx) :strict-nil true) value))
+          (t/union present (java-required-value ctx fallback))
+          present))
+
       nullable?
       (with-meta (t/union base t/nil-t) {:null-return (str (java/short-name (:declaring m)) "." (:name m) " may return null")})
       property-default? (t/with-assumption base (t/assumption fallback))

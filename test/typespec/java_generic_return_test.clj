@@ -39,6 +39,30 @@
         (pr-str issues))
     (is (= "t/never" (main/type-at result "api.clj" 8 15)))))
 
+(deftest java-require-non-null-else-combines-reachable-result-types
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s])
+  (:import [java.util Objects]))
+(s/fdef choose :args (s/cat :value (s/nilable string?)))
+(defn choose [value] (Objects/requireNonNullElse value \"fallback\"))
+(s/fdef chosen-number :args (s/cat :value (s/nilable string?)))
+(defn chosen-number [value] (Objects/requireNonNullElse value 7))
+(s/fdef stop :args (s/cat) :ret int?)
+(defn stop [] (if (Objects/requireNonNullElse nil nil) :wrong 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef size :args (s/cat :value (s/nilable string?)) :ret int?)
+(defn size [value] (count (a/choose value)))
+(s/fdef wrong :args (s/cat :value (s/nilable string?)) :ret number?)
+(defn wrong [value] (inc (a/chosen-number value)))
+(inc (a/stop))
+(size nil)
+(size 42)")
+        result (check/check-files [api client] {})
+        issues (:diagnostics result)]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "t/never" (main/type-at result "api.clj" 8 15)))))
+
 (deftest java-map-get-preserves-its-nullable-value-type-across-files
   (let [api (parse/parse-string "api.clj" "(ns api)
 (defn environment [] (System/getenv))")

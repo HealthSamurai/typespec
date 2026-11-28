@@ -311,6 +311,36 @@
            (locations result)) (pr-str (:diagnostics result)))
     (is (str/includes? (get-in result [:diagnostics 1 :message]) "contradicts the type"))))
 
+(deftest class-dispatch-refines-methods-without-a-spec
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defmulti measure class)
+(defmulti label #(class %2))
+(defmulti bad class)
+(defmulti ordinary class)
+(defmulti fallback class :default nil)
+(def hierarchy (make-hierarchy))
+(defmulti custom class :hierarchy #'hierarchy)")
+        extension (parse/parse-string "extension.clj" "(ns extension (:require [api :as a] [clojure.string :as str]))
+(defmethod a/measure String [value] (subs value 1))
+(defmethod a/measure StringBuilder [value] (.length value))
+(defmethod a/measure nil [value] (or value \"missing\"))
+(defmethod a/label java.lang.CharSequence [_ value] (str/trim value))
+(defmethod a/bad String [value] (inc value))
+(defmethod a/ordinary :default [value] (str/trim value))
+(defmethod a/fallback nil [value] (str/trim value))
+(defmethod a/custom String [value] (str/trim value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [extension]))
+(a/measure \"abc\")
+(a/measure (StringBuilder. \"abc\"))
+(a/measure nil)
+(a/label :context (StringBuilder. \" abc \"))")
+        result (check/check-files [extension client api] {})]
+    (is (= [["extension.clj" 3 "TSP7023"] ["extension.clj" 6 "TSP2345"]
+            ["extension.clj" 7 "TSP210-01"] ["extension.clj" 8 "TSP210-01"]
+            ["extension.clj" 9 "TSP210-01"]]
+           (locations result))
+        (pr-str (:diagnostics result)))))
+
 (deftest strict-nil-checks-nested-method-results
   (let [file (parse/parse-string "demo.clj"
                                 "(ns demo (:require [clojure.spec.alpha :as s]))

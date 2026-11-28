@@ -334,6 +334,24 @@
   (is (nil? (re-seq #"x" "empty")))
   (is (thrown? ClassCastException (re-seq #"x" 42))))
 
+(deftest compiled-regex-values-carry-known-capture-counts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef groups :args (s/cat :text string?) :ret (s/nilable (s/tuple string? (s/nilable string?))))
+(defn groups [text] (re-find (re-pattern \"(a)?b\") text))
+(s/fdef plain :args (s/cat :text string?) :ret (s/nilable string?))
+(defn plain [text] (let [source \"(?:b)+\" p (re-pattern source)] (re-matches p text)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(when-let [[whole optional] (re-find (re-pattern \"(a)?b\") \"b\")] (str/trim whole))
+(when-let [[whole optional] (re-find (re-pattern #\"(a)?b\") \"b\")] (str/trim whole))
+(when-let [[whole optional] (re-find (re-pattern \"(a)?b\") \"b\")] (str/trim optional))
+(when-let [word (re-matches (re-pattern \"b+\") \"bb\")] (str/trim word))
+(when-let [[whole] (a/groups \"b\")] (str/trim whole))
+(when-let [word (a/plain \"b\")] (str/trim word))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest regex-pattern-accepts-strings-and-compiled-patterns
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef as-pattern :args (s/cat :pattern (s/or :text string? :regex java.util.regex.Pattern)) :ret java.util.regex.Pattern)

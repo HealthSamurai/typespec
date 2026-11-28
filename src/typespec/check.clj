@@ -3432,13 +3432,11 @@
 (defmulti special (fn [_ctx _node head] head) :default ::none)
 (defmethod special ::none [_ _ _] ::none)
 
-(defn- regex-literal-groups [node]
-  (when (and (= :regex (:op node)) (empty? (:directives node)) (not (env/tag-node node)))
-    (when-let [pattern (:pattern node)]
-      (try
-        (.groupCount (.matcher (Pattern/compile pattern) ""))
-        (catch PatternSyntaxException _ nil)
-        (catch StackOverflowError _ nil)))))
+(defn- compile-regex-groups [pattern]
+  (try
+    (.groupCount (.matcher (Pattern/compile pattern) ""))
+    (catch PatternSyntaxException _ nil)
+    (catch StackOverflowError _ nil)))
 
 (defn- regex-match-type [groups]
   (let [text (t/prim :string)]
@@ -3447,7 +3445,8 @@
       (t/tuple (into [text] (repeat groups (t/union text t/nil-t)))))))
 
 (defn- regex-literal-type [node]
-  (let [groups (regex-literal-groups node)]
+  (let [groups (when (and (empty? (:directives node)) (not (env/tag-node node)))
+                 (some-> (:pattern node) compile-regex-groups))]
     (cond-> (t/class-type "java.util.regex.Pattern")
       (some? groups) (assoc :regex-groups groups))))
 
@@ -3472,6 +3471,20 @@
 
 (defmethod special 're-seq [ctx node _]
   (checked-regex-match ctx node #(length/with-bounds {:t :coll :kind :seq :of %} 1 nil)))
+
+(defmethod special 're-pattern [ctx node _]
+  (let [head (first (:children node))
+        args (args-of node)
+        {:keys [type]} (read-var ctx (:val head) head :call)
+        arg-types (mapv #(infer ctx %) args)
+        ret (call-fn ctx node (str (:val head)) type args arg-types)
+        source (when (= 1 (count args)) (t/resolve-t (:env ctx) (first arg-types)))
+        groups (if (and (= :lit (:t source)) (string? (:val source)))
+                 (compile-regex-groups (:val source))
+                 (:regex-groups source))]
+    (cond-> ret
+      (and (some? groups) (= "java.util.regex.Pattern" (:name ret)))
+      (assoc :regex-groups groups))))
 
 (defmethod special '. [ctx node _]
   (let [[receiver raw-member & trailing :as args] (args-of node)

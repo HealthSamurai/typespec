@@ -288,6 +288,30 @@
   (is (nil? (re-matches #"[a-z]+" "wrong 7")))
   (is (thrown? ClassCastException (re-matches #"x" 42))))
 
+(deftest regex-pattern-accepts-strings-and-compiled-patterns
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef as-pattern :args (s/cat :pattern (s/or :text string? :regex java.util.regex.Pattern)) :ret java.util.regex.Pattern)
+(defn as-pattern [pattern] (re-pattern pattern))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(.find (re-matcher (a/as-pattern \"x\") \"x\"))
+(.find (re-matcher (re-pattern \"x\") (StringBuilder. \"x\")))
+(re-pattern #\"x\")
+(re-pattern (StringBuilder. \"x\"))
+(re-pattern 42)
+(re-pattern nil)
+(re-pattern)
+(a/as-pattern :wrong)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2554"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (let [p #"x"]
+    (is (identical? p (re-pattern p))))
+  (is (.find (re-matcher (re-pattern "x") "x")))
+  (is (thrown? ClassCastException (re-pattern (StringBuilder. "x"))))
+  (is (thrown? NullPointerException (re-pattern nil))))
+
 (deftest regex-matcher-carries-its-class-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef matcher :args (s/cat :source java.lang.CharSequence) :ret java.util.regex.Matcher)

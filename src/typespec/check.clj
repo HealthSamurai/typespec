@@ -4564,6 +4564,7 @@
 
 (def ^:private associative-lookup-classes [clojure.lang.Associative java.util.Map])
 (def ^:private membership-lookup-classes (conj associative-lookup-classes clojure.lang.IPersistentSet java.util.Set))
+(def ^:private get-lookup-classes (conj membership-lookup-classes clojure.lang.ILookup))
 
 (defn- unsupported-lookup-member? [member supported-classes]
   (or (contains? #{:string :boolean :double :keyword :symbol :uuid}
@@ -4703,6 +4704,8 @@
     (indexed-get-source? member) :indexed
     (set-type? member) :set
     (or (#{:map :map-of} (:t member)) (= (t/prim :map) (t/strip member))) :map
+    (or (= {:t :class :name "java.lang.Object"} (t/strip member))
+        (unsupported-lookup-member? member get-lookup-classes)) :fallback
     :else :other))
 
 (defmethod special 'get [ctx node _]
@@ -4730,6 +4733,9 @@
           (= #{:set} kinds)
           (t/with-assumption (read-set-get ctx members key-type not-found) assumption)
 
+          (= #{:fallback} kinds)
+          (t/with-assumption not-found assumption)
+
           (and (< 1 (count kinds)) (not (contains? kinds :other)))
           (t/with-assumption
            (apply t/union
@@ -4738,7 +4744,7 @@
                       :map (read-map-get ctx (apply t/union group) k key-type not-found)
                       :set (read-set-get ctx group key-type not-found)
                       :indexed (read-indexed-get ctx group key-type not-found)
-                      :nil not-found
+                      (:nil :fallback) not-found
                       :never t/never)))
            assumption)
 

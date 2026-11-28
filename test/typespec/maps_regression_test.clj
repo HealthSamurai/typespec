@@ -1237,6 +1237,29 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest get-returns-defaults-from-known-nonlookup-values
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/def ::data (s/or :config (s/keys :req-un [::n]) :unset keyword? :disabled boolean?))
+(s/fdef read-value :args (s/cat :m ::data) :ret int?)
+(defn read-value [m] (get m :n 0))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/accept (get 42 :n 0))
+(a/accept (get false 9 0))
+(a/accept (get :none :n 0))
+(subs (get (Object.) :n \"fallback\") 0)
+(inc (get :none :n))
+(subs (get false :n 42) 0)
+(inc (a/read-value {:n 42}))
+(inc (a/read-value false))
+(a/read-value \"bad\")")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 6 "TSP2531"] ["client.clj" 7 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest contains-preserves-known-membership-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef map-hit :args (s/cat) :ret true?)

@@ -211,6 +211,24 @@
   (is (nil? (str/index-of "abc" "missing")))
   (is (thrown? ClassCastException (str/index-of "abc" (StringBuilder. "a")))))
 
+(deftest quoted-replacement-converts-non-nil-inputs-to-strings
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef literal-replacement :args (s/cat :value some?))
+(defn literal-replacement [value] (str/re-quote-replacement value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/trim (a/literal-replacement \"$1\"))
+(str/replace \"abc\" #\"b\" (str/re-quote-replacement (StringBuilder. \"$1\")))
+(str/re-quote-replacement 42)
+(a/literal-replacement nil)
+(inc (a/literal-replacement \"$1\"))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= "a$1c" (str/replace "abc" #"b" (str/re-quote-replacement (StringBuilder. "$1")))))
+  (is (= "42" (str/re-quote-replacement 42)))
+  (is (thrown? NullPointerException (str/re-quote-replacement nil))))
+
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
   (let [writer (java.io.StringWriter.)]

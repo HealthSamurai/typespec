@@ -12,6 +12,7 @@
  clojure.string/trimr       [java.lang.CharSequence :-> string?]
  clojure.string/trim-newline [java.lang.CharSequence :-> string?]
  clojure.string/reverse     [java.lang.CharSequence :-> string?]
+ clojure.string/re-quote-replacement [some? :-> string?]
  ;; The receiver is tested for truthiness before CharSequence methods are used.
  clojure.string/blank?      [(s/nilable (t/or false? java.lang.CharSequence)) :-> boolean?]
  ;; Elements and the separator are stringified.

@@ -283,7 +283,7 @@
 
 (defn map-of-entry [env ty k]
   (when (and (not= 0 (:max-count ty))
-             (not= :mismatch (:status (sub-result env (lit k) (:k ty)))))
+             (not= :mismatch (:status (sub-result env (if (nil? k) nil-t (lit k)) (:k ty)))))
     (:v ty)))
 
 (defn map-length [ty]

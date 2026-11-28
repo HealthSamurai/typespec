@@ -1237,6 +1237,32 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest get-in-returns-the-stored-set-member-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn words [] #{:on \"present\"})
+(defn numbers [] #{1N})
+(defn maybe-words [enabled?] (when enabled? (words)))
+(s/fdef enabled :args (s/cat) :ret #{:on})
+(defn enabled [] (get-in (words) [:on] :missing))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(name (get-in (a/words) [:on] 42))
+(inc (get-in (a/words) [\"absent\"] 42))
+(subs (get-in (a/words) [\"present\"] 42) 1)
+(subs (get-in (a/numbers) [2] \"none\") 1)
+(inc (get-in (a/numbers) [1] \"none\"))
+(inc (get-in (a/numbers) [2] \"none\"))
+(inc (get-in (a/maybe-words false) [:on] 42))
+(inc (get-in #{false nil} [false] 42))
+(inc (get-in #{false nil} [nil] 42))
+(name (a/enabled))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"]
+            ["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= clojure.lang.BigInt (t/literal-number-class (infer-type "(get-in #{1N} [1])"))))
+  (is (= t/nil-t (infer-type "(let [path [nil]] (get-in #{false nil} path 42))"))))
+
 (deftest get-in-preserves-numeric-map-fields-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (defn config [] {1 {:port 42 :label nil} 4294967296 {:port 7}})

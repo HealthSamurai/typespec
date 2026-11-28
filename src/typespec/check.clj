@@ -160,13 +160,11 @@
                            (:inferred m) loose
                            :else [:missing nil])
                 :map-of (indexed-map-entry env m k)
-                :coll (cond (and path? (= :set (:kind m))) [:opt (t/lit k)]
-                            (and path? (nil? (:kind m))) loose
-                            :else [:not-map nil])
+                :coll (if (and path? (nil? (:kind m))) loose [:not-map nil])
                 (:unknown :any :class :var :rigid :ivar) loose
                 :prim (if (or (= :map (:name m)) (and path? (= :coll (:name m))))
                         loose
-                        (if (and path? (= :set (:name m))) [:opt (t/lit k)] [:not-map nil]))
+                        [:not-map nil])
                 [:not-map nil]))
         rs (map one ms)
         ty-of #(t/with-assumption (apply t/union (keep second rs)) (t/assumption ty))]
@@ -4586,14 +4584,13 @@
              (if (indexed-get-source? member)
                (read-indexed-get ctx [member] (t/lit key) t/never)
                (case (:t member)
-                 :coll (case (:kind member)
-                         :set (:of member)
-                         ;; A kindless coll-of can be a map whose entries fit the
-                         ;; element spec. get returns the value of an entry there.
-                         nil (if (some #(or (t/sub? env % vector-type)
-                                           (not= :mismatch (:status (t/sub-result env vector-type %))))
-                                       (t/members env (:of member)))
-                               t/unknown (:of member))
+                 ;; A kindless coll-of can be a map whose entries fit the
+                 ;; element spec. get returns the value of an entry there.
+                 :coll (if (nil? (:kind member))
+                         (if (some #(or (t/sub? env % vector-type)
+                                        (not= :mismatch (:status (t/sub-result env vector-type %))))
+                                   (t/members env (:of member)))
+                           t/unknown (:of member))
                          t/never)
                  :map (or (get (:req member) key)
                           (get (:opt member) key)
@@ -4601,15 +4598,15 @@
                             (or (t/map-of-entry env index-type key) t/never)
                             (if (:complete-keys? member) t/never t/unknown)))
                  :map-of (read-map-of ctx member (t/lit key) t/never)
-                 :prim (if (#{:map :set :coll} (:name member)) t/unknown t/never)
+                 :prim (if (#{:map :coll} (:name member)) t/unknown t/never)
                  :any t/any
                  (:class :unknown :var :rigid :ivar) t/unknown
                  t/never))))))
 
 (defn- literal-path-key? [value]
-  (or (keyword? value) (string? value) (symbol? value) (number? value)))
+  (or (keyword? value) (string? value) (symbol? value) (number? value) (boolean? value) (nil? value)))
 
-(defn- literal-path-step [ctx source node value]
+(defn- non-set-path-step [ctx source node value]
   (if (number? value)
     (let [members (t/members (:env ctx) source)]
       {:type (numeric-path-value ctx members value)
@@ -4621,6 +4618,22 @@
                                members))})
     (key-info ctx source value node true)))
 
+(defn- literal-path-step [ctx source node value]
+  (let [{sets true others false} (group-by set-type? (t/members (:env ctx) source))]
+    (if (empty? sets)
+      (non-set-path-step ctx source node value)
+      (let [key-type (literal-type value)
+            steps (cond->
+                   (mapv (fn [member]
+                           (if-let [values (fixed-set-values (:env ctx) member)]
+                             (let [type (set-call-result ctx values key-type t/never)]
+                               {:type type :optional? (= t/never type)})
+                             {:type (typed-set-call-result ctx member key-type t/never) :optional? true}))
+                         sets)
+                    (seq others) (conj (non-set-path-step ctx (apply t/union others) node value)))]
+        {:type (apply t/union (map :type steps))
+         :optional? (boolean (some :optional? steps))}))))
+
 (defn- computed-path-step [ctx source node key-type]
   (let [env (:env ctx)
         keys (t/members env key-type)]
@@ -4628,7 +4641,7 @@
       (every? #(#{:map-of :nil :never} (:t %)) (t/members env source))
       {:type (read-map-of ctx source key-type t/never) :optional? true}
 
-      (every? #(and (= :lit (:t %)) (literal-path-key? (:val %))) keys)
+      (every? #(and (finite-value? %) (literal-path-key? (:val %))) keys)
       (let [steps (mapv #(literal-path-step ctx source node (:val %)) keys)]
         {:type (apply t/union (map :type steps))
          :optional? (boolean (some :optional? steps))})

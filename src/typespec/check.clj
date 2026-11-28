@@ -8202,26 +8202,38 @@
                 t/unknown))
             target (map vector nodes types))))
 
-(defmethod special 'conj [ctx node _]
-  (let [[c & xs] (args-of node)
-        cty (infer ctx c)
-        xts (map #(dissoc (infer ctx %) :fresh) xs)
-        members (t/members (:env ctx) cty)
-        m (first (remove #(= :nil (:t %)) members))]
+(defn- conj-present [ctx target members nodes types]
+  (let [member (first members)]
     (cond
-      (nil? c) (length/with-bounds (t/tuple []) 0 0)
-      (= t/never cty) t/never
-      (empty? xs) cty
-      (every? #(#{:map :map-of} (:t %)) members) (conj-map-values ctx cty xs xts)
+      (empty? members) t/never
+      (every? #(#{:map :map-of} (:t %)) members) (conj-map-values ctx target nodes types)
       (some :map-index members) (t/prim :map)
       (every? vector-member? members)
-      (let [items (vec xts)]
+      (let [items (vec types)]
         (if (some #{t/never} items)
           t/never
-          (append-to-vectors ctx cty members (t/tuple items))))
-      (= :coll (:t m)) (assoc (dissoc m :items :min-count :max-count :entry-map)
-                             :of (apply t/union (:of m) (map widen xts)))
-      :else cty)))
+          (append-to-vectors ctx target members (t/tuple items))))
+      (= :coll (:t member)) (assoc (dissoc member :items :min-count :max-count :entry-map)
+                                   :of (apply t/union (:of member) (map widen types)))
+      :else target)))
+
+(defmethod special 'conj [ctx node _]
+  (let [[collection & nodes] (args-of node)
+        target (infer ctx collection)
+        env (:env ctx)]
+    (cond
+      (nil? collection) (length/with-bounds (t/tuple []) 0 0)
+      (= t/never target) t/never
+      (empty? nodes) target
+      :else
+      (let [types (map #(dissoc (infer ctx %) :fresh) nodes)
+            members (t/members env target)
+            nil-target? (some #(= :nil (:t %)) members)
+            present (remove #(= :nil (:t %)) members)
+            result (conj-present ctx (if nil-target? (t/remove-nil env target) target) present nodes types)]
+        (if nil-target?
+          (t/with-assumption (t/union result (constructed-list ctx (reverse types))) (t/assumption target))
+          result)))))
 
 (defn- transducer-element [ctx ty]
   (t/with-assumption

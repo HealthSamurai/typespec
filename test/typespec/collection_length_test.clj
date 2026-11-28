@@ -1559,6 +1559,31 @@
             "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest conj-with-nil-returns-a-list-in-prepending-order
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::items (s/nilable (s/tuple int?)))
+(s/fdef add-label :args (s/cat :items ::items) :ret (s/coll-of any? :min-count 1 :max-count 2))
+(defn add-label [items] (conj items \"label\"))
+(s/fdef label :args (s/cat) :ret string?)
+(defn label [] (first (conj nil 5 \"label\")))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/trim (a/label))
+(str/trim (first (conj nil 5 \"label\")))
+(inc (first (conj nil \"label\" 5)))
+(inc (first (conj nil 5 \"label\")))
+(a/add-label nil)
+(a/add-label [1])
+(a/add-label [\"wrong\"])")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (nil? (conj nil)))
+  (let [items (conj nil 5 "label")]
+    (is (list? items))
+    (is (= '("label" 5) items)))
+  (is (= [1 "label"] (conj [1] "label"))))
+
 (deftest conj-grows-vectors-with-known-lengths-and-positions
   (let [r (checked "(conj)
 (conj [1] \"word\")

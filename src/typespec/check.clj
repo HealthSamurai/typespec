@@ -5060,16 +5060,22 @@
   (cond-> (-> shape (update :req dissoc key) (update :opt dissoc key))
     (and track-absence? (not (:complete-keys? shape))) (assoc-in [:opt key] t/never)))
 
+(defn- map-assoc-source? [member]
+  (or (#{:map :map-of :nil} (:t member)) (= (t/prim :map) (t/strip member))))
+
 (defn- assoc-key-type [ctx ty k value]
   (let [members (t/members (:env ctx) ty)]
-    (if (every? #(#{:map :map-of :nil} (:t %)) members)
-      (apply t/union
-             (for [member members
-                   :let [shape (case (:t member)
-                                 :nil empty-map-shape
-                                 :map-of (indexed-map-shape member)
-                                 member)]]
-               (assoc-map-key shape k value)))
+    (if (every? map-assoc-source? members)
+      (t/with-assumption
+       (apply t/union
+              (for [member members
+                    :let [shape (case (:t member)
+                                  :nil empty-map-shape
+                                  :prim (assoc empty-map-shape :complete-keys? false)
+                                  :map-of (indexed-map-shape member)
+                                  member)]]
+                (assoc-map-key shape k value)))
+       (t/assumption ty))
       ty)))
 
 (defn- forget-map-keys [ctx ty]
@@ -5219,7 +5225,8 @@
             (let [literal-key (if (= :kw (:op k)) (:val k) (stable-map-key k))
                   env (:env ctx)
                   members (t/members env ty)
-                  keys (when (and (nil? literal-key) (every? #(#{:map :map-of :nil} (:t %)) members))
+                  maps? (every? map-assoc-source? members)
+                  keys (when (and (nil? literal-key) maps?)
                          (finite-map-keys env (eff ctx kt)))
                   add (fn [base shape]
                         (cond
@@ -5255,11 +5262,12 @@
                       (t/with-assumption
                        (apply t/union (map #(assoc-key-type ctx ty % (key-type ctx % vt)) keys))
                        (or (t/assumption ty) (t/assumption kt)))
-                      (forget-map-keys ctx ty)))
+                      (t/remove-nil env (forget-map-keys ctx ty))))
 
                 (and (next members)
                      (some #(or (= :map-of (:t %)) (= :vector (:kind %)) (= (t/prim :vector) %)
-                                (and (nil? literal-key) (:map-index %))) members))
+                                (and (nil? literal-key)
+                                     (or (:map-index %) (and maps? (= :nil (:t %)))))) members))
                 (apply t/union (map #(add % %) members))
 
                 :else (add ty (first members)))))

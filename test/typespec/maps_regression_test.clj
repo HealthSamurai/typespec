@@ -16,6 +16,29 @@
 (defn alternatives [ty] (set (t/members {} ty)))
 (defn map-type [req opt] {:t :map :req req :opt opt})
 
+(deftest assoc-builds-a-non-nil-map-from-a-nilable-generic-map
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::code int?)
+(s/fdef with-code :args (s/cat :data (s/nilable map?)) :ret (s/keys :req-un [::code]))
+(defn with-code [data] (assoc data :code 403))
+(s/fdef with-dynamic-key :args (s/cat :data (s/nilable map?) :key keyword?) :ret map?)
+(defn with-dynamic-key [data key] (assoc data key 403))
+(s/fdef bad-code :args (s/cat :data (s/nilable map?)) :ret (s/keys :req-un [::code]))
+(defn bad-code [data] (assoc data :code :bad))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [api :as a]))
+(ex-info \"x\" (a/with-code nil))
+(inc (:code (a/with-code {})))
+(ex-info \"x\" (a/with-dynamic-key nil :code))
+(a/with-code \"not a map\")")
+        ds (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["api.clj" 8 "TSP2322"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest get-in-propagates-java-map-values-through-paths
   (let [api (parse/parse-string "api.clj" "(ns api)
 (defn environment [] (System/getenv))")

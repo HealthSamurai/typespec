@@ -41,6 +41,8 @@ Clojure-код постоянно пересекает границу JVM: чи�
 `.get(int)`, например у списка строк из `Files.readAllLines()`.
 `listIterator()` и `listIterator(int)` сохраняют его для `.next()`,
 `.previous()` и `iterator-seq`.
+Java `Stream<T>` тоже передаёт тип элемента через `.iterator()`.
+Например, итератор от `Files.lines()` даёт строки.
 
 - `java/methods-named` сохраняет стёртые параметры перегрузок и использует
   `getGenericReturnType` для подстановки результата. При совпадающих

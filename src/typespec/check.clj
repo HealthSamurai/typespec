@@ -3414,11 +3414,12 @@
     (java-receiver-element ctx receiver cname owner)))
 
 (defn- java-iterator-element [ctx receiver cname mname params]
-  (when-let [owner (case [mname params]
-                     ["iterator" []] "java.lang.Iterable"
-                     (["listIterator" []] ["listIterator" ["int"]]) "java.util.List"
-                     nil)]
-    (java-receiver-element ctx receiver cname owner)))
+  (case [mname params]
+    ["iterator" []] (or (java-receiver-element ctx receiver cname "java.lang.Iterable")
+                        (java-receiver-element ctx receiver cname "java.util.stream.Stream"))
+    (["listIterator" []] ["listIterator" ["int"]])
+    (java-receiver-element ctx receiver cname "java.util.List")
+    nil))
 
 (defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [{:keys [tags receiver]}]]
   (let [ms (map #(assoc % :name mname) (java/methods-named cname mname static?))

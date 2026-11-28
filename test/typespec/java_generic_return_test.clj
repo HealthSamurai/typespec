@@ -15,6 +15,29 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest java-stream-iterators-propagate-elements-through-with-open
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path]))
+(defn lines [^Path path] (Files/lines path))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.nio.file Path] [java.util.stream Stream] [java.util Iterator]))
+(s/fdef render :args (s/cat :path #(instance? Path %)) :ret (s/coll-of string? :kind vector?))
+(defn render [^Path path]
+  (with-open [lines (a/lines path)]
+    (mapv #(subs % 0) (iterator-seq (.iterator ^Stream lines)))))
+(defn wrong [^Path path]
+  (with-open [lines (a/lines path)]
+    (mapv inc (iterator-seq (.iterator ^Stream lines)))))
+(defn first-line [^Path path]
+  (with-open [lines (a/lines path)]
+    (subs (.next ^Iterator (.iterator ^Stream lines)) 0)))
+(defn wrong-next [^Path path]
+  (with-open [lines (a/lines path)]
+    (inc (.next ^Iterator (.iterator ^Stream lines)))))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2345"] ["client.clj" 15 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-list-iterators-preserve-both-direction-element-types
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path] [java.util List]))
 (defn lines [^Path path] (Files/readAllLines path))

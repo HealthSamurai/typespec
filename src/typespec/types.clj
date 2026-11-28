@@ -974,26 +974,31 @@
   (when (seq? form)
     (spec-regex-ops (type-form-op ctx (first form)))))
 
-(defn- resolve-regex [ctx form]
+(defn- resolve-regex [ctx form root?]
   (loop [ctx ctx form form]
-    (cond
-      (regex-op ctx form)
-      {:context ctx :form form}
+    (let [operator (when (seq? form) (type-form-op ctx (first form)))]
+      (cond
+        (spec-regex-ops operator)
+        {:context ctx :form form}
 
-      (and (seq? form) (= :s/with-gen (type-form-op ctx (first form))) (= 3 (count form)))
-      (recur ctx (second form))
+        (case operator
+          :s/with-gen (= 3 (count form))
+          :s/spec (and root? (next form) (some? (spec-option-map (drop 2 form))))
+          :s/nonconforming (and root? (= 2 (count form)))
+          false)
+        (recur ctx (second form))
 
-      (qualified-keyword? form)
-      (when-let [{:keys [spec-form spec-context]} (get-in ctx [:spec-definitions form])]
-        (if (or (contains? (:active-regex-specs ctx) form)
-                (neg? (vswap! (:regex-expansion-budget ctx) dec)))
-          {:opaque? true}
-          (recur (assoc spec-context
-                        :fail (:fail ctx)
-                        :spec-definitions (:spec-definitions ctx)
-                        :regex-expansion-budget (:regex-expansion-budget ctx)
-                        :active-regex-specs (conj (:active-regex-specs ctx) form))
-                 spec-form))))))
+        (qualified-keyword? form)
+        (when-let [{:keys [spec-form spec-context]} (get-in ctx [:spec-definitions form])]
+          (if (or (contains? (:active-regex-specs ctx) form)
+                  (neg? (vswap! (:regex-expansion-budget ctx) dec)))
+            {:opaque? true}
+            (recur (assoc spec-context
+                          :fail (:fail ctx)
+                          :spec-definitions (:spec-definitions ctx)
+                          :regex-expansion-budget (:regex-expansion-budget ctx)
+                          :active-regex-specs (conj (:active-regex-specs ctx) form))
+                   spec-form)))))))
 
 (declare regex-branches)
 
@@ -1027,7 +1032,7 @@
       :s/? (when (= 1 (count operands))
              (when-let [branches (regex-branches ctx inner)]
                (bounded-branches (cons empty-branch branches))))
-      (:s/* :s/+) (when (and (= 1 (count operands)) (not (resolve-regex ctx inner)))
+      (:s/* :s/+) (when (and (= 1 (count operands)) (not (resolve-regex ctx inner false)))
                     [(cond-> (assoc empty-branch :rest (parse-type ctx inner))
                        (= :s/+ operator) (assoc :rest-min 1))])
       :s/& (when (seq operands)
@@ -1040,14 +1045,14 @@
                  [(assoc empty-branch :kwargs (parse-keys options) :keyword-regex? true)]))))
 
 (defn- regex-branches [ctx form]
-  (if-let [{source :context regex :form} (resolve-regex ctx form)]
+  (if-let [{source :context regex :form} (resolve-regex ctx form false)]
     (when regex (regex-form-branches source regex))
     [{:params [(parse-type ctx form)] :rest nil}]))
 
 (defn spec-args->arities [ctx args ret]
   (when (some? args)
     (let [ctx (assoc ctx :active-regex-specs #{} :regex-expansion-budget (volatile! 256))
-          {source :context regex :form} (resolve-regex ctx args)]
+          {source :context regex :form} (resolve-regex ctx args true)]
       (if-let [branches (when regex (regex-form-branches source regex))]
         (mapv #(assoc % :ret ret) branches)
         (do ((:fail ctx) args) nil)))))

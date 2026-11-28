@@ -800,3 +800,26 @@
             ["client.clj" 8 "TSP2554"] ["client.clj" 10 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
+
+(deftest whole-argument-spec-wrappers-preserve-regex-arities
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/spec (s/cat :text string? :count (s/? int?)) {:gen (constantly nil)}) :ret string?)
+(defn render ([text] text) ([text n] (str text n)))
+(s/fdef preserve :args (s/nonconforming (s/cat :x int?)) :ret int?)
+(defn preserve [x] x)
+(s/fdef inner :args (s/cat :x (s/spec (s/cat :text string? :count int?))) :ret int?)
+(defn inner [x] (count x))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render \"valid\")
+(a/render \"valid\" 3)
+(a/render \"wrong\" \"3\")
+(a/render)
+(a/preserve 3)
+(a/preserve \"wrong\")
+(a/inner [\"valid\" 3])
+(a/inner \"not a packed value\" 3)")
+        r (check/check-files [api client] {})]
+    (is (= [["api.clj" 6 "TSP9002"] ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2554"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
+        (pr-str (:diagnostics r)))))

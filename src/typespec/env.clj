@@ -478,32 +478,56 @@
           [(:val method) {:var (symbol (str (:ns file)) (name (:val method)))
                           :file (:file file) :pos (:pos method) :arities arities}])))
 
+(defn- dispatch-function [file dispatch]
+  (let [[head params body & extra] (:children dispatch)
+        parameters (:children params)
+        names (mapv :val parameters)]
+    (when (and (#{'fn 'fn*} (t/core-name file (:val head)))
+               (= :vector (:op params)) (every? simple-symbol? names)
+               (not-any? #{'&} names) (= (count names) (count (distinct names)))
+               (empty? extra) (= :list (:op body)))
+      {:names names :parameters parameters :body body})))
+
+(defn- dispatch-parameter-index [names target]
+  (when (= :sym (:op target))
+    (first (keep-indexed #(when (= %2 (:val target)) %1) names))))
+
 (defn- dispatch-projection [file dispatch]
   (case (:op dispatch)
     :kw {:index 0 :key (:val dispatch) :arity 1}
-    :list (let [[head params body & extra] (:children dispatch)
-                [key target & args] (:children body)
-                names (mapv :val (:children params))]
-            (when (and (#{'fn 'fn*} (t/core-name file (:val head)))
-                       (= :vector (:op params)) (every? simple-symbol? names)
-                       (not-any? #{'&} names) (= (count names) (count (distinct names)))
-                       (empty? extra) (= :list (:op body)) (= :kw (:op key))
-                       (= :sym (:op target)) (empty? args))
-              (when-let [index (first (keep-indexed #(when (= %2 (:val target)) %1) names))]
-                {:index index :key (:val key) :arity (count names)})))
+    :list (when-let [{:keys [names body]} (dispatch-function file dispatch)]
+            (let [[key target & args] (:children body)]
+              (when (and (= :kw (:op key)) (empty? args))
+                (when-let [index (dispatch-parameter-index names target)]
+                  {:index index :key (:val key) :arity (count names)}))))
     nil))
+
+(defn- class-function-projection [file dispatch]
+  (when-let [{:keys [names parameters body]} (dispatch-function file dispatch)]
+    (let [[head value & more] (:children body)
+          [key parameter & lookup-args] (:children value)
+          key (when (and (= :list (:op value)) (= :kw (:op key)) (empty? lookup-args)) key)
+          target (if key parameter value)
+          ctx (assoc file :locals (set names))]
+      (when (and (= 'class (t/core-name ctx (:val head))) (empty? more)
+                 (every? #(and (empty? (:directives %)) (not (tag-node %)))
+                         (into parameters [body head value key target])))
+        (when-let [index (dispatch-parameter-index names target)]
+          (cond-> {:kind :class :index index :arity (count names)}
+            key (assoc :key (:val key))))))))
 
 (defn- class-dispatch-projection [file dispatch]
   (when (and (empty? (:directives dispatch)) (not (tag-node dispatch)))
     (case (:op dispatch)
       :sym (when (= 'class (t/core-name file (:val dispatch)))
              {:kind :class :index 0 :arity 1})
-      :list (let [[head f key & more] (:children dispatch)]
-              (when (and (= 'comp (t/core-name file (:val head)))
-                         (= :sym (:op f)) (= 'class (t/core-name file (:val f)))
-                         (= :kw (:op key)) (empty? more)
-                         (every? #(and (empty? (:directives %)) (not (tag-node %))) [head f key]))
-                {:kind :class :index 0 :key (:val key) :arity 1}))
+      :list (or (class-function-projection file dispatch)
+                (let [[head f key & more] (:children dispatch)]
+                  (when (and (= 'comp (t/core-name file (:val head)))
+                             (= :sym (:op f)) (= 'class (t/core-name file (:val f)))
+                             (= :kw (:op key)) (empty? more)
+                             (every? #(and (empty? (:directives %)) (not (tag-node %))) [head f key]))
+                    {:kind :class :index 0 :key (:val key) :arity 1})))
       nil)))
 
 (defn- multimethod-dispatch [file forms]

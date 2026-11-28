@@ -201,6 +201,30 @@
            (locations result))
         (pr-str (:diagnostics result)))))
 
+(deftest fixed-class-dispatch-functions-narrow-the-selected-argument-and-field
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defmulti render (fn [_ value] (class value)))
+(s/fdef render :ret string?)
+(s/def ::body (s/or :text string? :count int?))
+(s/def ::request (s/keys :req-un [::body]))
+(defmulti by-field (fn [request] (class (:body request))))
+(s/fdef by-field :args (s/cat :request ::request) :ret string?)
+(defmulti computed (fn [class value] (class value)))
+(s/fdef computed :ret string?)")
+        extension (parse/parse-string "extension.clj" "(ns extension (:require [api :as a] [clojure.string :as str]))
+(defmethod a/render java.lang.CharSequence [_ value] (str/trim value))
+(defmethod a/render String [_ value] (do (inc value) \"invalid\"))
+(defmethod a/by-field String [{:keys [body]}] (str/trim body))
+(defmethod a/by-field java.lang.Number [{:keys [body]}] (str (inc body)))
+(defmethod a/computed String [_ value] (str/trim value))
+(str/trim (a/render :context (StringBuilder. \"ok\")))
+(a/by-field {:body \"ok\"})
+(a/by-field {:body 1})")
+        result (check/check-files [extension api] {})]
+    (is (= [["extension.clj" 3 "TSP2345"] ["extension.clj" 6 "TSP210-01"]]
+           (locations result))
+        (pr-str (:diagnostics result)))))
+
 (deftest class-dispatch-keeps-the-contract-for-custom-hierarchies-and-functions
   (let [file (parse/parse-string "demo.clj" "(ns demo (:refer-clojure :exclude [class])
   (:require [clojure.spec.alpha :as s]))

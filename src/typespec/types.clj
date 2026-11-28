@@ -295,6 +295,21 @@
     :map-of ty
     nil))
 
+(defn collection-target
+  "Apply a Spec :count upper bound when the source is known to implement Counted."
+  [source target]
+  (if (and (some? (:counted-max target))
+           (or (#{:map :map-of} (:t source))
+               (#{:vector :set} (:kind source))
+               (and (= :prim (:t source)) (#{:map :vector :set} (:name source)))
+               (when-let [class (or (:jvm-class source) (when (= :class (:t source)) (:name source)))]
+                 (class-sub? class counted-class))))
+    (let [maximum (:counted-max target)]
+      (-> target
+          (dissoc :counted-max)
+          (update :max-count #(min (or % maximum) maximum))))
+    target))
+
 (defn- map-length-fits? [source target]
   (or (not (length/constrained? target))
       (let [actual (map-length source)
@@ -477,7 +492,8 @@
     :else :proved))
 
 (defn- sub1? [env s t]
-  (let [st (:t s) tt (:t t)]
+  (let [t (collection-target s t)
+        st (:t s) tt (:t t)]
     (cond
       ;; In ordinary checking, equality can establish reflexivity even for
       ;; opaque components. Comparing revisions must account for those gaps.
@@ -807,9 +823,10 @@
                                 "java.lang.CharSequence" "java.util.Collection" "java.util.Map" "java.util.Map$Entry"]
                               array-class-names))))
 
-(defn- show-count-bounds [ty]
-  (str (when-let [lo (:min-count ty)] (str " :min-count " lo))
-       (when-let [hi (:max-count ty)] (str " :max-count " hi))))
+(defn- show-count-bounds [{:keys [min-count max-count counted-max]}]
+  (str (when (some? counted-max) (str " :count " counted-max))
+       (when (and min-count (not= min-count counted-max)) (str " :min-count " min-count))
+       (when max-count (str " :max-count " max-count))))
 
 (defn- show-primitive [{primitive :name :keys [numeric-predicates] :as ty}]
   (let [base (str (when (contains? ty :qualified?)
@@ -1379,6 +1396,7 @@
       (cond-> (length/with-bounds collection lower upper)
         (= 'list? kind-name) (assoc :list-kind? true :jvm-class persistent-list-class)
         (and (true? distinct) (not map-kind?)) (assoc :distinct? true)
+        (and (some? count) (not exact?)) (assoc :counted-max count)
         (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
             (and (some? count) (not exact?))
             (= :s/every (type-form-op ctx (first form))))

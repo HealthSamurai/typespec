@@ -2972,6 +2972,29 @@
                           nil))" {})]
     (is (= ["TSP2531"] (codes r)) (pr-str (:diagnostics r)))))
 
+(deftest spec-count-uses-an-upper-bound-on-counted-inputs
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::one (s/coll-of int? :count 1))
+(s/fdef only :args (s/cat :entries ::one) :ret int?)
+(defn only [entries] (first entries))
+(s/fdef one-entry :args (s/cat :entries (s/coll-of (s/tuple keyword? int?) :count 1)) :ret int?)
+(defn one-entry [entries] (count entries))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/only [1])
+(a/only [1 2])
+(a/only #{1 2})
+(a/only (list 1 2))
+(a/only (cons 1 (list 2)))
+(a/only (map identity [1 2]))
+(a/only [])
+(a/one-entry {:a 1})
+(a/one-entry {:a 1 :b 2})
+(a/one-entry [[:a 1] [:b 2]])")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= (mapv #(vector "client.clj" % "TSP330-01") [3 4 5 8 10 11])
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest count-round-trips-and-unguarded-upper-bounds-are-not-assumed
   (let [ctx {:fail #(throw (ex-info "unexpected type syntax" {:type %}))}
         vector-type (t/parse-type ctx '(s/coll-of int? :kind vector? :count 2))
@@ -2979,6 +3002,7 @@
     (is (= [2 2] (length/bounds vector-type)))
     (is (= vector-type (t/parse-type ctx (read-string (t/show vector-type)))))
     (is (= [2 nil] (length/bounds seq-type)))
+    (is (= seq-type (t/parse-type ctx (read-string (t/show seq-type)))))
     (is (s/valid? (s/coll-of int? :kind seq? :count 2) (map identity [1 2 3])))
     (is (not (s/valid? (s/coll-of int? :kind vector? :count 2) [1 2 3]))))
   (let [r (checked "(s/def ::dynamic (s/coll-of int? :min-count n))

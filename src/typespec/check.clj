@@ -3269,7 +3269,7 @@
   (let [base (t/class-type (:ret m))
         shown (java/short-name (:ret m))]
     (cond
-      (java/nullable-return? cname (:name m))
+      (java/nullable-return? cname (:name m) (:params m))
       (with-meta (t/union base t/nil-t) {:null-return (str (java/short-name (:declaring m)) "." (:name m) " may return null")})
       (#{:nil :any} (:t base)) base
       :else (t/platform base shown))))

@@ -28,6 +28,28 @@
 (defn- issue [diagnostic]
   ((juxt :file (comp :row :pos) :code :type-path) diagnostic))
 
+(deftest getenv-nullability-follows-the-selected-overload
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn environment [] (System/getenv))
+(s/fdef read-key :args (s/cat :name string?) :ret (s/nilable string?))
+(defn read-key [name] (System/getenv name))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Map]))
+(s/fdef entries :args (s/cat) :ret int?)
+(defn entries [] (.size ^Map (a/environment)))
+(s/fdef text-length :args (s/cat :key string?) :ret int?)
+(defn text-length [key] (.length ^String (a/read-key key)))
+(s/fdef guarded-length :args (s/cat :key string?) :ret (s/nilable int?))
+(defn guarded-length [key]
+  (when-let [text (a/read-key key)]
+    (.length ^String text)))
+(entries)
+(a/read-key 42)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 6 "TSP2531" nil] ["client.clj" 12 "TSP2345" nil]]
+           (mapv issue diagnostics))
+        (pr-str diagnostics))))
+
 (deftest sequence-elements-of-platform-arrays-respect-strict-nil
   (let [source "(let [dir (java.io.File. \".\")]
   (mapv #(.getName ^java.io.File %) (.listFiles dir)))"

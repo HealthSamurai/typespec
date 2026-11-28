@@ -201,16 +201,19 @@
 
 (defn has-class? [cname] (some? (t/load-class cname)))
 
-;; The JDK carries no nullability annotations, so the well-known cases are listed here.
+;; An omitted parameter vector applies to every overload.
 (def ^:private nullable-returns
   #{["java.util.Map" "get"] ["java.util.Map" "remove"] ["java.util.Queue" "poll"] ["java.util.Queue" "peek"]
-    ["java.lang.System" "getenv"] ["java.lang.System" "getProperty"] ["java.lang.Class" "getResource"]
+    ["java.lang.System" "getenv" ["java.lang.String"]] ["java.lang.System" "getProperty"]
+    ["java.lang.Class" "getResource"]
     ["java.util.regex.Matcher" "group"]})
 
-(defn nullable-return? [cname mname]
-  (boolean (some (fn [[c m]] (and (= m mname)
-                                  (when-let [^Class owner (t/load-class c)]
-                                    (when-let [^Class k (t/load-class cname)] (.isAssignableFrom owner k)))))
+(defn nullable-return? [cname mname params]
+  (boolean (some (fn [[c m ps]]
+                   (and (= m mname)
+                        (or (nil? ps) (= ps params))
+                        (when-let [^Class owner (t/load-class c)]
+                          (when-let [^Class k (t/load-class cname)] (.isAssignableFrom owner k)))))
                  nullable-returns)))
 
 (defn short-name [cname]

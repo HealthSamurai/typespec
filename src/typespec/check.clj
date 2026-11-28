@@ -45,6 +45,13 @@
               (:val value)))
     nil))
 
+(defn- integer-map-key [node]
+  (when (and (= :num (:op node)) (integer? (:val node)))
+    (:val node)))
+
+(defn- map-literal-key [node]
+  (or (static-map-key node) (integer-map-key node)))
+
 (defn- literal-node? [node]
   (and (#{:str :kw :num :bool :nil} (:op node)) (empty? (:directives node))
        (not (env/tag-node node))))
@@ -58,6 +65,10 @@
     (let [value (:val member)]
       (when (or (keyword? value) (string? value) (symbol? value)) value))))
 
+(defn- map-lookup-key [member]
+  (or (selector-literal-key member)
+      (when (and (= :lit (:t member)) (integer? (:val member))) (:val member))))
+
 (defn- quoted-map-key-type [node ty]
   (let [key (when (= (t/prim :symbol) ty) (static-map-key node))]
     (if (symbol? key) (t/with-assumption (t/lit key) (t/assumption ty)) ty)))
@@ -65,7 +76,7 @@
 (defn- at-type-path [node path]
   (reduce (fn [current step]
             (if-let [child (case (:op current)
-                             :map (some (fn [[k v]] (when (= step (static-map-key k)) v))
+                             :map (some (fn [[k v]] (when (= step (map-literal-key k)) v))
                                         (partition 2 (:children current)))
                              :vector (when (integer? step) (get (:children current) step))
                              nil)]
@@ -1180,9 +1191,11 @@
                   why
                   (when-not (or default bang?) projection))))
 
-(defn- finite-map-keys [env ty]
-  (let [keys (mapv selector-literal-key (take (inc map-path-budget) (t/members env ty)))]
-    (when (and (<= 1 (count keys) map-path-budget) (every? some? keys)) keys)))
+(defn- finite-map-keys
+  ([env ty] (finite-map-keys env ty selector-literal-key))
+  ([env ty select-key]
+   (let [keys (mapv select-key (take (inc map-path-budget) (t/members env ty)))]
+     (when (and (<= 1 (count keys) map-path-budget) (every? some? keys)) keys))))
 
 (defn- select-map-entries [ctx source selector selector-type keys]
   (let [entries (mapv #(key-info ctx source % selector) (distinct keys))
@@ -1197,10 +1210,10 @@
   (if-let [key (static-map-key selector)]
     (bind-map-entry ctx pattern selector key source why (project key) defaults)
     (let [selector-type (eff ctx (infer ctx selector))
-          keys (mapv selector-literal-key (t/members (:env ctx) selector-type))
+          keys (mapv map-lookup-key (t/members (:env ctx) selector-type))
           key (first keys)]
       (if (and key (= 1 (count keys)))
-        (bind-map-entry ctx pattern selector key source why (project key) defaults)
+        (bind-map-entry ctx pattern selector key source why (when-not (integer? key) (project key)) defaults)
         (let [selected (if (and (seq keys) (every? some? keys))
                          (select-map-entries ctx source selector selector-type keys)
                          {:type (read-map-of ctx source selector-type t/never) :optional? true})]
@@ -3667,10 +3680,11 @@
       :list (list-value-type ctx (mapv #(quoted-data-type ctx %) children))
       :vector (let [items (mapv #(quoted-data-type ctx %) children)]
                 (t/tuple items (literal-element-type ctx items)))
-      :map (let [pairs (partition 2 children)]
-             (if (every? #(#{:sym :kw :str} (:op (first %))) pairs)
+      :map (let [pairs (partition 2 children)
+                 keys (map (fn [[k]] (if (#{:sym :kw :str} (:op k)) (:val k) (integer-map-key k))) pairs)]
+             (if (every? some? keys)
                (assoc empty-map-shape :req
-                      (into (array-map) (map (fn [[k v]] [(:val k) (quoted-data-type ctx v)])) pairs))
+                      (into (array-map) (map (fn [k [_ v]] [k (quoted-data-type ctx v)]) keys pairs)))
                (t/prim :map)))
       :set (t/prim :set)
       :quote (list-value-type ctx [(t/lit 'quote) (quoted-data-type ctx (first children))])
@@ -4451,7 +4465,7 @@
       (let [key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
             not-found (if default (infer ctx default) t/nil-t)
             keys (when (some #(= :map (:t %)) members)
-                   (finite-map-keys env key-type))
+                   (finite-map-keys env key-type map-lookup-key))
             assumption (or (t/assumption source) (t/assumption key-type))]
         (cond
           (some #{t/never} [source key-type not-found])
@@ -9614,7 +9628,7 @@
                                minimum size))
     :map (let [children (:children node)
                pairs (partition 2 children)
-               static-keys (map static-map-key (map first pairs))]
+               static-keys (map map-literal-key (map first pairs))]
            (when (:missing-directive-target (peek children))
              (literal-directives ctx (peek children)))
            (if (every? some? static-keys)

@@ -244,6 +244,33 @@
     (is (= (t/lit "StructureDefinition")
            (infer-type "(get {\"resourceType\" \"StructureDefinition\"} \"resourceType\")")))))
 
+(deftest integer-map-keys-survive-literal-inference-and-destructuring
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::lookup (s/map-of int? string?))
+(s/fdef accept :args (s/cat :lookup ::lookup) :ret int?)
+(defn accept [lookup] (count lookup))
+(defn table [] {1 \"one\" 2 42})
+(defn quoted-table [] '{1 \"one\" 2 42})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/accept {1 \"good\"})
+(a/accept {1 12})
+(a/accept {1 \"good\" :other \"bad\"})
+(subs (get (a/table) 1N) 1)
+(subs (get (a/table) 2) 1)
+(subs (get (a/table) 3) 1)
+(subs ((a/table) 1) 1)
+(let [{text 1} (a/table)] (subs text 1))
+(let [{text 2} (a/table)] (subs text 1))
+(subs (get (a/quoted-table) 1) 1)
+(subs (get (a/quoted-table) 2) 1)
+(let [{text 3 :or {text \"fallback\"}} (a/table)] (subs text 1))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[3 "TSP2345"] [4 "TSP2345"] [6 "TSP2345"] [7 "TSP2531"]
+            [10 "TSP2345"] [12 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

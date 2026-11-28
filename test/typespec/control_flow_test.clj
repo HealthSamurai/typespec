@@ -244,6 +244,29 @@
     (is (= ["t/never" "t/never"]
            (mapv #(main/type-at result "api.clj" % 3) [4 7])))))
 
+(deftest loop-propagates-aborting-initializers
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef halt :args (s/cat) :ret string?)
+(defn halt []
+  (loop [value (throw (Exception. \"loop initializer stopped\"))
+         later 1]
+    42))
+(s/fdef halve :args (s/cat :input (s/tuple int? string?)) :ret string?)
+(defn halve [input]
+  (loop [[n label] input]
+    (if (pos? n)
+      (recur [(quot n 2) label])
+      label)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(subs (a/halt) 0)
+(subs (a/halve [4 \"ready\"]) 0)
+(a/halve [\"bad\" \"ready\"])")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "t/never" (main/type-at result "api.clj" 4 3)))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

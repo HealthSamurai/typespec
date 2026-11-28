@@ -4063,27 +4063,31 @@
         bind-loop (fn [ts calls]
                     (reduce (fn [c [[p _] ty]] (bind-pattern c p ty))
                             (assoc ctx :recur-types calls) (map vector pairs ts)))
+        stopped? (some #{t/never} seeds)
         ;; Join back edges, not just initializers: recur can change a local's
         ;; type. Bound structural growth and keep trial diagnostics/caches local.
-        stable (binding [*types* nil *diags* (atom [])
-                         *trust* (atom {:cast 0 :any 0 :ignore 0})
-                         *ignores* (atom []) *rets* (atom @*rets*)]
-                 (loop [ts seeds n 0]
-                   (let [calls (atom [])
-                         _ (infer-body (assoc (bind-loop ts calls) :quiet true) body)
-                         next-ts (if (every? #(= (count ts) (count %)) @calls)
-                                   (mapv (fn [i ty]
-                                           (let [joined (widen (apply t/union ty (map #(nth % i) @calls)))]
-                                             ;; Repeated vector appends may grow the shape on every back edge.
-                                             (or (when (and (>= n 2) (not= ty joined))
-                                                   (widen-vector-growth (:env ctx) joined))
-                                                 joined)))
-                                         (range (count ts)) ts)
-                                   (vec (repeat (count ts) t/unknown)))]
-                     (cond (= ts next-ts) ts
-                           (>= n 7) (vec (repeat (count ts) t/unknown))
-                           :else (recur next-ts (inc n))))))]
-    (infer-body (bind-loop stable nil) body)))
+        stable (if stopped?
+                 seeds
+                 (binding [*types* nil *diags* (atom [])
+                           *trust* (atom {:cast 0 :any 0 :ignore 0})
+                           *ignores* (atom []) *rets* (atom @*rets*)]
+                   (loop [ts seeds n 0]
+                     (let [calls (atom [])
+                           _ (infer-body (assoc (bind-loop ts calls) :quiet true) body)
+                           next-ts (if (every? #(= (count ts) (count %)) @calls)
+                                     (mapv (fn [i ty]
+                                             (let [joined (widen (apply t/union ty (map #(nth % i) @calls)))]
+                                               ;; Repeated vector appends may grow the shape on every back edge.
+                                               (or (when (and (>= n 2) (not= ty joined))
+                                                     (widen-vector-growth (:env ctx) joined))
+                                                   joined)))
+                                           (range (count ts)) ts)
+                                     (vec (repeat (count ts) t/unknown)))]
+                       (cond (= ts next-ts) ts
+                             (>= n 7) (vec (repeat (count ts) t/unknown))
+                             :else (recur next-ts (inc n)))))))
+        result (infer-body (bind-loop stable nil) body)]
+    (if stopped? t/never result)))
 
 (defmethod special 'recur [ctx node _]
   (let [ts (mapv #(infer ctx %) (args-of node))]

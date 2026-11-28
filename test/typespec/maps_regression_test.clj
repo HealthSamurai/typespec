@@ -271,6 +271,42 @@
         (pr-str issues))
     (is (every? #(= "client.clj" (:file %)) issues))))
 
+(deftest boolean-map-keys-preserve-exhaustive-lookups
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::labels (s/map-of boolean? string?))
+(s/fdef accept :args (s/cat :labels ::labels) :ret int?)
+(defn accept [labels] (count labels))
+(defn status [] {true \"yes\" false \"no\"})
+(defn mixed [] {true \"yes\" false 42})
+(defn quoted-status [] '{true yes false 42})
+(s/fdef get-label :args (s/cat :flag boolean?) :ret string?)
+(defn get-label [flag] (get (status) flag))
+(s/fdef invoke-label :args (s/cat :flag boolean?) :ret string?)
+(defn invoke-label [flag] ((status) flag))
+(s/fdef destructured-label :args (s/cat :flag boolean?) :ret string?)
+(defn destructured-label [flag] (let [{label flag} (status)] label))
+(s/fdef incomplete :args (s/cat :flag boolean?) :ret string?)
+(defn incomplete [flag] (get {true \"present\"} flag))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/accept {false \"no\" true \"yes\"})
+(a/accept {false 42})
+(subs (get (a/mixed) true) 1)
+(subs (get (a/mixed) false) 1)
+(subs ((a/status) false) 1)
+(let [{label false} (a/status)] (subs label 1))
+(a/get-label true)
+(a/invoke-label false)
+(a/destructured-label true)
+(inc (get (a/quoted-status) false))
+(a/get-label :wrong)")
+        result (check/check-files [client api] {})
+        issues (:diagnostics result)]
+    (is (= [["api.clj" 15 "TSP2322"] ["client.clj" 3 "TSP2345"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 12 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "42" (main/type-at result "client.clj" 11 6)))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

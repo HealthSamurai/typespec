@@ -50,7 +50,9 @@
     (:val node)))
 
 (defn- map-literal-key [node]
-  (or (static-map-key node) (integer-map-key node)))
+  (if (= :bool (:op node))
+    (:val node)
+    (or (static-map-key node) (integer-map-key node))))
 
 (defn- literal-node? [node]
   (and (#{:str :kw :num :bool :nil} (:op node)) (empty? (:directives node))
@@ -67,7 +69,9 @@
 
 (defn- map-lookup-key [member]
   (or (selector-literal-key member)
-      (when (and (= :lit (:t member)) (integer? (:val member))) (:val member))))
+      (when (and (= :lit (:t member))
+                 (or (integer? (:val member)) (boolean? (:val member))))
+        (:val member))))
 
 (defn- quoted-map-key-type [node ty]
   (let [key (when (= (t/prim :symbol) ty) (static-map-key node))]
@@ -1196,7 +1200,8 @@
 (defn- finite-map-keys
   ([env ty] (finite-map-keys env ty selector-literal-key))
   ([env ty select-key]
-   (let [keys (mapv select-key (take (inc map-path-budget) (t/members env ty)))]
+   (let [members (mapcat expand-boolean (t/members env ty))
+         keys (mapv select-key (take (inc map-path-budget) members))]
      (when (and (<= 1 (count keys) map-path-budget) (every? some? keys)) keys))))
 
 (defn- select-map-entries [ctx source selector selector-type keys]
@@ -1212,9 +1217,9 @@
   (if-let [key (static-map-key selector)]
     (bind-map-entry ctx pattern selector key source why (project key) defaults)
     (let [selector-type (eff ctx (infer ctx selector))
-          keys (mapv map-lookup-key (t/members (:env ctx) selector-type))
+          keys (mapv map-lookup-key (mapcat expand-boolean (t/members (:env ctx) selector-type)))
           key (first keys)]
-      (if (and key (= 1 (count keys)))
+      (if (and (some? key) (= 1 (count keys)))
         (bind-map-entry ctx pattern selector key source why (when-not (integer? key) (project key)) defaults)
         (let [selected (if (and (seq keys) (every? some? keys))
                          (select-map-entries ctx source selector selector-type keys)
@@ -3683,7 +3688,7 @@
       :vector (let [items (mapv #(quoted-data-type ctx %) children)]
                 (t/tuple items (literal-element-type ctx items)))
       :map (let [pairs (partition 2 children)
-                 keys (map (fn [[k]] (if (#{:sym :kw :str} (:op k)) (:val k) (integer-map-key k))) pairs)]
+                 keys (map (fn [[k]] (if (#{:sym :kw :str :bool} (:op k)) (:val k) (integer-map-key k))) pairs)]
              (if (every? some? keys)
                (assoc empty-map-shape :req
                       (into (array-map) (map (fn [k [_ v]] [k (quoted-data-type ctx v)]) keys pairs)))
@@ -5168,7 +5173,7 @@
       (t/with-assumption
        (apply t/union
               (for [member (t/members env source)
-                    key-member (t/members env (eff ctx key))]
+                    key-member (mapcat expand-boolean (t/members env (eff ctx key)))]
                 (cond
                   (and (= :map (:t member)) (#{:lit :nil} (:t key-member)))
                   (read-literal-map-key ctx member (:val key-member) not-found)

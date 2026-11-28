@@ -166,6 +166,8 @@
       (cond
         (not (length/subset? l r))
         [(assoc c :mismatch (if (:items r) :tuple-length :collection-length))]
+        (length/repeated-item? l r)
+        [(assoc c :mismatch :collection-distinctness)]
         (:items r)
         (recur-all (map-indexed #(child (get (:items l) %1 (:of l)) %2 [:index %1]) (:items r)))
         (= 0 (:max-count l)) []

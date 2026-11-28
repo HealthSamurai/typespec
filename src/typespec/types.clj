@@ -522,6 +522,7 @@
                                    :else false)
                              (and (or (nil? (:kind t)) (= (:kind s) (:kind t)))
                                   (length/subset? s t)
+                                  (not (length/repeated-item? s t))
                                   (if-let [items (:items s)]
                                     (every? #(sub? env % (:of t)) items)
                                     (or (= 0 (:max-count s)) (sub? env (:of s) (:of t))))))
@@ -749,6 +750,7 @@
               (str "(s/tuple" (apply str (map #(str " " (show %)) (:items t))) ")")
               (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?"))
                    (show-count-bounds t)
+                   (when (:distinct? t) " :distinct true")
                    ")"))
       :fn (if-let [ars (seq (:arities t))]
             (let [ar (fn [a] (str "[" (str/join " " (concat (map show (:params a))
@@ -1197,7 +1199,7 @@
           upper (if (and exact? (some? count)) (min count (or max-count count)) max-count)]
       (when (or (nil? upper) (<= lower upper)) [lower upper]))))
 
-(defn- collection-type [ctx form inner {:keys [kind count] :as opts}]
+(defn- collection-type [ctx form inner {:keys [kind count distinct] :as opts}]
   (let [kinds '{coll? nil vector? :vector set? :set list? :seq seq? :seq}
         kind-name (if kind (core-name ctx kind) 'coll?)
         kind-type (get kinds kind-name)
@@ -1206,6 +1208,7 @@
         exact? (#{:vector :set} kind-type)]
     (if-let [[lower upper] (when (contains? kinds kind-name) (collection-bounds opts exact?))]
       (cond-> (length/with-bounds {:t :coll :of (parse-type ctx inner) :kind kind-type} lower upper)
+        (true? distinct) (assoc :distinct? true)
         (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
             (= 'list? kind-name)
             (and (some? count) (not exact?))

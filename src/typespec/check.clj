@@ -305,6 +305,9 @@
              (not (length/subset? source target)))
         ["TSP330-01" (length-message source target)]
 
+        (length/repeated-item? source target)
+        ["TSP2345" "collection must contain distinct elements"]
+
         (and map-source (not (length/subset? map-source target)))
         ["TSP330-01" (length-message map-source target)]))))
 

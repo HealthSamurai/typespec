@@ -20,6 +20,16 @@
     (and (>= lo minimum)
          (or (nil? maximum) (and (some? hi) (<= hi maximum))))))
 
+(defn repeated-item?
+  "True when two known positions fail Clojure's distinct? predicate."
+  [source target]
+  (when (and (:distinct? target) (next (:items source)))
+    (let [known (filter (fn [{:keys [t val platform]}]
+                          (and (#{:lit :nil} t) (not platform)
+                               (not (and (number? val) (Double/isNaN (double val))))))
+                        (:items source))]
+      (and (next known) (not (apply distinct? (map :val known)))))))
+
 (defn position [ty index]
   (let [[lower upper] (bounds ty)]
     (cond

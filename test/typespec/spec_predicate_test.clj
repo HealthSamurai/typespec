@@ -441,6 +441,41 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest collection-distinctness-rejects-proven-repeats
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::tags (s/coll-of keyword? :kind vector? :distinct true))
+(s/def ::numbers (s/every number? :kind vector? :distinct true))
+(s/def ::list (s/coll-of int? :kind list? :distinct true))
+(s/def ::loose (s/coll-of int? :kind vector? :distinct false))
+(s/fdef tags :args (s/cat :values ::tags) :ret ::tags)
+(defn tags [values] values)
+(s/fdef numbers :args (s/cat :values ::numbers) :ret int?)
+(defn numbers [values] (count values))
+(s/fdef list-length :args (s/cat :values ::list) :ret int?)
+(defn list-length [values] (count values))
+(s/fdef loose :args (s/cat :values ::loose) :ret int?)
+(defn loose [values] (count values))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/tags [:one :two])
+(a/tags [])
+(a/tags [:one :one])
+(a/tags (a/tags [:one :two]))
+(defn repeated [x] (a/tags [:one x :one]))
+(a/numbers [1 1.0])
+(a/numbers [1 1])
+(a/list-length '(1 2))
+(a/list-length '(1 2 1))
+(a/loose [1 1])
+(defn unproven [x] (a/tags [x :one]))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 10 "TSP2345"] ["client.clj" 12 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "collection must contain distinct elements" (:message %)) (take 4 issues))))
+  (let [spec (s/every number? :kind vector? :distinct true)]
+    (is (= [true true false] (mapv #(s/valid? spec %) [[] [1 1.0] [1 1]])))))
+
 (deftest spec-wrappers-keep-cross-namespace-input-constraints
   (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

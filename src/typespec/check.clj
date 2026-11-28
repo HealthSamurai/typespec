@@ -10113,6 +10113,17 @@
     (report! ctx node "TSP2554" (str sym " expects " arity " argument(s), got " (count args))))
   t/unknown)
 
+(defn- check-let-result-macro [ctx node binder [initial & body]]
+  (if initial
+    (let [binding {:op :sym :val binder :synthetic true}
+          expansion {:op :list
+                     :children (into [{:op :sym :val 'clojure.core/let :synthetic true}
+                                      {:op :vector :children [binding initial] :synthetic true}]
+                                     (concat body [binding]))}]
+      (special (dissoc ctx :recur-types) expansion 'let))
+    (do (report! ctx node "TSP2554" (str (parse/unparse (first (:children node))) " expects at least one argument"))
+        t/unknown)))
+
 (defn- check-unknown-call [ctx args]
   (let [binding-vector (first args)
         bindings (:children binding-vector)
@@ -10219,6 +10230,8 @@
             spec-contract (when-not (:guards-disabled? ctx)
                             (or (get-in ctx [:env :spec-macro-contracts contract-sym])
                                 (when origin (get-in ctx [:env :spec-macro-contracts origin]))))
+            let-result-binding (or (get-in ctx [:env :let-result-macros contract-sym])
+                                   (when origin (get-in ctx [:env :let-result-macros origin])))
             import-forwarder? (contains? (get-in ctx [:env :import-vars-forwarders]) contract-sym)
             r (cond (= :malli-defn (:shape contract))
                     (do (report! ctx h "TSP7031"
@@ -10229,6 +10242,7 @@
                     has-rule? (special ctx node head)
                     import-forwarder? (special ctx node 'potemkin/import-vars)
                     spec-contract (check-spec-macro ctx node contract-sym spec-contract args)
+                    let-result-binding (check-let-result-macro ctx node let-result-binding args)
                     ;; a macro of Clojure itself without a rule yet: its body is not checked
                     (and (not own?) (not extern?) (core/stdlib-macro? core-sym)) t/unknown
                     :else ::none)
@@ -10457,10 +10471,10 @@
                   #(or (contains? (:import-vars-forwarders env0) %)
                        (not= (get-method special %) (get-method special ::none))))
         env-diags (concat env-diags (:diagnostics compiled))
-        guard-env (assoc env0 :macro-contracts (:contracts compiled)
-                             :spec-macro-contracts (macros/infer-spec-contracts env0)
-                             :strict-nil (boolean (:strict-nil opts))
-                             :nss (set (map :ns files)))
+        guard-env (assoc (merge env0 (macros/infer-source-contracts env0))
+                         :macro-contracts (:contracts compiled)
+                         :strict-nil (boolean (:strict-nil opts))
+                         :nss (set (map :ns files)))
         guard-result (compile-guards guard-env opts)
         env (assoc guard-env :guards (:guards guard-result))
         guard-trust (count (filter #(= :trusted (:mode %)) (vals (:guards env))))]

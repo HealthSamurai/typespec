@@ -416,6 +416,35 @@ api/delayed")
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest checks-let-macros-that-return-their-first-form
+  (let [provider (parse/parse-string
+                  "runner.clj"
+                  "(ns runner)
+(defmacro prog1 [value & body]
+  `(let [~'<> ~value] ~@body ~'<>))
+(defmacro other [value & body]
+  `(let [~'<> ~value] ~@body nil))")
+        facade (parse/parse-string
+                "facade.clj"
+                "(ns facade (:require [runner :as impl] [potemkin :as p]))
+(p/import-macro impl/prog1 first-result)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [runner :as r] [facade :as f]))
+(inc (r/prog1 41 (str <>)))
+(subs (f/first-result \"abc\" (count <>)) 0)
+(let [<> 41] (inc (r/prog1 <> (str <>))))
+(let [<> 41] (r/prog1 \"abc\" (inc <>)))
+(inc (r/prog1 \"abc\" nil))
+(r/prog1)
+(defn stop {:t/sig '[:-> int?]} [] (r/prog1 \"abc\" (throw (Exception.))))
+(r/other 1 (inc \"opaque\"))")
+        ds (:diagnostics (check/check-files [client facade provider] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 7 "TSP2554"] ["client.clj" 9 "TSP7031"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest explicit-macro-contracts-on-the-reexport-take-precedence
   (let [provider (parse/parse-string "provider.clj" "(ns provider)
 (defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")

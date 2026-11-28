@@ -253,12 +253,40 @@
                (direct-forwarding? env file success parameters))
       {:spec spec :index index :arity (count parameters)})))
 
-(defn infer-spec-contracts
-  "Read a fixed syntax-quoted Spec guard and direct function call as an argument check."
+(defn- unquoted-binding-name [node]
+  (let [quoted (unquoted-node node)]
+    (when (and (= :quote (:op quoted)) (= 1 (count (:children quoted))))
+      (binding-name (first (:children quoted))))))
+
+(defn- let-result-binding [env file form]
+  (let [{[{params :params [quoted & body] :body} & more] :arities} (env/defn-parts form)
+        [initial ampersand tail & extra] (:children params)
+        template (:syntax-template quoted)
+        [_ bindings splice result] (:children template)
+        [binding initializer] (:children bindings)
+        symbol (unquoted-binding-name binding)
+        ctx (assoc (env/type-ctx file nil) :defined-symbols (get-in env [:ns-defs (:ns file)]))]
+    (when (and (empty? more) (empty? body) (= :vector (:op params)) (empty? (:meta params))
+               (= '& (:val ampersand)) (empty? extra)
+               (binding-name initial) (binding-name tail) (not= (:val initial) (:val tail))
+               (core-call? ctx 'let 3 template)
+               (= :vector (:op bindings)) (= 2 (count (:children bindings)))
+               (some? symbol) (= symbol (unquoted-binding-name result))
+               (= (:val initial) (binding-name (unquoted-node initializer)))
+               (= :unquote-splicing (:op splice)) (= 1 (count (:children splice)))
+               (= (:val tail) (binding-name (first (:children splice)))))
+      symbol)))
+
+(defn infer-source-contracts
+  "Recognize supported syntax-quoted macro templates without evaluating source."
   [env]
-  (into {}
-        (for [[sym [[_ file form] & more]] (:macro-definitions env)
-              :when (and (empty? more) (not (get-in env [:root-definitions sym])))
-              :let [contract (spec-template-contract env file form)]
-              :when contract]
-          [sym contract])))
+  (reduce-kv (fn [contracts sym [[_ file form] & more]]
+               (if (or (seq more) (get-in env [:root-definitions sym]))
+                 contracts
+                 (if-let [contract (spec-template-contract env file form)]
+                   (assoc-in contracts [:spec-macro-contracts sym] contract)
+                   (if-let [binder (let-result-binding env file form)]
+                     (assoc-in contracts [:let-result-macros sym] binder)
+                     contracts))))
+             {:spec-macro-contracts {} :let-result-macros {}}
+             (:macro-definitions env)))

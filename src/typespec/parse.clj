@@ -63,7 +63,7 @@
         pos (npos node)]
     (cond
       (#{:token :multi-line} tag) (convert node opts)
-      (and (pos? depth) (#{:list :vector :unquote :unquote-splicing} tag))
+      (and (pos? depth) (#{:list :vector :quote :unquote :unquote-splicing} tag))
       {:op tag :pos pos
        :children (mapv #(template-node % opts (dec depth))
                        (remove #(skip-tags (n/tag %)) (n/children node)))}

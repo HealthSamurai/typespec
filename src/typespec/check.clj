@@ -4432,25 +4432,51 @@
       (match-literal? pattern) #{value}
       (and (= :sym (:op pattern)) (simple-symbol? value) (not= '& value)
            (not (contains? (:locals ctx) value))) value
+      (= :vector (:op pattern))
+      (let [elements (mapv #(match-pattern ctx %) (:children pattern))]
+        (when (every? some? elements) elements))
       (= :list (:op pattern))
       (let [[head & alternatives] (:children pattern)]
         (when (and (= :or (:val head)) (seq alternatives) (every? match-literal? alternatives))
           (into #{} (map :val) alternatives))))))
 
 (defn- match-row [ctx vector-input? width pattern]
-  (cond
-    (= :else (:val pattern)) (vec (repeat width '_))
-    (not vector-input?) (when-let [pattern (match-pattern ctx pattern)] [pattern])
-    (and (= :vector (:op pattern)) (= width (count (:children pattern))))
-    (let [patterns (mapv #(match-pattern ctx %) (:children pattern))
-          bindings (filter #(and (simple-symbol? %) (not= '_ %)) patterns)]
-      (when (and (every? some? patterns) (= (count bindings) (count (distinct bindings))))
-        patterns))))
+  (let [patterns (cond
+                   (= :else (:val pattern)) (vec (repeat width '_))
+                   (not vector-input?) [(match-pattern ctx pattern)]
+                   (and (= :vector (:op pattern)) (= width (count (:children pattern))))
+                   (mapv #(match-pattern ctx %) (:children pattern)))
+        bindings (filter #(and (simple-symbol? %) (not= '_ %)) (tree-seq vector? seq patterns))]
+    (when (and patterns (every? some? patterns) (= (count bindings) (count (distinct bindings))))
+      patterns)))
+
+(declare ^:private match-columns)
+
+(defn- match-vector-member [ctx member patterns]
+  (let [width (count patterns)
+        known-vector? (vector-member? member)
+        [minimum maximum] (when known-vector? (length/bounds member))]
+    (when (if known-vector?
+            (and (<= minimum width) (or (nil? maximum) (<= width maximum)))
+            (not (or (finite-value? member) (#{:map :map-of} (:t member))
+                     (#{:seq :list :set} (:kind member)))))
+      (let [elements (or (when known-vector? (:items member))
+                         (repeat width (or (when known-vector? (:of member)) t/unknown)))]
+        (when-let [matched (match-columns ctx elements patterns)]
+          (update matched :certain? #(and % known-vector? (= width minimum maximum))))))))
+
+(defn- match-vector [ctx actual patterns]
+  (let [members (t/members (:env ctx) (eff ctx actual))
+        matches (keep #(match-vector-member ctx % patterns) members)]
+    (when (seq matches)
+      {:certain? (and (= (count members) (count matches)) (every? :certain? matches))
+       :bindings (apply merge-with t/union (map :bindings matches))})))
 
 (defn- match-column [ctx actual pattern]
   (cond
     (= '_ pattern) {:certain? true}
     (symbol? pattern) {:certain? true :bindings {pattern actual}}
+    (vector? pattern) (match-vector ctx actual pattern)
     :else (let [members (t/members (:env ctx) (eff ctx actual))
                 matches (fn [type] (and (finite-value? type) (contains? pattern (:val type))))]
             (when (some #(or (matches %) (not (finite-value? %))) members)
@@ -4459,8 +4485,7 @@
 (defn- match-columns [ctx state patterns]
   (let [columns (mapv #(match-column ctx %1 %2) state patterns)]
     (when (every? some? columns)
-      {:state state
-       :certain? (every? :certain? columns)
+      {:certain? (every? :certain? columns)
        :bindings (into {} (mapcat :bindings) columns)})))
 
 (defn- infer-match-branches [ctx actual rows]
@@ -4468,7 +4493,10 @@
         states (or (bounded-combinations [domains]) [actual])]
     (loop [[[patterns result] & more] rows, remaining states, results []]
       (if (and result (seq remaining))
-        (let [matched (keep #(match-columns ctx % patterns) remaining)
+        (let [matched (keep (fn [state]
+                              (when-let [match (match-columns ctx state patterns)]
+                                (assoc match :state state)))
+                            remaining)
               certain (into #{} (comp (filter :certain?) (map :state)) matched)
               bindings (apply merge-with t/union (map :bindings matched))]
           (recur more (remove certain remaining)

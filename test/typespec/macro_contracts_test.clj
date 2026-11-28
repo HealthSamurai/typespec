@@ -489,6 +489,27 @@ api/delayed")
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest core-match-vector-patterns-use-tuple-types
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns api (:require [clojure.core.match :as m] [clojure.spec.alpha :as s]))
+(s/fdef number-from :args (s/cat :input (s/tuple #{:value} int?)))
+(defn number-from [input]
+  (m/match input [:value n] n :else (inc \"unreachable\")))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [api :as a] [clojure.core.match :as m]))
+(inc (a/number-from [:value 42]))
+(subs (a/number-from [:value 42]) 0)
+(m/match [[[:value \"bad\"]]] [[[:value n]]] (inc n) :else 0)
+(m/match (list :value \"bad\") [:value n] (inc n) :else 0)
+(m/match [[:value]] [[:value n]] (inc \"wrong size\") :else 0)
+(m/match [[1] [2]] [[x] [x]] (inc \"opaque\") :else 0)")
+        ds (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"] ["client.clj" 7 "TSP7031"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest explicit-macro-contracts-on-the-reexport-take-precedence
   (let [provider (parse/parse-string "provider.clj" "(ns provider)
 (defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")

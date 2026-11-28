@@ -48,7 +48,10 @@
                                                    assoc ::original-value true)
                                         t/unknown)
                       (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
-                      :s/nilable (t/union t/nil-t (child (first args)))
+                      :s/nilable (if (= 1 (count args))
+                                   (vary-meta (t/union t/nil-t (child (first args)))
+                                              assoc ::structured true)
+                                   t/unknown)
                       :s/tuple (vary-meta (tuple (mapv child args)) assoc ::structured true)
                       :s/keys (let [shapes (t/members env (t/parse-type (assoc context :fail (constantly nil)) form))
                                     fields (fn [row]

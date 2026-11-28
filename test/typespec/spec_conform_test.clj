@@ -15,6 +15,40 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-preserves-nilable-results-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/def ::packet (s/nilable (s/keys :req-un [::n])))
+(s/def ::event (s/nilable (s/or :text string? :count int?)))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef unpack :args (s/cat :raw any?) :ret int?)
+(defn unpack [raw]
+  (let [value (s/conform ::a/packet raw)]
+    (if (s/invalid? value) 0
+      (if-some [{:keys [n]} value] (a/accept n) 0))))
+(s/fdef missing-guard :args (s/cat :raw any?) :ret int?)
+(defn missing-guard [raw]
+  (let [value (s/conform ::a/packet raw)]
+    (if (s/invalid? value) 0 (inc (:n value)))))
+(s/fdef render :args (s/cat :raw any?) :ret string?)
+(defn render [raw]
+  (let [value (s/conform ::a/event raw)]
+    (if (s/invalid? value) \"invalid\"
+      (if-some [[tag x] value]
+        (case tag :text (subs x 0) :count (str (a/accept x)))
+        \"nil\"))))
+(unpack nil)
+(render nil)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 10 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [result (conform/value-result {} {:aliases {'s 'clojure.spec.alpha}} '(s/nilable string?))]
+    (is (= #{t/nil-t (t/prim :string) (t/lit conform/invalid-key)}
+           (set (t/members {} result))))))
+
 (deftest conform-preserves-element-and-collection-types-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::item (s/or :text string? :count int?))

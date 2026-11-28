@@ -75,6 +75,49 @@
     (is (= [[9 "TSP2345"]] (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
         (pr-str (:diagnostics result)))))
 
+(deftest conditional-exits-narrow-the-rest-of-the-body
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::path (s/nilable string?))
+(s/def ::request (s/keys :opt-un [::path]))
+(s/fdef suffix :args (s/cat :request ::request) :ret string?)
+(defn suffix [{:keys [path] :as request}]
+  (when-not (some? path) (throw (IllegalArgumentException. \"Missing path\")))
+  (str (subs path 1) (subs (:path request) 1)))
+(s/fdef ensure-text :args (s/cat :input (s/or :text string? :code int?)) :ret string?)
+(defn ensure-text [input]
+  (if (string? input) nil (throw (IllegalArgumentException. \"Need text\")))
+  (subs input 1))
+(s/fdef speculative :args (s/cat :input ::path :flag boolean?) :ret string?)
+(defn speculative [input flag]
+  (if flag (when-not (string? input) (throw (IllegalArgumentException.))) nil)
+  (subs input 1))
+(s/fdef assertion-only :args (s/cat :input ::path) :ret string?)
+(defn assertion-only [input]
+  (assert (string? input))
+  (subs input 1))
+(s/fdef recovered :args (s/cat :input ::path) :ret string?)
+(defn recovered [input]
+  (when (nil? input) (try (throw (Exception.)) (catch Exception _ nil)))
+  (subs input 1))
+(s/fdef inverted :args (s/cat :input ::path) :ret string?)
+(defn inverted [input]
+  (if-not (string? input) (throw (IllegalArgumentException.)) nil)
+  (subs input 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/suffix {:path \"abc\"})
+(a/ensure-text \"abc\")
+(a/ensure-text true)")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 15 "TSP2531"] ["api.clj" 19 "TSP2531"]
+            ["api.clj" 23 "TSP2531"] ["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result))))
+  (let [suffix (fn [{:keys [path] :as request}]
+                 (when-not (some? path) (throw (IllegalArgumentException.)))
+                 (str (subs path 1) (subs (:path request) 1)))]
+    (is (= "bcbc" (suffix {:path "abc"})))
+    (is (thrown? IllegalArgumentException (suffix {})))))
+
 (deftest dead-recur-does-not-widen-live-loop-locals
   (let [result (checked "(ns flow (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat :stop? boolean?) :ret string?)

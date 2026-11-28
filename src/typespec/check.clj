@@ -2388,10 +2388,19 @@
    (loop [[form & more] forms, ctx ctx, result t/nil-t]
      (if form
        (let [reachable? (not= :never (:t result))
+             continuation (when (and reachable? (seq more)
+                                     (#{'if 'if-not 'when 'when-not} (builtin-head ctx form)))
+                            (volatile! nil))
+             analysis (cond-> ctx
+                        (not reachable?) (dissoc :recur-types)
+                        continuation (assoc ::conditional-continuation [form continuation]))
              ;; Keep diagnostics for later forms without adding dead loop edges.
-             inferred (infer-with-expected (cond-> ctx (not reachable?) (dissoc :recur-types))
-                                           form (when-not (seq more) expected))
+             inferred (infer-with-expected analysis form (when-not (seq more) expected))
              result (if reachable? inferred result)
+             ctx (if-let [surviving (some-> continuation deref)]
+                   (cond-> (dissoc surviving ::conditional-continuation)
+                     (::conditional-continuation ctx) (assoc ::conditional-continuation (::conditional-continuation ctx)))
+                   ctx)
              initialized (when (not= :never (:t result))
                            (seq (body-initializers ctx form)))]
          (recur more (cond-> ctx initialized (update :initialized-vars (fnil into #{}) initialized)) result))
@@ -3867,12 +3876,25 @@
             (= :never (:t absent)) (t/lit (= head 'some?))
             :else (t/prim :boolean)))))
 
+(defn- conditional-result [ctx node contexts types]
+  (when-let [[tracked continuation] (::conditional-continuation ctx)]
+    ;; A nested conditional cannot publish a context for its enclosing form.
+    (when (identical? node tracked)
+      (let [[surviving & others] (keep identity (map (fn [branch type]
+                                                     (when (or (not= :never (:t type)) (t/assumption type))
+                                                       branch))
+                                                   contexts types))]
+        (when (and surviving (empty? others))
+          (vreset! continuation surviving)))))
+  (apply t/union types))
+
 (defn- if-form [ctx node inverted?]
   (let [[test then else] (args-of node)
         branches (condition-contexts ctx test)
         [tc fc] (if inverted? (reverse branches) branches)]
-    (t/union (if tc (infer tc then) t/never)
-             (if fc (if else (infer fc else) t/nil-t) t/never))))
+    (conditional-result ctx node [tc fc]
+                        [(if tc (infer tc then) t/never)
+                         (if fc (if else (infer fc else) t/nil-t) t/never)])))
 
 (defmethod special 'if [ctx node _] (if-form ctx node false))
 
@@ -3882,8 +3904,9 @@
   (let [[test & body] (args-of node)
         branches (condition-contexts ctx test)
         [tc fc] (if inverted? (reverse branches) branches)]
-    (t/union (if tc (infer-body tc body) t/never)
-             (if fc t/nil-t t/never))))
+    (conditional-result ctx node [tc fc]
+                        [(if tc (infer-body tc body) t/never)
+                         (if fc t/nil-t t/never)])))
 
 (defmethod special 'when [ctx node _] (when-form ctx node false))
 (defmethod special 'when-not [ctx node _] (when-form ctx node true))

@@ -15,6 +15,44 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-map-of-into-vector-keeps-pair-data-and-entry-identity
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::val (s/or :text string? :count int?))
+(s/def ::rows (s/map-of string? ::val :into [] :count 2))
+(s/def ::raw-rows (s/map-of string? int? :into [] :count 1))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :raw any?) :ret (s/coll-of string? :kind vector?))
+(defn render [raw]
+  (let [rows (s/conform ::a/rows raw)]
+    (if (s/invalid? rows) []
+      (mapv (fn [[label [tag x]]]
+              (str (subs label 0)
+                   (case tag :text (subs x 0) :count (a/accept x))))
+            rows))))
+(s/fdef size :args (s/cat :raw any?) :ret #{2})
+(defn size [raw]
+  (let [rows (s/conform ::a/rows raw)]
+    (if (s/invalid? rows) 2 (count rows))))
+(defn wrong [raw]
+  (let [rows (s/conform ::a/rows raw)]
+    (when-not (s/invalid? rows)
+      (key (nth rows 0))
+      (val (nth rows 0))
+      (a/accept (first (nth rows 0))))))
+(s/fdef raw-label :args (s/cat :raw any?) :ret string?)
+(defn raw-label [raw]
+  (let [rows (s/conform ::a/raw-rows raw)]
+    (if (s/invalid? rows) \"invalid\" (subs (key (nth rows 0)) 0))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 17 "TSP2345"] ["client.clj" 18 "TSP2345"] ["client.clj" 19 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [same-key (s/map-of (s/conformer (constantly :same)) int?
+                           :conform-keys true :into [] :count 2)]
+    (is (= [[:same 1] [:same 2]] (s/conform same-key (array-map "a" 1 "b" 2))))))
+
 (deftest conform-keeps-types-through-compatible-following-predicates
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::payload (s/or :text string? :amount int?))

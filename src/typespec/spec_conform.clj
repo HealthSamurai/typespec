@@ -8,6 +8,20 @@
 (defn- tuple [items]
   (with-meta (t/tuple items) {::t/tuple-contract true}))
 
+(defn- unchanged-value? [type]
+  (let [facts (meta type)]
+    (or (::predicate-result facts) (::original-value facts))))
+
+(defn- conformed-entry [key value conform-keys?]
+  (cond
+    (or (and conform-keys? (::tagged (meta key))) (::tagged (meta value)))
+    (assoc (tuple [key value]) :jvm-class "clojure.lang.PersistentVector")
+
+    (and (or (not conform-keys?) (unchanged-value? key)) (unchanged-value? value))
+    (t/map-entry-type key value)
+
+    :else (tuple [key value])))
+
 (defn- conform-result [env context form supported?]
   (let [budget (volatile! 256)]
     (letfn [(output [context form active]
@@ -76,13 +90,20 @@
                       :s/map-of
                       (let [[key value & options] args
                             {:keys [conform-keys into]} (when (even? (count options)) (apply hash-map options))
-                            input (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)]
-                        (if (and (= :map-of (:t input)) (or (nil? into) (= {} into))
+                            input (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
+                            vector-output? (and (vector? into) (empty? into))]
+                        (if (and (= :map-of (:t input)) (or (nil? into) (= {} into) vector-output?)
                                  (contains? #{nil false true} conform-keys))
-                          (vary-meta (cond-> (assoc input :v (child value))
-                                       conform-keys (assoc :k (child key))
-                                       (or conform-keys into) (dissoc :min-count))
-                                     assoc ::structured true)
+                          (let [key-result (if conform-keys (child key) (:k input))
+                                value-result (child value)
+                                result (if vector-output?
+                                         (-> input
+                                             (dissoc :k :v)
+                                             (assoc :t :coll :kind :vector
+                                                    :of (conformed-entry key-result value-result conform-keys)))
+                                         (cond-> (assoc input :k key-result :v value-result)
+                                           (or conform-keys into) (dissoc :min-count)))]
+                            (vary-meta result assoc ::structured true))
                           t/unknown))
                       :s/coll-of
                       (let [[item & options] args

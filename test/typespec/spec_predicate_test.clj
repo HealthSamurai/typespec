@@ -747,6 +747,35 @@
            (select-keys (contracts/dependency-paths (:specs env) (t/ref-t :api/event))
                         [:domain/event :domain/message])))))
 
+(deftest spec-conjunction-retains-merged-map-inputs
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::label string?)
+(s/def ::header (s/keys :req-un [::id]))
+(s/def ::content (s/keys :req-un [::label]))
+(s/def ::message (s/merge ::header (s/nonconforming ::content)))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/def ::request (s/and map? (s/spec ::d/message)))
+(s/fdef display :args (s/cat :request ::request) :ret string?)
+(defn display [{:keys [id label]}] (str (subs label 0) (inc id)))
+(s/fdef make-request :args (s/cat :label string?) :ret ::request)
+(defn make-request [label] {:id 1 :label label})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/display {:id 1 :label \"ok\"})
+(a/display (a/make-request \"ok\"))
+(a/display {:label \"missing\"})
+(a/display {:id 1})
+(a/display {:id \"1\" :label \"ok\"})
+(a/display {:id 1 :label 2})
+(a/display nil)")
+        {:keys [diagnostics env]} (check/check-files [client api domain] {})]
+    (is (= [[4 "TSP2741"] [5 "TSP2741"] [6 "TSP2322"] [7 "TSP2322"] [8 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (every? #(= "client.clj" (:file %)) diagnostics))
+    (is (= [:api/request :domain/message]
+           (get (contracts/dependency-paths (:specs env) (t/ref-t :api/request)) :domain/message)))))
+
 (deftest collection-specs-check-maps-as-entry-collections
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::entry (s/tuple keyword? int?))

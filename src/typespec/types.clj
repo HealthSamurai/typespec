@@ -1073,6 +1073,15 @@
           false)
     spec))
 
+(defn- map-input-shape [type]
+  (when (and type
+             (not= 's/or (::shape-form (meta type)))
+             (every? #(= :map (:t %)) (members {} type)))
+    type))
+
+(defn- shape-references [shapes]
+  (into #{} (mapcat #(-> % meta ::referenced-specs)) shapes))
+
 (defn- conjunction-input-shape [ctx form seen]
   (cond
     (qualified-keyword? form) (named-spec-input ctx form seen conjunction-input-shape)
@@ -1094,15 +1103,13 @@
                     (when (every? some? branches)
                       (with-meta (apply union branches)
                         {::shape-form 's/or
-                         ::referenced-specs (into #{} (mapcat #(-> % meta ::referenced-specs)) branches)})))))
+                         ::referenced-specs (shape-references branches)})))))
+        :s/merge (let [parts (mapv #(map-input-shape (conjunction-input-shape ctx % seen)) (rest form))]
+                   (when (and (seq parts) (every? some? parts))
+                     (with-meta {:t :merge :types parts}
+                       {::referenced-specs (shape-references parts)})))
         (when-let [inner (wrapped-spec-form op form)]
           (recur ctx inner seen))))))
-
-(defn- map-input-shape [type]
-  (when (and type
-             (not= 's/or (::shape-form (meta type)))
-             (every? #(= :map (:t %)) (members {} type)))
-    type))
 
 (defn- nonconforming-map-input [ctx form seen]
   (cond
@@ -1126,7 +1133,7 @@
         (when (< 1 (count shapes))
           (when-let [combined (map-input-shape {:t :merge :types shapes})]
             (with-meta combined
-              {::referenced-specs (into #{} (mapcat #(-> % meta ::referenced-specs)) shapes)})))))))
+              {::referenced-specs (shape-references shapes)})))))))
 
 (defn- spec-conjunction-type [ctx forms]
   ;; The first transforming spec can still constrain the original input
@@ -1148,7 +1155,7 @@
             type (if (and (qualified-keyword? leading) (= refined (first prefix)))
                    (ref-t leading)
                    refined)
-            references (into #{} (mapcat #(-> % meta ::referenced-specs)) (cons refined prefix))]
+            references (shape-references (cons refined prefix))]
         (cond-> type (seq references) (vary-meta assoc ::referenced-specs references)))
       (or map-shape (parse-type ctx (first forms))))))
 

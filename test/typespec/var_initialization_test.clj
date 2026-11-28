@@ -182,6 +182,39 @@ p/calculated")
     (is (= [["consumer.clj" 3] ["consumer.clj" 4] ["provider.clj" 3] ["provider.clj" 6]]
            (mapv (juxt :file (comp :row :pos)) (:diagnostics result))))))
 
+(deftest load-time-functions-keep-captured-types-across-namespaces
+  (let [result (checked "(require '[clojure.spec.alpha :as s])
+(clojure.spec.alpha/fdef decorate
+  :args (clojure.spec.alpha/cat :parts (clojure.spec.alpha/tuple string? int?))
+  :ret string?)
+(declare label-size)
+(label-size \"early\")
+(let [{:keys [suffix]} {:suffix \"!\"}
+      length count]
+  (do
+    (defn label-size [^String label] (length label))
+    (let [tail suffix]
+      (defn decorate [[label number]] (str label number tail))
+      (defn broken [] (inc tail)))))
+(do (defn ready [] 42))
+(let [defn (constantly nil) shadowed nil]
+  (defn shadowed [] 1))
+(comment (defn ignored [] 1))"
+                        "(inc (p/label-size \"ok\"))
+(p/label-size 42)
+(subs (p/decorate [\"ok\" 42]) 0)
+(p/decorate [42 \"bad\"])
+(inc (p/ready))
+p/shadowed
+p/ignored")
+        diagnostics (:diagnostics result)]
+    (is (= [["consumer.clj" 3 "TSP2345"]
+            ["consumer.clj" 5 "TSP2345"]
+            ["consumer.clj" 7 "TSP2305"] ["consumer.clj" 8 "TSP2305"]
+            ["provider.clj" 7 "TSP721-01"] ["provider.clj" 14 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest finds-defs-in-code-and-skips-data-and-opaque-macros
   (let [result (checked "(defmacro discard [& _] nil)
                          (defn init [flag] (if flag (def branch nil) nil))

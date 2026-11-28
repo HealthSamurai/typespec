@@ -152,6 +152,48 @@
              form)))
        (:forms file)))
 
+(declare ^:private parameter-bindings)
+
+(defn- wrapped-functions [file form]
+  (letfn [(visit [form captured locals wrapped?]
+            (when (= :list (:op form))
+              (let [[operator bindings & body] (:children form)
+                    h (head file form)]
+                (cond
+                  (= h 'clojure.test/with-test) (visit bindings captured locals wrapped?)
+                  (= h (t/core-name (assoc file :locals locals) (:val operator)))
+                  (case h
+                    do (mapcat #(visit % captured locals true) (rest (:children form)))
+                    let (when (and (= :vector (:op bindings)) (even? (count (:children bindings))))
+                          (let [locals (into locals (mapcat parameter-bindings)
+                                             (take-nth 2 (:children bindings)))]
+                            (mapcat #(visit % (conj captured bindings) locals true) body)))
+                    (defn defn-) (when wrapped?
+                                   [{:form form :bindings captured :locals locals}])
+                    nil)))))]
+    (visit form [] #{} false)))
+
+(declare ^:private protocol-methods)
+
+(defn- top-level-vars [file]
+  (into #{}
+        (mapcat (fn [form]
+                  (let [[h nm & forms] (:children form)]
+                    (when (and (= :list (:op form)) (= :sym (:op h)) (= :sym (:op nm))
+                               (.startsWith (name (:val h)) "def"))
+                      (cons (:val nm)
+                            (when (= 'defprotocol (head file form))
+                              (keys (protocol-methods file forms))))))))
+        (declaration-forms file)))
+
+(defn- index-wrapped-functions [file]
+  (let [names (top-level-vars file)
+        context (assoc file :defined-symbols names)]
+    (assoc file ::wrapped-functions
+           (into {} (map (juxt (comp :pos :form) identity))
+                 (mapcat #(wrapped-functions context %) (declaration-forms file)))
+           ::top-level-vars names)))
+
 (def ^:private import-vars-heads
   '#{potemkin/import-vars potemkin.namespaces/import-vars})
 
@@ -300,18 +342,19 @@
                   data? (or (= 'def operator)
                             (and (#{'defonce 'declare} operator)
                                  (or at-load? (namespace (:val head-node)))))
+                  function-init? (and (#{'defn 'defn-} operator)
+                                      (or at-load? (contains? (::wrapped-functions file) (:pos form))))
                   names (cond
                           (seq factories) (map first factories)
                           (and data? (= 'declare operator)) (keep #(var-name file %) (rest (:children form)))
-                          (and name (or data? (and at-load? (#{'defn 'defn-} operator)))) [name])
+                          (and name (or data? function-init?)) [name])
                   data-initializer (when (and at-load? (#{'def 'defonce} operator))
                                      (initialized-var file form))
                   value (when (#{'def 'defonce} operator) (definition-initializer form))
                   later-write (cond
                                 (= 'alter-var-root operator) (literal-var-name file target)
                                 (and (= 'def operator) value (not at-load?)) name)
-                  init? (and at-load?
-                             (or (seq factories) (#{'defn 'defn-} operator) data-initializer))
+                  init? (or function-init? (seq factories) data-initializer)
                   hint (when data-initializer (hint-type file target))
                   constant (when data-initializer (constant-initializer file target value))
                   regex-initializer? (and data-initializer
@@ -344,22 +387,13 @@
   (let [[initializer & others] (get-in env [:var-declarations sym :initializers])]
     (when-not (seq others) initializer)))
 
-(declare ^:private protocol-methods)
-
 (defn namespace-vars
   "Known names and Var initialization sites. Defs inside opaque macro bodies are excluded."
   [files macros]
   (let [declarations (var-declarations files macros)
         top-level (reduce (fn [acc file]
                             (update acc (:ns file) (fnil into #{})
-                                    (mapcat (fn [form]
-                                              (let [[h nm & forms] (:children form)]
-                                                (when (and (= :list (:op form)) (= :sym (:op h)) (= :sym (:op nm))
-                                                           (.startsWith (name (:val h)) "def"))
-                                                  (cons (:val nm)
-                                                        (when (= 'defprotocol (head file form))
-                                                          (keys (protocol-methods file forms)))))))
-                                            (declaration-forms file))))
+                                    (or (::top-level-vars file) (top-level-vars file))))
                           {} files)]
     {:var-declarations declarations
      :ns-defs (reduce (fn [acc sym]
@@ -477,7 +511,7 @@
   "Facts about fixed parameters with their source conditions from supported :pre forms."
   [file params body]
   (when-let [tests (seq (pre-conditions body))]
-    (let [file (assoc file :locals (set (parameter-bindings params)))
+    (let [file (update file :locals #(into (set %) (parameter-bindings params)))
           fixed (into #{} (keep #(when (= :sym (:op %)) (:val %))) (:fixed (split-params params)))]
       (filter #(fixed (first %)) (mapcat #(condition-facts file %) tests)))))
 
@@ -732,11 +766,13 @@
          (#{'defn 'defn-} h)
          (let [parts (defn-parts form)
                sig-node (some-> (:attr parts) (attr-get :t/sig))
-               sym (qualify (:val (:name parts)))]
+               sym (qualify (:val (:name parts)))
+               capture (get (::wrapped-functions file) (:pos form))]
            (-> acc
                (update-in [:root-definitions sym] (fnil inc 0))
                (assoc-in [:defns sym]
-                         {:file file :parts parts :pos (:pos (:name parts))
+                         {:file (cond-> file capture (assoc :locals (:locals capture)))
+                          :parts parts :pos (:pos (:name parts)) :bindings (:bindings capture)
                           :definition form
                           :sig-pos (:pos sig-node)
                           :sig (when sig-node
@@ -756,7 +792,11 @@
              (assoc-in [:atom-initializers sym] {:file file :node init})))
 
          :else acc)))
-   acc (declaration-forms file)))
+   acc (let [forms (declaration-forms file)
+             wrapped (vals (::wrapped-functions file))]
+         (if (seq wrapped)
+           (sort-by (comp (juxt :row :col) :pos) (concat forms (map :form wrapped)))
+           forms))))
 
 (defn- protocol-vars [protocols fdefs diags]
   (into {}
@@ -835,7 +875,7 @@
       (note diags (:file d) (:name (:parts d)) "TSP2790"
             (str "t/sig and s/fdef of " (name sym) " disagree: "
                  (t/show sig) " vs " (if return-only (str ":ret " (t/show return-only)) (t/show (:type fd))))))
-    {:parts (:parts d) :pfile (:file d) :definition (:definition d)
+    {:parts (:parts d) :pfile (:file d) :definition (:definition d) :bindings (:bindings d)
      :type (or declared inferred)
      :contract (if sig {:file (:file (:file d)) :pos (:sig-pos d)}
                    (select-keys fd [:file :pos]))
@@ -862,6 +902,7 @@
                                :let [sym (var-name file (second (:children form)))]
                                :when sym]
                            sym))
+        files (mapv index-wrapped-functions files)
         names (namespace-vars files macros)
         forwarders (import-vars-forwarders files)
         imports (var-imports files (:ns-defs names) forwarders)

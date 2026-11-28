@@ -34,7 +34,7 @@
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
          unsupported-sequence-member specialize-call-return run-composition run-deferred-call map-entry-sequence
          apply-preconditions regex-literal-type class-symbol-name callable-data-result map-into-member
-         boxed-class-problems)
+         boxed-class-problems bind-pairs)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -2303,6 +2303,15 @@
                 (when *rets* (swap! *rets* assoc sym type))
                 type))))))
 
+(defn- function-context [ctx {:keys [pfile bindings]}]
+  (let [fctx {:env (:env ctx) :file pfile :opts (:opts ctx) :locals {} :quiet true}]
+    (if (seq bindings)
+      (binding [t/*cur-ns* (:ns pfile)
+                *types* nil *trust* (atom {:cast 0 :any 0 :ignore 0}) *ignores* (atom [])]
+        (-> (reduce bind-pairs (assoc fctx :load-time? true :pending-callbacks (volatile! [])) bindings)
+            (dissoc :load-time? :pending-callbacks ::binding-stop)))
+      fctx)))
+
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
   [ctx sym]
@@ -2326,7 +2335,7 @@
         (contains? @*rets* sym) (get @*rets* sym)
         :else
         (do (swap! *rets* assoc sym (:type v)) ; a recursive call sees the declared part only
-            (let [fctx {:env (:env ctx) :file (:pfile v) :opts (:opts ctx) :locals {} :quiet true}
+            (let [fctx (function-context ctx v)
                   ars (mapv (fn [a {:keys [params body]}]
                               (if (or (nil? params)
                                       (and (not shape-candidate?) (not= :unknown (:t (:ret a)))))
@@ -9680,7 +9689,8 @@
                      (hint-conflicts? env (:ret declared) ret-hint))
             (report! ctx ret-tag "TSP2322"
                      (str "hint " (t/show ret-hint) " contradicts the signature: " (t/show (:ret declared)))))
-          (let [facts (when (#{:sig :fdef} (:source v)) (seq (env/pre-facts file params body)))
+          (let [facts (when (#{:sig :fdef} (:source v))
+                        (seq (env/pre-facts (assoc file :locals (set (keys (:locals ctx)))) params body)))
                 forms (if facts
                         (do (infer ctx' (first body)) (next body))
                         body)

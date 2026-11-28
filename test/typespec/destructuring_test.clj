@@ -14,6 +14,47 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest conditional-forms-preserve-aborting-destructuring-branches
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/def ::input (s/keys :req-un [::label]))
+(s/fdef if-let-halt :args (s/cat :input (s/nilable ::input)) :ret int?)
+(defn if-let-halt [input]
+  (if-let [{:keys [label] :or {label (throw (Exception. \"if-let default stopped\"))}} input]
+    :wrong
+    1))
+(s/fdef when-let-halt :args (s/cat :input (s/nilable ::input)) :ret nil?)
+(defn when-let-halt [input]
+  (when-let [{:keys [label] :or {label (throw (Exception. \"when-let default stopped\"))}} input]
+    :wrong))
+(s/fdef if-some-halt :args (s/cat :input (s/nilable ::input)) :ret int?)
+(defn if-some-halt [input]
+  (if-some [{:keys [label] :or {label (throw (Exception. \"if-some default stopped\"))}} input]
+    :wrong
+    2))
+(s/fdef when-some-halt :args (s/cat :input (s/nilable ::input)) :ret nil?)
+(defn when-some-halt [input]
+  (when-some [{:keys [label] :or {label (throw (Exception. \"when-some default stopped\"))}} input]
+    :wrong))
+(s/fdef tail :args (s/cat :input (s/nilable ::input)) :ret nil?)
+(defn tail [input]
+  (when-some [{:keys [label] :or {label (throw (Exception. \"tail default stopped\"))}} input]
+    :unreachable)
+  input)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/if-let-halt nil))
+(a/when-let-halt nil)
+(inc (a/if-some-halt nil))
+(a/when-some-halt nil)
+(a/if-let-halt {:label 42})
+(a/tail nil)")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 6 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["1" "nil?" "2" "nil?" "nil?"]
+           (mapv #(main/type-at result "api.clj" % 3) [6 11 15 20 26])))))
+
 (deftest function-results-preserve-aborting-parameter-destructuring
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::label string?)

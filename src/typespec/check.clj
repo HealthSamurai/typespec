@@ -1169,6 +1169,11 @@
                       (dissoc entries :as :or) directives)))
       (sort-by (fn [[k _]] (if (keys-directive k) 1 0)) pairs))))
 
+(defn- note-binding-stop [ctx ty]
+  (if (and (= :never (:t ty)) (nil? (::binding-stop ctx)))
+    (assoc ctx ::binding-stop ty)
+    ctx))
+
 (defn- bind-map-entry [ctx pattern node key ty outer-why projection defaults & [selected]]
   (let [env (:env ctx)
         {:keys [type optional? declared? status]} (or selected (key-info ctx ty key node))
@@ -1187,7 +1192,7 @@
                           :else (str key " may be absent")))]
     (when (and bang? declared? (or optional? (t/nilable? env type)))
       (report! ctx node "TSP2741" (str ":keys! below requires " key ", but it is optional in " tname)))
-    (bind-pattern (cond-> ctx (= :never (:t default-type)) (assoc ::binding-stopped? true))
+    (bind-pattern (note-binding-stop ctx default-type)
                   pattern (cond bang? (t/remove-nil env type)
                                 optional? (t/union type (or default-type t/nil-t))
                                 :else type)
@@ -1214,7 +1219,7 @@
   (if-let [key (static-map-key selector)]
     (bind-map-entry ctx pattern selector key source why (project key) defaults)
     (let [selector-type (eff ctx (infer ctx selector))
-          ctx (cond-> ctx (= :never (:t selector-type)) (assoc ::binding-stopped? true))
+          ctx (note-binding-stop ctx selector-type)
           keys (mapv map-lookup-key (mapcat expand-boolean (t/members (:env ctx) selector-type)))
           key (first keys)]
       (if (and (some? key) (= 1 (count keys)))
@@ -2450,10 +2455,9 @@
                   why (why-of ctx init ty)
                   captured (when (and sym (not (env/tag-node p))) (condition-capture ctx init))
                   compiler-class (when (and sym (not (env/tag-node p))) (compiler-value-class ctx init))
-                  ctx' (bind-pattern ctx p ty why (stable-path ctx init))]
+                  ctx' (bind-pattern (note-binding-stop ctx ty) p ty why (stable-path ctx init))]
               (when-not callback (record! ctx p (get-in ctx' [:locals (:val p)] ty)))
               (cond-> ctx'
-                (= :never (:t ty)) (assoc ::binding-stopped? true)
                 captured (assoc-in [:conditions sym] captured)
                 compiler-class (assoc-in [:compiler-local-classes sym] compiler-class)
                 (and sym (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) sym))))
@@ -2531,11 +2535,11 @@
          result)))))
 
 (defn- infer-bound-body [ctx forms expected]
-  (let [stopped? (::binding-stopped? ctx)
-        analysis (cond-> (dissoc ctx ::binding-stopped?)
-                   stopped? (dissoc :recur-types))
+  (let [stopped (::binding-stop ctx)
+        analysis (cond-> (dissoc ctx ::binding-stop)
+                   stopped (dissoc :recur-types))
         result (infer-body analysis forms expected)]
-    (if stopped? t/never result)))
+    (or stopped result)))
 
 (defn- fn-bodies [node]
   (if (= :fn-lit (:op node))
@@ -2564,7 +2568,7 @@
                       (when (seq contracts)
                         (record! bound p (get-in bound [:locals (:val p)] ty)))
                       bound))
-                  (dissoc ctx ::binding-stopped?) (map vector (range) fixed ptypes))
+                  (dissoc ctx ::binding-stop) (map vector (range) fixed ptypes))
         c (cond-> c (and reader? (seq ptypes)) (bind '% (first ptypes)))
         rest-of (when (and rest (not kwargs))
                   (if (seq contracts)
@@ -4052,7 +4056,7 @@
 (defmethod special 'let [ctx node _]
   (let [[bindings & body] (args-of node)
         pending (volatile! [])
-        c (bind-pairs (assoc (dissoc ctx ::binding-stopped?) :pending-callbacks pending) bindings)
+        c (bind-pairs (assoc (dissoc ctx ::binding-stop) :pending-callbacks pending) bindings)
         result (infer-bound-body (dissoc c :pending-callbacks) body nil)]
     ;; Later bindings may provide context for earlier callbacks.
     (doseq [callback (rseq @pending)]
@@ -4210,7 +4214,7 @@
                      ;; A binding can be narrowed even when its source path could not be split.
                      (when (= ty (dissoc (projected-type ctx type path) :fresh))
                        source))]
-    (cond-> (bind-pattern ctx pattern ty nil projection)
+    (cond-> (bind-pattern (dissoc ctx ::binding-stop) pattern ty nil projection)
       captured (assoc-in [:conditions (:val pattern)] captured))))
 
 (defn- if-let-form [ctx node some?]
@@ -4222,7 +4226,7 @@
         [tc fc] (binding-test-contexts ctx init some?)]
     (conditional-result ctx node [tc fc]
                         [(if (or (nil? tc) (= :never (:t positive))) t/never
-                             (infer (bind-conditional-pattern tc p init positive) then))
+                             (infer-bound-body (bind-conditional-pattern tc p init positive) [then] nil))
                          (if (or (nil? fc) (= :never (:t negative))) t/never
                              (if else (infer fc else) t/nil-t))])))
 
@@ -4238,7 +4242,7 @@
         [tc fc] (binding-test-contexts ctx init some?)]
     (conditional-result ctx node [tc fc]
                         [(if (or (nil? tc) (= :never (:t positive))) t/never
-                             (infer-body (bind-conditional-pattern tc p init positive) body))
+                             (infer-bound-body (bind-conditional-pattern tc p init positive) body nil))
                          (if (or (nil? fc) (= :never (:t negative))) t/never t/nil-t)])))
 
 (defmethod special 'when-let [ctx node _] (when-let-form ctx node false))
@@ -9591,7 +9595,7 @@
                              (let [c' (bind-pattern c p ty)]
                                (record! ctx p ty)
                                (if (= :sym (:op p)) (update c' :params (fnil conj #{}) (:val p)) c')))
-                           (dissoc ctx :recur-types :load-time? ::binding-stopped?)
+                           (dissoc ctx :recur-types :load-time? ::binding-stop)
                            (map vector fixed (:params declared)))
               ctx' (cond (nil? rest) ctx'
                          (and (:kwargs declared) (= :map (:op rest))) (bind-pattern ctx' rest (:kwargs declared))

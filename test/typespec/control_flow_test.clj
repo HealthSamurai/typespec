@@ -289,6 +289,34 @@
         (pr-str (:diagnostics result)))
     (is (= "t/never" (main/type-at result "api.clj" 4 3)))))
 
+(deftest dynamic-binding-forms-propagate-aborting-initializers
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(def ^:dynamic *label* \"value\")
+(def plain \"value\")
+(s/fdef halt-binding :args (s/cat) :ret int?)
+(defn halt-binding []
+  (binding [*label* (throw (Exception. \"binding stopped\"))] :wrong))
+(s/fdef halt-redefs :args (s/cat) :ret int?)
+(defn halt-redefs []
+  (with-redefs [plain (throw (Exception. \"redefs stopped\"))] :wrong))
+(s/fdef halt-local :args (s/cat) :ret int?)
+(defn halt-local []
+  (with-local-vars [local (throw (Exception. \"local stopped\"))] :wrong))
+(s/fdef label-of :args (s/cat :input string?) :ret string?)
+(defn label-of [input] (binding [*label* input] (str *label*)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/halt-binding))
+(inc (a/halt-redefs))
+(inc (a/halt-local))
+(subs (a/label-of \"ok\") 0)
+(a/label-of 42)")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= (repeat 3 "t/never")
+           (mapv #(main/type-at result "api.clj" % 3) [6 9 12])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

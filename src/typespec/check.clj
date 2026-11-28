@@ -4511,9 +4511,11 @@
 
 (doseq [h '[binding with-redefs with-local-vars]]
   (defmethod special h [ctx node _]
-    (let [[bindings & body] (args-of node)]
-      (run! #(infer ctx (second %)) (partition 2 (:children bindings)))
-      (infer-body (cond-> ctx (= 'with-redefs h) (assoc :guards-disabled? true)) body))))
+    (let [[bindings & body] (args-of node)
+          inputs (mapv #(infer ctx (second %)) (partition 2 (:children bindings)))
+          analysis (cond-> (reduce note-binding-stop (dissoc ctx ::binding-stop) inputs)
+                     (= 'with-redefs h) (assoc :guards-disabled? true))]
+      (infer-bound-body analysis body nil))))
 
 (defmethod special 'doto [ctx node _]
   (let [[x & forms] (args-of node)

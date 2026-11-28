@@ -7214,7 +7214,7 @@
                         (apply-fn-node ctx f (mapv :element parts)))]
           (t/with-assumption
            (cond-> (length/with-bounds (coll-of kind element) minimum maximum)
-             (= :seq kind) (assoc :sequential? true))
+             (= :seq kind) (assoc :jvm-class "clojure.lang.LazySeq"))
            (some t/assumption sources)))))))
 
 (defn- apply-indexed-callback [ctx callback element]

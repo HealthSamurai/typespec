@@ -483,6 +483,37 @@
     (is (= "42 is not assignable to :api/input (seqable?)" (:message (first diagnostics))))
     (is (= "true is not assignable to seqable?" (:message (peek diagnostics))))))
 
+(deftest counted-spec-distinguishes-constant-time-counting-from-count
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::fast counted?)
+(s/def ::wrapped #(clojure.core/counted? %))
+(s/fdef length :args (s/cat :value ::fast) :ret int?)
+(defn length [value] (count value))
+(s/fdef wrapped :args (s/cat :value ::wrapped) :ret int?)
+(defn wrapped [value] (count value))
+(s/fdef has-count :args (s/cat :value any?) :ret boolean?)
+(defn has-count [value] (counted? value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/length {}))
+(inc (a/length [1]))
+(inc (a/length '(1)))
+(inc (a/wrapped #{1}))
+(a/length (map inc [1]))
+(a/length (java.util.ArrayList.))
+(a/length nil)
+(a/wrapped (int-array 2))
+(defn by-kind [^clojure.lang.ISeq x] (a/length x))
+(a/has-count :value)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 10 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (counted? '(1)))
+  (is (not (counted? (map inc [1]))))
+  (is (not (counted? (int-array 2)))))
+
 (deftest sequential-spec-checks-the-jvm-marker-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::ordered sequential?)

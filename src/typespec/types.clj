@@ -34,7 +34,7 @@
 ;; These facts do not change the nominal type.
 (defn strip [t]
   (dissoc t :platform :as :generic-failure :exact-array? :array-length :ambiguous-number-box?
-          :regex-groups :sequential?))
+          :regex-groups))
 
 (defn union [& ts]
   (let [[flat nullable?]
@@ -56,7 +56,6 @@
                                     (not (:exact-array? x)) (dissoc :exact-array?)
                                     (not= (:array-length %) (:array-length x)) (dissoc :array-length)
                                     (not= (:regex-groups %) (:regex-groups x)) (dissoc :regex-groups)
-                                    (not (:sequential? x)) (dissoc :sequential?)
                                     (not= (literal-number-class %) (literal-number-class x))
                                     (assoc :ambiguous-number-box? true)))
                          nullable?)
@@ -149,6 +148,7 @@
    :seq "clojure.lang.ISeq" :coll "clojure.lang.IPersistentCollection"})
 
 (def ^:private sequential-class "clojure.lang.Sequential")
+(def ^:private counted-class "clojure.lang.Counted")
 
 (defn class-type [n]
   (cond (= n "void") nil-t
@@ -252,7 +252,7 @@
   false)
 
 (defn- inconclusive-sequence-kind! [kind target]
-  (and (= :seq kind) (= sequential-class target) (inconclusive! :sequence-kind)))
+  (and (= :seq kind) (#{sequential-class counted-class} target) (inconclusive! :sequence-kind)))
 
 (defn- prim-sub? [a b]
   (or (= a b)
@@ -526,11 +526,10 @@
                                     (every? #(sub? env % (:of t)) items)
                                     (or (= 0 (:max-count s)) (sub? env (:of s) (:of t))))))
                      :prim (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}} (:kind s) #{:coll}) (:name t))
-                     :class (or (and (:sequential? s) (= sequential-class (:name t)))
-                                (if-let [c (:jvm-class s)]
-                                  (class-sub? c (:name t))
-                                  (or (prim-is-class? (or (:kind s) :coll) (:name t))
-                                      (inconclusive-sequence-kind! (:kind s) (:name t)))))
+                     :class (if-let [c (:jvm-class s)]
+                              (class-sub? c (:name t))
+                              (or (prim-is-class? (or (:kind s) :coll) (:name t))
+                                  (inconclusive-sequence-kind! (:kind s) (:name t))))
                      false)
       (= :fn st) (case tt
                     :fn (boolean (fn-sub? env s t))
@@ -782,6 +781,7 @@
       nil? nil-t
       seqable? seqable-type
       sequential? (assoc (class-type sequential-class) :as "sequential?")
+      counted? (assoc (class-type counted-class) :as "counted?")
       associative? (class-type "clojure.lang.Associative")
       indexed? (class-type "clojure.lang.Indexed")
       list? (class-type "clojure.lang.IPersistentList")
@@ -873,7 +873,8 @@
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
-                   (contains? '#{list? vector? map? set? seqable? sequential? associative? indexed? string? keyword? symbol? boolean?
+                   (contains? '#{list? vector? map? set? seqable? sequential? counted? associative? indexed? string? keyword?
+                                 symbol? boolean?
                                  true? false? nil? some? any? char? bytes? class? int? number?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 

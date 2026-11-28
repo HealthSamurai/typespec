@@ -15,6 +15,28 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conformed-literals-match-cross-namespace-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::tag (some-fn string? #{:auto}))
+(defn parse-tag [value] (s/conform ::tag value))
+(s/fdef render :args (s/cat :tag ::tag) :ret string?)
+(defn render [tag] (str tag))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef bridge :args (s/cat :value any?) :ret (s/nilable string?))
+(defn bridge [value]
+  (let [tag (a/parse-tag value)]
+    (when-not (s/invalid? tag) (a/render tag))))
+(bridge \"custom\")
+(bridge :auto)
+(bridge :wrong)
+(a/render :wrong)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= ["custom" :auto ::s/invalid]
+           (mapv #(s/conform (some-fn string? #{:auto}) %) ["custom" :auto :wrong])))))
+
 (deftest conform-predicate-combinations-preserve-successful-values
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::tag (some-fn string? #{:auto false nil}))

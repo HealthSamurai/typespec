@@ -2124,8 +2124,8 @@
 
 (defn- widen [ty]
   (cond-> (case (:t ty)
-            ;; s/invalid? needs the exact sentinel through inferred returns.
-            :lit (if (= conform/invalid-key (:val ty))
+            ;; Spec results carry validated alternatives through inferred returns.
+            :lit (if (or (= conform/invalid-key (:val ty)) (::conform/literal-result (meta ty)))
                    ty
                    (t/with-assumption (t/lit-prim (:val ty)) (t/assumption ty)))
             :union (apply t/union (map widen (:types ty)))

@@ -17,6 +17,12 @@
     (cond-> result
       (not= t/unknown result) (vary-meta assoc ::original-value true))))
 
+(defn- mark-result-literals [type]
+  (case (:t type)
+    :lit (vary-meta type assoc ::literal-result true)
+    :union (update type :types #(mapv mark-result-literals %))
+    type))
+
 (defn- retain-through-predicate [env previous result]
   (if (and (unchanged-value? result) (not (#{:unknown :any} (:t previous))))
     (cond
@@ -173,7 +179,7 @@
                   :else t/unknown)))]
       (let [result (output context form #{})]
         (when (and (not= t/unknown result) (supported? (meta result)))
-          (t/union result (t/lit invalid-key)))))))
+          (t/union (mark-result-literals result) (t/lit invalid-key)))))))
 
 (defn tagged-result
   "Type of conform when the final result is tagged by a known s/or, including failure."

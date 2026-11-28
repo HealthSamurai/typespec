@@ -2530,6 +2530,13 @@
            (vreset! after ctx))
          result)))))
 
+(defn- infer-bound-body [ctx forms expected]
+  (let [stopped? (::binding-stopped? ctx)
+        analysis (cond-> (dissoc ctx ::binding-stopped?)
+                   stopped? (dissoc :recur-types))
+        result (infer-body analysis forms expected)]
+    (if stopped? t/never result)))
+
 (defn- fn-bodies [node]
   (if (= :fn-lit (:op node))
     (when-let [params (parse/reader-fn-parameters node)]
@@ -2557,7 +2564,7 @@
                       (when (seq contracts)
                         (record! bound p (get-in bound [:locals (:val p)] ty)))
                       bound))
-                  ctx (map vector (range) fixed ptypes))
+                  (dissoc ctx ::binding-stopped?) (map vector (range) fixed ptypes))
         c (cond-> c (and reader? (seq ptypes)) (bind '% (first ptypes)))
         rest-of (when (and rest (not kwargs))
                   (if (seq contracts)
@@ -2576,7 +2583,7 @@
                        (mapv #(or (env/hint-type file %1) %2) fixed ptypes)
                        ptypes)
              :rest rest-of
-             :ret (let [ret (infer-body c body)] (if (seq contracts) (eff ctx ret) ret))}
+             :ret (let [ret (infer-bound-body c body nil)] (if (seq contracts) (eff ctx ret) ret))}
       kwargs (assoc :kwargs kwargs))))
 
 (defn- callback-branch-shape [ctx {:keys [fixed rest]}]
@@ -4046,14 +4053,11 @@
   (let [[bindings & body] (args-of node)
         pending (volatile! [])
         c (bind-pairs (assoc (dissoc ctx ::binding-stopped?) :pending-callbacks pending) bindings)
-        stopped? (::binding-stopped? c)
-        analysis (cond-> (dissoc c :pending-callbacks ::binding-stopped?)
-                   stopped? (dissoc :recur-types))
-        result (infer-body analysis body)]
+        result (infer-bound-body (dissoc c :pending-callbacks) body nil)]
     ;; Later bindings may provide context for earlier callbacks.
     (doseq [callback (rseq @pending)]
       (finish-callback! ctx callback))
-    (if stopped? t/never result)))
+    result))
 
 (defmethod special 'letfn [ctx node _]
   (let [[bindings & body] (args-of node)
@@ -9587,7 +9591,8 @@
                              (let [c' (bind-pattern c p ty)]
                                (record! ctx p ty)
                                (if (= :sym (:op p)) (update c' :params (fnil conj #{}) (:val p)) c')))
-                           (dissoc ctx :recur-types :load-time?) (map vector fixed (:params declared)))
+                           (dissoc ctx :recur-types :load-time? ::binding-stopped?)
+                           (map vector fixed (:params declared)))
               ctx' (cond (nil? rest) ctx'
                          (and (:kwargs declared) (= :map (:op rest))) (bind-pattern ctx' rest (:kwargs declared))
                          (:tail declared) (bind-pattern ctx' rest (:tail declared))
@@ -9603,7 +9608,7 @@
                         (do (infer ctx' (first body)) (next body))
                         body)
                 body-ctx (apply-preconditions ctx' facts)
-                rty (infer-body body-ctx forms (:ret declared))]
+                rty (infer-bound-body body-ctx forms (:ret declared))]
             (when (seq forms) (check-return! body-ctx (last forms) rty (:ret declared)))))))
     t/unknown))
 

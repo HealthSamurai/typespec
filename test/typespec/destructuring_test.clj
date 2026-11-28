@@ -14,6 +14,36 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest function-results-preserve-aborting-parameter-destructuring
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/def ::input (s/keys :req-un [::label]))
+(s/fdef halt :args (s/cat :input ::input) :ret int?)
+(defn halt [{:keys [label] :or {label (throw (Exception. \"default stopped\"))}}]
+  :wrong)
+(s/fdef nested-halt :args (s/cat :input (s/tuple ::input int?)) :ret int?)
+(defn nested-halt [[{:keys [label] :or {label (throw (Exception. \"nested default stopped\"))}} n]]
+  :wrong)
+(s/fdef label-of :args (s/cat :input ::input) :ret string?)
+(defn label-of [{:keys [label] :or {label \"fallback\"}}] label)
+(s/fdef halt-inline :args (s/cat :input ::input) :ret int?)
+(defn halt-inline [input]
+  (if ((fn [{:keys [label] :or {label (throw (Exception. \"callback default stopped\"))}}] :wrong)
+       input)
+    :wrong
+    1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/halt {:label \"ok\"}))
+(inc (a/nested-halt [{:label \"ok\"} 4]))
+(subs (a/label-of {:label \"ok\"}) 0)
+(a/label-of {:label 42})
+(inc (a/halt-inline {:label \"ok\"}))")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "t/never" (main/type-at result "api.clj" 14 3)))))
+
 (deftest let-preserves-aborting-map-destructuring-expressions
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::label string?)

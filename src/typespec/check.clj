@@ -3442,19 +3442,27 @@
     (first (java-receiver-fact ctx receiver cname "java.util.Map" :java-map-classes))
     nil))
 
-(defn- java-callback-element [ctx receiver cname mname params]
-  (when-let [owner (case [mname params]
-                     ["forEach" ["java.util.function.Consumer"]] "java.lang.Iterable"
-                     ["filter" ["java.util.function.Predicate"]] "java.util.stream.Stream"
-                     nil)]
-    (java-receiver-element ctx receiver cname owner)))
+(defn- java-callback-inputs [ctx receiver cname mname params]
+  (let [classes (case [mname params]
+                  ["forEach" ["java.util.function.Consumer"]]
+                  [(java-receiver-element ctx receiver cname "java.lang.Iterable")]
+                  ["filter" ["java.util.function.Predicate"]]
+                  [(java-receiver-element ctx receiver cname "java.util.stream.Stream")]
+                  ["forEach" ["java.util.function.BiConsumer"]]
+                  (java-receiver-fact ctx receiver cname "java.util.Map" :java-map-classes)
+                  nil)]
+    (when (some some? classes)
+      (mapv (fn [class-name]
+              (if class-name
+                (t/platform (t/class-type class-name) (java/short-name class-name))
+                t/unknown))
+            classes))))
 
 (defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [{:keys [tags receiver]}]]
   (let [ms (map (fn [method]
-                  (let [element (java-callback-element ctx receiver cname mname (:params method))]
+                  (let [inputs (java-callback-inputs ctx receiver cname mname (:params method))]
                     (cond-> (assoc method :name mname)
-                      element (assoc :callback-input-types
-                                     {0 [(t/platform (t/class-type element) (java/short-name element))]}))))
+                      inputs (assoc :callback-input-types {0 inputs}))))
                 (java/methods-named cname mname static?))
         field-class (when (and (empty? arg-nodes)
                                (case field-fallback

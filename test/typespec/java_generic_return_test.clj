@@ -79,6 +79,25 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest java-map-for-each-contextualizes-key-and-value-parameters
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn traces [] (Thread/getAllStackTraces))
+(s/fdef stack-size :args (s/cat :trace #(instance? StackTraceElement/1 %)) :ret int?)
+(defn stack-size [^StackTraceElement/1 trace] (alength trace))
+(s/fdef thread-name :args (s/cat :thread #(instance? Thread %)) :ret string?)
+(defn thread-name [^Thread thread] (.getName thread))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a])
+  (:import [java.util Map]))
+(.forEach ^Map (a/traces)
+  (fn [thread trace] (a/thread-name thread) (a/stack-size trace)))
+(.forEach ^Map (a/traces)
+  (fn [thread trace] (a/stack-size thread) (a/thread-name trace)))
+(.forEach ^Map (a/traces) #(do (a/thread-name %1) (a/stack-size %2)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [[6 36 "TSP2345"] [6 59 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) (comp :col :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-collection-streams-retain-elements-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path] [java.util List]))
 (defn lines [^Path path] (Files/readAllLines path))

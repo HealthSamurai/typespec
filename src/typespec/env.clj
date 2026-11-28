@@ -700,6 +700,7 @@
         params (if record-map?
                  [t/unknown]
                  (mapv (fn [[_ coerced]] (if coerced (t/prim :number) t/unknown)) fields))
+        check-boxes? (and record-map? (some second fields))
         arities (if (seq valid)
                   valid
                   [{:params params :ret (or return-only t/unknown)}])]
@@ -710,7 +711,7 @@
      :source (if use-spec? :fdef :record)
      :contract (when use-spec? (select-keys fdef [:file :pos]))
      :type {:t :fn :arities (mapv #(cond-> %
-                                     (= t/unknown (:ret %))
+                                     (or check-boxes? (= t/unknown (:ret %)))
                                      (assoc :record-fields fields :record-map? record-map?))
                                   arities)}}))
 

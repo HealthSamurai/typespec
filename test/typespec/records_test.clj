@@ -8,6 +8,39 @@
                       (parse/parse-string "client.clj" client)]
                      {}))
 
+(deftest map-record-factories-check-the-exact-primitive-boxes
+  (let [result (checked
+                "(ns records.provider (:require [clojure.spec.alpha :as s]))
+(defrecord Reading [^long n ^double rate label])
+(defrecord Tagged [^long n])
+(s/fdef map->Tagged :ret map?)
+(s/def ::n number?)
+(s/def ::rate number?)
+(s/def ::args (s/keys :req-un [::rate] :opt-un [::n]))
+(s/fdef make-record :args (s/cat :m ::args) :ret map?)
+(defn make-record [m] (map->Reading m))"
+                "(ns records.client (:require [records.provider :as a]))
+(inc (:n (a/map->Reading {:n 2 :rate 1.0})))
+(a/map->Reading {:rate 1.0})
+(a/map->Reading {:n \"bad\" :rate 1.0})
+(a/map->Reading {:n 1 :rate nil})
+(a/map->Reading nil)
+(a/map->Reading [[:n 1] [:rate false]])
+(a/map->Tagged {:n 1})
+(a/map->Tagged {:n nil})
+(a/map->Reading {:n 2N :rate 1.0})
+(a/map->Reading {:n 2 :rate 1})
+(inc (:rate (a/map->Reading [[:n 2] [:rate 1.0]])))")
+        issues (:diagnostics result)]
+    (is (= (frequencies [["client.clj" 3 "TSP2531" [:n]] ["client.clj" 4 "TSP2345" [:n]]
+                         ["client.clj" 5 "TSP2531" [:rate]] ["client.clj" 6 "TSP2531" [:n]]
+                         ["client.clj" 6 "TSP2531" [:rate]] ["client.clj" 7 "TSP2345" [:rate]]
+                         ["client.clj" 9 "TSP2531" [:n]] ["client.clj" 10 "TSP2345" [:n]]
+                         ["client.clj" 11 "TSP2345" [:rate]] ["provider.cljc" 9 "TSP210-01" [:n]]
+                         ["provider.cljc" 9 "TSP210-01" [:rate]] ["provider.cljc" 9 "TSP2531" [:n]]])
+           (frequencies (map (juxt :file (comp :row :pos) :code :type-path) issues)))
+        (pr-str issues))))
+
 (deftest map-record-factories-check-sequences-of-entries
   (let [result (checked
                 "(ns records.provider (:require [clojure.spec.alpha :as s]))

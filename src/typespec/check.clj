@@ -33,7 +33,8 @@
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
          unsupported-sequence-member specialize-call-return run-composition run-deferred-call map-entry-sequence
-         apply-preconditions regex-literal-type class-symbol-name callable-data-result map-into-member)
+         apply-preconditions regex-literal-type class-symbol-name callable-data-result map-into-member
+         boxed-class-problems)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -2164,13 +2165,19 @@
           (if (t/sub? (:env ctx) result ret) (t/with-assumption result (t/assumption arg)) ret))
         ret))))
 
-(defn- record-map-value [env shape fields]
-  (reduce (fn [result [key coerced]]
-            (let [type (or coerced (get-in shape [:req key])
-                           (when-let [optional (optional-map-value env shape key)] (t/union optional t/nil-t))
-                           t/unknown)]
-              (assoc-map-key result key type)))
-          (dissoc shape :fresh) fields))
+(defn- record-map-value [ctx node shape fields]
+  (let [env (:env ctx)
+        field (assoc (select-keys node [:pos]) :display "Record field")]
+    (reduce (fn [result [key boxed]]
+              (let [type (or (get-in shape [:req key])
+                             (when-let [optional (optional-map-value env shape key)] (t/union optional t/nil-t))
+                             t/unknown)]
+                (when (and boxed (not (#{:unknown :any} (:t type))))
+                  (doseq [[code message details] (boxed-class-problems ctx "record factory" field type boxed false)]
+                    (apply report! ctx node code (str message " at " key)
+                           (mapcat identity (assoc details :type-path [key])))))
+                (assoc-map-key result key (or boxed type))))
+            (dissoc shape :fresh) fields)))
 
 (defn- specialize-record-return [ctx node {:keys [record-fields record-map?]} inputs]
   (t/with-assumption
@@ -2182,9 +2189,9 @@
                              (t/members env (map-into-member ctx node empty-map-shape source))
                              [source])]
                 (case (:t member)
-                  :nil (record-map-value env empty-map-shape record-fields)
-                  :map (record-map-value env member record-fields)
-                  :map-of (record-map-value env (indexed-map-shape member) record-fields)
+                  :nil (record-map-value ctx node empty-map-shape record-fields)
+                  :map (record-map-value ctx node member record-fields)
+                  :map-of (record-map-value ctx node (indexed-map-shape member) record-fields)
                   :never t/never
                   t/unknown))))
      (let [fields (into {} (map (fn [[key coerced] value] [key (or coerced (dissoc value :fresh))])
@@ -2201,7 +2208,8 @@
       (:deferred-call arity) (let [result (run-deferred-call ctx node (:deferred-call arity) inputs)]
                                (if steps (run-composition ctx node steps result) result))
       (:record-fields arity)
-      (let [result (specialize-record-return ctx node arity inputs)]
+      (let [inferred (specialize-record-return ctx node arity inputs)
+            result (if (= t/unknown (:ret arity)) inferred (:ret arity))]
         (if steps (run-composition ctx node steps result) result))
       steps (let [[input default] inputs]
               (run-composition ctx node steps input default))
@@ -5981,10 +5989,11 @@
   ["TSP210-01" message {:severity (if (:strict (:opts ctx)) :error :warning)
                          :reasons #{:unsupported}}])
 
-(defn- boxed-store-problems [ctx head value ty component-type class-name]
+(defn- boxed-class-problems [ctx head value ty {:keys [name] :as boxed-type} nullable?]
   (let [env (:env ctx)
-        expected (t/union {:t :class :name class-name} t/nil-t)
-        unchecked [(unchecked-array-store ctx (str head " cannot verify the boxed value class for " class-name))]]
+        component-type (t/class-type name)
+        expected (if nullable? (t/union boxed-type t/nil-t) boxed-type)
+        unchecked [(unchecked-array-store ctx (str head " cannot verify the boxed value class for " name))]]
     (mapcat (fn [actual]
               (let [literal (:val actual)
                     boxed (t/literal-number-class actual)]
@@ -6105,7 +6114,7 @@
   (let [name (.getName component)
         component-type (t/class-type name)]
     (if (#{:int :double} (:name component-type))
-      (boxed-store-problems ctx head value ty component-type name)
+      (boxed-class-problems ctx head value ty {:t :class :name name} true)
       (problems ctx value ty (t/union component-type t/nil-t)))))
 
 (defn- array-store-problems [ctx value ty member inline? compiler-array]

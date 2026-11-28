@@ -3423,6 +3423,8 @@
                         (java-receiver-element ctx receiver cname "java.util.stream.Stream"))
     (["listIterator" []] ["listIterator" ["int"]])
     (java-receiver-element ctx receiver cname "java.util.List")
+    (["stream" []] ["parallelStream" []])
+    (java-receiver-element ctx receiver cname "java.util.Collection")
     ["filter" ["java.util.function.Predicate"]]
     (java-receiver-element ctx receiver cname "java.util.stream.Stream")
     nil))

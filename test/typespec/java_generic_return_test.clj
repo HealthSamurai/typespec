@@ -15,6 +15,25 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest java-collection-streams-retain-elements-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path] [java.util List]))
+(defn lines [^Path path] (Files/readAllLines path))
+(defn line-stream [^Path path] (.stream ^List (lines path)))
+(defn parallel-lines [^Path path] (.parallelStream ^List (lines path)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str])
+  (:import [java.nio.file Path] [java.util.stream Stream]))
+(defn good [^Path path]
+  (with-open [source (a/line-stream path)]
+    (let [filtered (.filter ^Stream source #(str/starts-with? % \"typed\"))]
+      (mapv #(subs % 0) (iterator-seq (.iterator ^Stream filtered))))))
+(defn wrong [^Path path]
+  (with-open [source (a/parallel-lines path)]
+    (mapv inc (iterator-seq (.iterator ^Stream source)))))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-stream-filter-checks-the-predicate-and-keeps-result-elements
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path]))
 (defn lines [^Path path] (Files/lines path))")

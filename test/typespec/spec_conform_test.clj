@@ -37,6 +37,30 @@
     (is (= ["custom" :auto ::s/invalid]
            (mapv #(s/conform (some-fn string? #{:auto}) %) ["custom" :auto :wrong])))))
 
+(deftest conformed-integer-ranges-retain-constraints-from-both-steps
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::first (s/int-in 1 6))
+(s/def ::second (s/int-in 3 8))
+(s/def ::both (s/and ::first ::second))
+(defn parse-range [x] (s/conform ::both x))
+(s/fdef accept :args (s/cat :x ::both) :ret int?)
+(defn accept [x] x)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef checked :args (s/cat :x any?) :ret (s/nilable int?))
+(defn checked [x]
+  (let [n (a/parse-range x)]
+    (when-not (s/invalid? n) (a/accept n))))
+(checked 3)
+(checked 7)
+(a/accept 6)")
+        issues (:diagnostics (check/check-files [api client] {}))
+        range-spec (s/and (s/int-in 1 6) (s/int-in 3 8))]
+    (is (= [["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [::s/invalid 3 5 ::s/invalid ::s/invalid]
+           (mapv #(s/conform range-spec %) [2 3 5 6 7])))))
+
 (deftest conform-predicate-combinations-preserve-successful-values
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::tag (some-fn string? #{:auto false nil}))

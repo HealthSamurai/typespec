@@ -294,6 +294,11 @@
   (when (= 3 (count form))
     (fixed-int-range (second form) (nth form 2))))
 
+(defn intersect-int-ranges
+  "Type of the intersection of a nonempty sequence of integer range bounds."
+  [ranges]
+  (fixed-int-range (apply max (map first ranges)) (apply min (map second ranges))))
+
 (defn- literal-in-int-range? [{:keys [val ambiguous-number-box?]} [start end :as expected]]
   (or (nil? expected)
       (and (integer? val)
@@ -1025,7 +1030,7 @@
                   :else (or (narrower-scalar-contract {} #{} left right) left))
         ranges (seq (keep :int-range [left right]))
         refined (if (and ranges (= :prim (:t refined)) (= :int (:name refined)))
-                  (let [overlap (fixed-int-range (apply max (map first ranges)) (apply min (map second ranges)))]
+                  (let [overlap (intersect-int-ranges ranges)]
                     (if (= never overlap) never (assoc refined :int-range (:int-range overlap))))
                   refined)
         predicates (into (:numeric-predicates refined #{})

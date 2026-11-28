@@ -26,6 +26,14 @@
 (defn- retain-through-predicate [env previous result]
   (if (and (unchanged-value? result) (not (#{:unknown :any} (:t previous))))
     (cond
+      (and (:int-range previous) (:int-range result))
+      (let [overlap (t/intersect-int-ranges [(:int-range previous) (:int-range result)])
+            predicates (into (:numeric-predicates previous #{}) (:numeric-predicates result))]
+        (vary-meta (cond-> overlap
+                     (and (= :prim (:t overlap)) (seq predicates))
+                     (assoc :numeric-predicates predicates))
+                   merge (meta previous) (meta result)))
+
       (t/sub? env previous result) previous
 
       (and (t/nilable? env previous)

@@ -2164,6 +2164,31 @@
           (if (t/sub? (:env ctx) result ret) (t/with-assumption result (t/assumption arg)) ret))
         ret))))
 
+(defn- record-map-value [env shape fields]
+  (reduce (fn [result [key coerced]]
+            (let [type (or coerced (get-in shape [:req key])
+                           (when-let [optional (optional-map-value env shape key)] (t/union optional t/nil-t))
+                           t/unknown)]
+              (assoc-map-key result key type)))
+          (dissoc shape :fresh) fields))
+
+(defn- specialize-record-return [ctx {:keys [record-fields record-map?]} inputs]
+  (t/with-assumption
+   (if record-map?
+     (let [env (:env ctx)]
+       (apply t/union
+              (for [member (t/members env (eff ctx (first inputs)))]
+                (case (:t member)
+                  :nil (record-map-value env empty-map-shape record-fields)
+                  :map (record-map-value env member record-fields)
+                  :map-of (record-map-value env (indexed-map-shape member) record-fields)
+                  :never t/never
+                  t/unknown))))
+     (let [fields (into {} (map (fn [[key coerced] value] [key (or coerced (dissoc value :fresh))])
+                                record-fields inputs))]
+       (assoc empty-map-shape :req fields)))
+   (some t/assumption inputs)))
+
 (defn- specialize-call-return [ctx node arity arg-types]
   (let [inputs (if-let [captured (:captured-args arity)]
                  (into captured arg-types)
@@ -2173,9 +2198,7 @@
       (:deferred-call arity) (let [result (run-deferred-call ctx node (:deferred-call arity) inputs)]
                                (if steps (run-composition ctx node steps result) result))
       (:record-fields arity)
-      (let [fields (into {} (map (fn [[key coerced] value] [key (or coerced (dissoc value :fresh))])
-                                 (:record-fields arity) inputs))
-            result (t/with-assumption (assoc empty-map-shape :req fields) (some t/assumption inputs))]
+      (let [result (specialize-record-return ctx arity inputs)]
         (if steps (run-composition ctx node steps result) result))
       steps (let [[input default] inputs]
               (run-composition ctx node steps input default))

@@ -8,6 +8,34 @@
                       (parse/parse-string "client.clj" client)]
                      {}))
 
+(deftest map-record-factories-preserve-extra-and-nil-fields-across-files
+  (let [result (checked
+                "(ns records.provider (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/def ::n int?)
+(s/def ::row-input (s/keys :req-un [::label ::n]))
+(s/def ::any-fields (s/map-of string? int?))
+(defrecord Row [label n])
+(s/fdef pack :args (s/cat :m ::row-input) :ret ::row-input)
+(defn pack [m] (map->Row m))
+(s/fdef from-index :args (s/cat :m ::any-fields) :ret nil?)
+(defn from-index [m] (:label (map->Row m)))"
+                "(ns records.client (:require [records.provider :as a]))
+(subs (:label (a/map->Row {:label \"ok\" :n 42})) 0)
+(inc (:extra (a/map->Row {:extra 42})))
+(inc (:label (a/map->Row {:label \"ok\"})))
+(inc (:n (a/map->Row {:label \"ok\"}) 0))
+(inc (:n (a/map->Row nil)))
+(inc (:n (apply a/map->Row [{:n 42}])))
+(subs (:label (a/pack {:label \"ok\" :n 42})) 0)
+(a/pack {:label \"ok\" :n \"bad\"})
+(inc (a/from-index {\"x\" 42}))")
+        issues (:diagnostics result)]
+    (is (= [[4 "TSP2345"] [5 "TSP2531"] [6 "TSP2531"] [9 "TSP2322"] [10 "TSP2531"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))))
+
 (deftest positional-record-factories-preserve-field-types-across-files
   (let [result (checked
                 "(ns records.provider (:require [clojure.spec.alpha :as s]))

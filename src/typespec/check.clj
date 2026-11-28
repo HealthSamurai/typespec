@@ -3382,9 +3382,13 @@
             (t/members (:env ctx) ty))))
 
 (defn- java-callback-context [fits i]
-  (let [methods (mapv #(java/functional-method (nth (:params %) i)) fits)]
-    (when (and (seq methods) (every? some? methods) (apply = (map :params methods)))
-      {:t :fn :arities [{:params (mapv functional-input-type (:params (first methods)))
+  (let [methods (mapv (fn [candidate]
+                        (when-let [method (java/functional-method (nth (:params candidate) i))]
+                          (assoc method :input-types (get-in candidate [:callback-input-types i]))))
+                      fits)]
+    (when (and (seq methods) (every? some? methods) (apply = (map (juxt :params :input-types) methods)))
+      {:t :fn :arities [{:params (or (:input-types (first methods))
+                                     (mapv functional-input-type (:params (first methods))))
                          :ret t/unknown}]})))
 
 (defn- infer-java-arguments [ctx args candidates]
@@ -3422,7 +3426,14 @@
     nil))
 
 (defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [{:keys [tags receiver]}]]
-  (let [ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
+  (let [consumer-element (when (= "forEach" mname)
+                           (java-receiver-element ctx receiver cname "java.lang.Iterable"))
+        ms (map (fn [method]
+                  (cond-> (assoc method :name mname)
+                    (and consumer-element (= ["java.util.function.Consumer"] (:params method)))
+                    (assoc :callback-input-types
+                           {0 [(t/platform (t/class-type consumer-element) (java/short-name consumer-element))]})))
+                (java/methods-named cname mname static?))
         field-class (when (and (empty? arg-nodes)
                                (case field-fallback
                                  :no-methods (empty? ms)

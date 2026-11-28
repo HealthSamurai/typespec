@@ -15,6 +15,21 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest java-iterable-foreach-contextualizes-inline-callbacks
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file FileSystems Path]))
+(defn roots [] (.getRootDirectories (FileSystems/getDefault)))
+(defn views [] (.supportedFileAttributeViews (FileSystems/getDefault)))
+(defn name-count [^Path root] (.getNameCount root))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(.forEach ^Iterable (a/roots) (fn [p] (a/name-count p)))
+(.forEach ^Iterable (a/roots) (fn [p] (subs p 0)))
+(.forEach ^Iterable (a/views) #(subs % 0))
+(.forEach ^Iterable (a/views) #(inc %))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-stream-iterators-propagate-elements-through-with-open
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path]))
 (defn lines [^Path path] (Files/lines path))")

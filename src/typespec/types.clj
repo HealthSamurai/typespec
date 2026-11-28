@@ -645,6 +645,12 @@
 (defn show-kw [k]
   (if (and *cur-ns* (= (namespace k) (str *cur-ns*))) (str "::" (name k)) (str k)))
 
+(def seqable-type
+  "Values accepted by clojure.lang.RT/canSeq, including nil and JVM arrays."
+  (apply union nil-t
+         (map class-type ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"
+                          "[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])))
+
 (defn show
   "Prints a type in the type language, so it can be pasted back into code."
   [t]
@@ -665,12 +671,14 @@
       :ref (show-kw (:name t))
       :class (:name t)
       :atom (str "(t/atom " (show (:of t)) ")")
-      :union (let [ts (:types t)
-                   others (remove #(= :nil (:t %)) ts)
-                   core (cond (= 1 (count others)) (show (first others))
-                              (every? #(= :lit (:t %)) others) (str "#{" (str/join " " (map show others)) "}")
-                              :else (str "(t/or " (str/join " " (map show others)) ")"))]
-               (if (some #(= :nil (:t %)) ts) (str "(s/nilable " core ")") core))
+      :union (if (= seqable-type t)
+               "seqable?"
+               (let [ts (:types t)
+                     others (remove #(= :nil (:t %)) ts)
+                     core (cond (= 1 (count others)) (show (first others))
+                                (every? #(= :lit (:t %)) others) (str "#{" (str/join " " (map show others)) "}")
+                                :else (str "(t/or " (str/join " " (map show others)) ")"))]
+                 (if (some #(= :nil (:t %)) ts) (str "(s/nilable " core ")") core)))
       :merge (str "(s/merge " (str/join " " (map show (:types t))) ")")
       :map (cond
              (:fresh t)
@@ -718,6 +726,7 @@
       any? any
       some? some-t
       nil? nil-t
+      seqable? seqable-type
       list? (class-type "clojure.lang.IPersistentList")
       char? (class-type "java.lang.Character")
       bytes? (class-type "[B")
@@ -807,7 +816,7 @@
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
-                   (contains? '#{list? vector? map? set? string? keyword? symbol? boolean?
+                   (contains? '#{list? vector? map? set? seqable? string? keyword? symbol? boolean?
                                  true? false? nil? some? any? char? bytes? class? int? number?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 

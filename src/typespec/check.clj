@@ -2856,9 +2856,7 @@
        ty))))
 
 (def ^:private positional-composition-input
-  (apply t/union t/nil-t (t/prim :coll)
-         (map t/class-type ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"
-                            "[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])))
+  (t/union t/seqable-type (t/prim :coll)))
 
 (defn- composition-entry [projection]
   (when-let [params (case (:kind projection)

@@ -456,6 +456,33 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest seqable-spec-checks-arrays-and-jvm-collection-interfaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::input clojure.core/seqable?)
+(s/fdef length :args (s/cat :values ::input) :ret int?)
+(defn length [values] (count (seq values)))
+(s/fdef wrapped :args (s/cat :values #(seqable? %)) :ret int?)
+(defn wrapped [values] (count (seq values)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/length nil)
+(a/length {:a 1})
+(a/length (int-array [1 2]))
+(a/length (into-array String [\"a\"]))
+(a/length (StringBuilder. \"ab\"))
+(a/length (java.util.ArrayList.))
+(a/length 42)
+(a/length (java.util.Date.))
+(a/length (.iterator (java.util.ArrayList.)))
+(a/wrapped (boolean-array [true]))
+(a/wrapped true)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2345"]
+            ["client.clj" 12 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= "42 is not assignable to :api/input (seqable?)" (:message (first diagnostics))))
+    (is (= "true is not assignable to seqable?" (:message (peek diagnostics))))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

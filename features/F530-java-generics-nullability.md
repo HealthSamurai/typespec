@@ -66,7 +66,7 @@ Java `Stream<T>` тоже передаёт тип элемента через `.
   `List` для результата `List<T>`. Вложенный `T`, generic-параметры
   вызова и ограничения параметров метода остаются за рамками реализации.
 - В `types/parse-type` ветка `t/class` разрешает только имя класса. Аргументы после имени **игнорируются**: `(t/class java.util.List String)` пока не сохраняет `String`. Само принятие такой формы не означает проверку generics.
-- `check/java-ret` обрабатывает небольшой список `java/nullable-return?`: например, `Map.get`, `Map.remove`, `Queue.poll` и перегрузку `System.getenv(String)`. Перегрузка `System.getenv()` возвращает карту с обычной platform-nullability. Для остальных подходящих результатов используется platform type; `types/platform` не делает примитивы nullable. Это не чтение JSpecify или иных аннотаций.
+- `check/java-ret` обрабатывает небольшой список `java/nullable-return?`: например, `Map.get`, `Map.remove(Object)`, `Queue.poll` и перегрузку `System.getenv(String)`. Перегрузка `System.getenv()` возвращает карту с обычной platform-nullability. Для остальных подходящих результатов используется platform type; `types/platform` не делает примитивы nullable. Это не чтение JSpecify или иных аннотаций.
 - `check/eff` при `:strict-nil` превращает platform type в объединение с `nil`; `method-call` выдаёт `TSP2531` при nullable receiver. Метаданные `:null-return` сохраняют причину для известных nullable-методов, в том числе через hint.
 - `java-arg-ok?` для ссылочных параметров удаляет `nil` перед проверкой совместимости. Полноценной проверки non-null **аргументов** Java-методов нет.
 

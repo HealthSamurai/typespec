@@ -28,6 +28,23 @@
 (defn- issue [diagnostic]
   ((juxt :file (comp :row :pos) :code :type-path) diagnostic))
 
+(deftest map-remove-nullability-follows-the-selected-overload
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s])
+  (:import [java.util Map]))
+(s/fdef remove-if-matches :args (s/cat :entries #(instance? Map %) :key string? :value string?) :ret boolean?)
+(defn remove-if-matches [^Map entries key value] (.remove entries key value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util HashMap]))
+(s/fdef drop-text :args (s/cat) :ret boolean?)
+(defn drop-text [] (a/remove-if-matches (HashMap.) \"k\" \"v\"))
+(a/remove-if-matches (HashMap.) \"k\" 42)
+(.length ^String (.remove ^java.util.Map (HashMap.) \"missing\"))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345" nil] ["client.clj" 6 "TSP2531" nil]]
+           (mapv issue diagnostics))
+        (pr-str diagnostics))
+    (is (str/includes? (:message (second diagnostics)) "Map.remove may return null"))))
+
 (deftest getenv-nullability-follows-the-selected-overload
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (defn environment [] (System/getenv))

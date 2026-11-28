@@ -39,6 +39,37 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest namespaced-map-keys-are-qualified-after-reader-conditionals
+  (let [schema (parse/parse-string "catalog/schema.clj" "(ns catalog.schema (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::mode #{:ready})
+(s/def ::entry (s/keys :req [::id] :opt [::mode]))
+(s/fdef sample :args (s/cat) :ret ::entry)
+(defn sample [] #::{:id (inc 1)})")
+        api (parse/parse-string "api.clj" "(ns api (:require [catalog.schema :as d] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :item ::d/entry) :ret int?)
+(defn render [{::d/keys [id]}] (inc id))")
+        client (parse/parse-string "client.cljc" "(ns client (:require [api :as a] [catalog.schema :as-alias d]))
+(a/render #::d{:id 2})
+(a/render #:catalog.schema{:id 2})
+(a/render #::d{:id \"bad\"})
+(a/render #::d{:_/id 2})
+(a/render #::d{:catalog.schema/id 2})
+(a/render #::d{#?(:clj :id :cljs :not-id) 2})
+(a/render #::d{#?@(:clj [:id 2])})
+(a/render #::d{#?(:cljs :ignored) :id 2 :mode :ready})
+(a/render #::d{#?@(:clj [:_/id 2])})")
+        issues (:diagnostics (check/check-files [api client schema] {}))]
+    (is (= [["client.cljc" 4 "TSP2322"] ["client.cljc" 5 "TSP2741"] ["client.cljc" 10 "TSP2741"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [source "#:catalog.schema{#?(:cljs :ignored) :mode :ready
+                                 #?@(:clj [:_/id 2 bare 3])}"
+        checked (parse/node->data (first (:forms (parse/parse-string "demo.cljc" source))))]
+    (is (= {:catalog.schema/mode :ready :id 2 'catalog.schema/bare 3}
+           (read-string {:read-cond :allow} source)
+           checked))))
+
 (deftest map-of-supplies-types-for-string-and-symbol-bindings
   (let [api "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::counts (s/map-of string? int?))

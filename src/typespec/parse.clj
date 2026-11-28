@@ -69,6 +69,26 @@
                        (remove #(skip-tags (n/tag %)) (n/children node)))}
       :else {:op :opaque :pos pos})))
 
+(defn- qualify-map-key [scope {:keys [op val] :as node}]
+  (if (#{:kw :sym} op)
+    (let [qualifier (case (namespace val) nil scope "_" nil (namespace val))
+          constructor (if (= :kw op) keyword symbol)]
+      (assoc node :val (constructor qualifier (name val))))
+    node))
+
+(defn- namespaced-map [x opts]
+  (let [nodes (n/children x)
+        scope (str (n/sexpr (first nodes) opts))
+        ;; Reader conditionals and discarded forms can change which forms
+        ;; are keys. Apply the map namespace after resolving those forms.
+        children (convert-seq (map #(if (or (n/keyword-node? %) (n/symbol-node? %))
+                                     (n/map-context-clear %)
+                                     %)
+                                   (n/children (last nodes)))
+                              opts)]
+    {:op :map :pos (npos x)
+     :children (mapv #(if (even? %1) (qualify-map-key scope %2) %2) (range) children)}))
+
 (defn convert [x opts]
   (let [tag (n/tag x) pos (npos x)]
     (case tag
@@ -99,7 +119,7 @@
       :deref {:op :list :pos pos
               :children (into [{:op :sym :val 'clojure.core/deref :pos pos}] (convert-seq (n/children x) opts))}
       :regex {:op :regex :pattern (second (n/sexpr x opts)) :pos pos}
-      :namespaced-map (some-> (last (convert-seq (n/children x) opts)) (assoc :pos pos))
+      :namespaced-map (namespaced-map x opts)
       :reader-macro (reader-macro x opts)
       {:op :opaque :pos pos})))
 

@@ -4350,8 +4350,7 @@
 (defn- found-map-entry [key-type value-type optional?]
   (if (= t/never value-type)
     t/nil-t
-    (let [entry (assoc (t/tuple [key-type value-type])
-                       :map-entry? true :jvm-class "clojure.lang.IMapEntry")]
+    (let [entry (t/map-entry-type key-type value-type)]
       (if optional? (t/union entry t/nil-t) entry))))
 
 (defn- find-map-entry [ctx source key-type]

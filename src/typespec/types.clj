@@ -110,6 +110,10 @@
   ([items] (tuple items (apply union items)))
   ([items element] {:t :coll :kind :vector :items items :of element}))
 
+(defn map-entry-type [key-type value-type]
+  (assoc (tuple [key-type value-type])
+         :map-entry? true :jvm-class "clojure.lang.IMapEntry"))
+
 ;; ---- Java classes ----
 
 (def primitives #{"long" "int" "double" "float" "boolean" "short" "byte" "char"})
@@ -300,6 +304,19 @@
             (and (= :map (:t source)) (not (:complete-keys? source))
                  (or (nil? maximum) (<= minimum maximum))
                  (inconclusive! :collection-length))))))
+
+(defn- map-as-collection? [env source target]
+  (and (nil? (:kind target)) (not (:items target))
+       (map-length-fits? source target)
+       (let [fits? #(sub? env (map-entry-type %1 %2) (:of target))]
+         (case (:t source)
+           :map-of (or (= 0 (:max-count source)) (fits? (:k source) (:v source)))
+           :map (and (every? (fn [[k v]] (or (= never v) (fits? (lit k) v)))
+                             (concat (:req source) (:opt source)))
+                     (or (:complete-keys? source)
+                         (if-let [index (:map-index source)]
+                           (fits? (:k index) (:v index))
+                           (fits? unknown unknown))))))))
 
 (defn- map-fields-fit? [env fields target]
   (every? (fn [[k v]]
@@ -506,13 +523,15 @@
                                :vector (inconclusive! :tuple-length)
                                (:seq :coll) (inconclusive! :sequence-kind)
                                false)
-                             (and (contains? #{:vector :set :seq :coll} (:name s))
-                                (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
-                                (cond (:list-kind? t) (inconclusive! :sequence-kind)
-                                      (:items t) (inconclusive! :tuple-length)
-                                      (length/constrained? t) (inconclusive! :collection-length)
-                                      *strict-shapes* (inconclusive! :unsupported)
-                                      :else true)))
+                             (if (= :map (:name s))
+                               (map-as-collection? env {:t :map} t)
+                               (and (contains? #{:vector :set :seq :coll} (:name s))
+                                    (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
+                                    (cond (:list-kind? t) (inconclusive! :sequence-kind)
+                                          (:items t) (inconclusive! :tuple-length)
+                                          (length/constrained? t) (inconclusive! :collection-length)
+                                          *strict-shapes* (inconclusive! :unsupported)
+                                          :else true))))
                      :map-of (and (= :map (:name s))
                                   (cond (length/constrained? t) (inconclusive! :collection-length)
                                         *strict-shapes* (inconclusive! :unsupported)
@@ -542,6 +561,8 @@
                               (inconclusive! :sequence-kind)
                               (and (:items t) (class-is-prim? (:name s) :vector))
                               (inconclusive! :tuple-length)
+                              (class-is-prim? (:name s) :map)
+                              (map-as-collection? env {:t :map} t)
                               (and (length/constrained? t)
                                    (class-is-prim? (:name s) (or (:kind t) :coll)))
                               (inconclusive! :collection-length))
@@ -549,6 +570,7 @@
       (= :map st) (case tt
                     :map (map-sub? env s t)
                     :prim (contains? #{:map :coll} (:name t))
+                    :coll (map-as-collection? env s t)
                     :map-of (and (map-length-fits? s t)
                                  (map-fields-fit? env (concat (:req s) (:opt s)) t)
                                  (if-let [index (:map-index s)]
@@ -562,6 +584,7 @@
                                     (or (= 0 (:max-count s))
                                         (and (sub? env (:k s) (:k t)) (sub? env (:v s) (:v t)))))
                        :prim (contains? #{:map :coll} (:name t))
+                       :coll (map-as-collection? env s t)
                        :map (if (:map-index t)
                               (map-sub? env {:map-index s} t)
                               (empty? (:req t)))

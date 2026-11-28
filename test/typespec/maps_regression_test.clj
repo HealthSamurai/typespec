@@ -1237,6 +1237,29 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest find-guards-refine-integer-and-boolean-keys-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::flags (s/map-of boolean? int?))
+(s/def ::maybe-flags (s/map-of boolean? (s/nilable int?)))
+(s/def ::ports (s/map-of int? int?))
+(s/fdef accept :args (s/cat :key false? :n int?) :ret int?)
+(defn accept [key n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef flag :args (s/cat :m ::a/flags) :ret int?)
+(defn flag [m] (if-let [[found n] (find m false)] (a/accept found (+ n (get m false))) 0))
+(s/fdef port :args (s/cat :m ::a/ports) :ret int?)
+(defn port [m] (if-some [entry (find m 1)] (+ (val entry) (get m 1)) 0))
+(s/fdef absent :args (s/cat :m ::a/flags) :ret int?)
+(defn absent [m] (if (nil? (find m false)) (inc (get m false 1)) 0))
+(s/fdef maybe :args (s/cat :m ::a/maybe-flags) :ret int?)
+(defn maybe [m] (if-let [entry (find m false)] (inc (get m false)) 0))
+(s/fdef wrong :args (s/cat :m ::a/flags) :ret int?)
+(defn wrong [m] (if-let [entry (find m false)] (inc (get m true)) 0))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 9 "TSP2531"] ["client.clj" 11 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest contains-guards-refine-integer-and-boolean-keys-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::flags (s/map-of boolean? int?))

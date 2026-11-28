@@ -920,28 +920,28 @@
                              keys)]
           [(join-contexts ctx (map first branches)) (join-contexts ctx (map second branches))])))))
 
-(defn- presence-contexts [ctx source key-node]
-  (if-let [key (stable-map-key key-node)]
-    (refine-path ctx source #(presence-parts (:env ctx) key %))
-    (computed-presence-contexts ctx source key-node)))
-
 (defn- vector-presence-parts [index member]
   (case (length/position member index)
     :absent [nil member]
     :present [member nil]
     :possible [(collection-with-position member index) (collection-without-position member index)]))
 
+(defn- presence-contexts [ctx source key-node & [vector-positions?]]
+  (when-not (:guards-disabled? ctx)
+    (if-some [key (if (literal-node? key-node)
+                    (map-lookup-key (literal-type (:val key-node)))
+                    (or (stable-map-key key-node)
+                        (map-lookup-key (stable-local-member ctx key-node))))]
+      (let [env (:env ctx)
+            index (when (and vector-positions? (integer? key)) (lookup-index key))]
+        (refine-path ctx source (fn [member]
+                                  (if (and (some? index) (= :vector (:kind member)))
+                                    (vector-presence-parts index member)
+                                    (presence-parts env key member)))))
+      (computed-presence-contexts ctx source key-node))))
+
 (defn- contains-contexts [ctx source key-node]
-  (or (when-not (:guards-disabled? ctx)
-        (let [key (stable-selector-value ctx key-node)]
-          (when (or (integer? key) (boolean? key))
-            (let [env (:env ctx)
-                  index (when (integer? key) (lookup-index key))]
-              (refine-path ctx source (fn [member]
-                                        (if (and (some? index) (= :vector (:kind member)))
-                                          (vector-presence-parts index member)
-                                          (presence-parts env key member))))))))
-      (presence-contexts ctx source key-node)))
+  (presence-contexts ctx source key-node true))
 
 (defn- logical-contexts [ctx args and?]
   (let [proceed (if and? first second)

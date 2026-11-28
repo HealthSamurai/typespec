@@ -148,6 +148,61 @@
              form)))
        (:forms file)))
 
+(def ^:private import-vars-heads
+  '#{potemkin/import-vars potemkin.namespaces/import-vars})
+
+(defn- import-var-group [prefix node]
+  (case (:op node)
+    :sym (let [sym (:val node)
+               source (if prefix
+                        (symbol (str prefix (when-let [n (namespace sym)] (str "." n))) (name sym))
+                        sym)]
+           [{:source source :node node}])
+    (:vector :list)
+    (let [[group & members] (:children node)
+          name (:val group)]
+      (when (simple-symbol? name)
+        (mapcat #(import-var-group (if prefix (str prefix "." name) (str name)) %) members)))
+    nil))
+
+(defn- import-var-clause [node]
+  (let [[group refer members rename options & extra] (:children node)]
+    (if (and (#{:vector :list} (:op node)) (= :refer (:val refer)))
+      (when (and (simple-symbol? (:val group)) (#{:vector :list} (:op members)) (empty? extra)
+                 (or (nil? rename) (and (= :rename (:val rename)) (= :map (:op options)))))
+        (let [renames (when options (parse/node->data options))]
+          (for [member (:children members)
+                :let [original (:val member) target (get renames original original)]
+                :when (and (simple-symbol? original) (simple-symbol? target))]
+            {:source (symbol (str (:val group)) (name original)) :target target :node member})))
+      (import-var-group nil node))))
+
+(defn imported-vars
+  "Literal Var references in a Potemkin import. These forms are macro syntax."
+  [node]
+  (mapcat import-var-clause (rest (:children node))))
+
+(defn- var-imports [files ns-defs]
+  (into {}
+        (for [file files
+              form (mapcat #(tree-seq (fn [node] (= 'do (head file node)))
+                                       (fn [node] (rest (:children node))) %)
+                           (declaration-forms file))
+              :when (import-vars-heads (head file form))
+              {:keys [source target]} (imported-vars form)
+              :let [source (resolve-sym file source)]
+              :when (qualified-symbol? source)
+              :let [target (or target (symbol (name source)))]
+              :when (not (contains? (get ns-defs (:ns file)) target))]
+          [(symbol (str (:ns file)) (name target)) source])))
+
+(defn- import-origin [imports target]
+  (loop [sym target seen #{}]
+    (when-not (contains? seen sym)
+      (if-let [source (get imports sym)]
+        (recur source (conj seen sym))
+        sym))))
+
 (defn- expression-children [form operator]
   (let [[_ a & more] (:children form)]
     (case (:op form)
@@ -766,6 +821,16 @@
                                :when sym]
                            sym))
         names (namespace-vars files macros)
+        imports (var-imports files (:ns-defs names))
+        origins (into {} (keep (fn [target]
+                                 (when-let [source (import-origin imports target)]
+                                   [target source])))
+                      (keys imports))
+        names (reduce (fn [env target]
+                        (update-in env [:ns-defs (symbol (namespace target))] (fnil conj #{})
+                                   (symbol (name target))))
+                      (assoc names :var-imports origins) (keys imports))
+        macros (into macros (keep (fn [[target source]] (when (contains? macros source) target))) origins)
         files (mapv #(assoc % :defined-symbols (get-in names [:ns-defs (:ns %)])) files)
         spec-definitions (into {} (for [file files form (declaration-forms file)
                                         :when (= 'clojure.spec.alpha/def (head file form))

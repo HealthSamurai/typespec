@@ -20,6 +20,44 @@
                       {:macro-contracts cs})))
 (defn codes [r] (set (map :code (:diagnostics r))))
 
+(deftest potemkin-imports-preserve-cross-namespace-contracts-and-macro-status
+  (let [origin (parse/parse-string "origin.clj" "(ns origin (:require [clojure.spec.alpha :as s]))
+(s/fdef size :args (s/cat :text string?) :ret int?)
+(defn size [text] (count text))
+(defmacro twice [x] x)")
+        facade (parse/parse-string "facade.cljc" "(ns facade (:require [origin :as impl] [potemkin :as p]))
+#?(:clj (p/import-vars [impl size twice]))
+(do (p/import-vars [impl :refer [size] :rename {size renamed}]))
+(inc (size \"local\"))
+(size 0)")
+        bridge (parse/parse-string "bridge.clj" "(ns bridge (:require [facade :as f] [potemkin.namespaces :refer [import-vars]]))
+(import-vars f/renamed)")
+        client (parse/parse-string "client.clj" "(ns client (:require [facade :as f] [bridge :as b]))
+(inc (f/size \"text\"))
+(inc (b/renamed \"text\"))
+(f/size 42)
+(b/renamed 42)
+(f/twice 1)
+(f/typo \"text\")")
+        result (check/check-files [client bridge facade origin] {})]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP7031"] ["client.clj" 7 "TSP2305"]
+            ["facade.cljc" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))))
+
+(deftest potemkin-import-reports-a-missing-source-at-the-import
+  (let [source (parse/parse-string "source.clj" "(ns example.source)
+(def known 1)")
+        facade (parse/parse-string "facade.clj" "(ns example.facade (:require [example.source :as src] [potemkin :as p]))
+(p/import-vars [src missing] [external.library supplied])")
+        client (parse/parse-string "client.clj" "(ns example.client (:require [example.facade :as f]))
+(f/supplied 1)")
+        diagnostics (:diagnostics (check/check-files [facade source client] {}))]
+    (is (= [["facade.clj" 2 21 "TSP2305"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest core-wrapper-bodies-use-their-original-positions
   (let [r (checked "\n(time (inc \"bad\"))
 (clojure.core/future (inc \"bad\") :done)

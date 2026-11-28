@@ -2024,22 +2024,29 @@
 (defn- known-ns? [ctx ns-sym]
   (or (contains? (:nss (:env ctx)) ns-sym) (some? (core/stdlib-publics ns-sym))))
 
+(defn- lookup-var-type [ctx sym]
+  (or (var-type ctx sym)
+      (when-let [source (get-in ctx [:env :var-imports sym])]
+        (or (var-type ctx source) (get core/table source)))
+      (get core/table sym)))
+
 (defn- resolve-var
   "Resolve a Var name without reading its root."
   [ctx sym node]
   (let [file (:file ctx) env (:env ctx)
         r (env/resolve-sym file sym)]
     (if-let [n (some-> (namespace r) symbol)]
-      (let [ty (or (var-type ctx r) (get core/table r))
+      (let [ty (lookup-var-type ctx r)
             names (or (core/stdlib-publics n) (get-in env [:ns-defs n]))]
         (when (and names (not ty) (not (contains? names (symbol (name r)))))
           (report! ctx node "TSP2305" (str n " has no var " (name r) (hint-suffix (symbol (name r)) names))))
         {:sym r :type ty :known-ns? (boolean names)})
       (let [local (symbol (str (:ns file)) (name r))]
-        (if (or (contains? (:var-declarations env) local) (get-in env [:vars local]) (contains? (:macros env) local))
-          {:sym local :type (var-type ctx local)}
+        (if (or (contains? (:var-declarations env) local) (get-in env [:vars local])
+                (contains? (:var-imports env) local) (contains? (:macros env) local))
+          {:sym local :type (lookup-var-type ctx local)}
           (let [c (symbol "clojure.core" (name r))]
-            {:sym c :type (or (var-type ctx c) (get core/table c))}))))))
+            {:sym c :type (lookup-var-type ctx c)}))))))
 
 (defn- root-initialized? [ctx sym initializers at]
   (or (contains? (:initialized-vars ctx) sym)
@@ -3736,6 +3743,17 @@
 ;; ---- special forms ----
 
 (defmulti special (fn [_ctx _node head] head) :default ::none)
+
+(doseq [head '[potemkin/import-vars potemkin.namespaces/import-vars]]
+  (defmethod special head [ctx node _]
+    (let [imports (env/imported-vars node)]
+      (doseq [{:keys [source node]} imports
+              :when (qualified-symbol? (env/resolve-sym (:file ctx) source))]
+        (resolve-var ctx source node))
+      (cond
+        (seq imports) (t/class-type "clojure.lang.Var")
+        (empty? (args-of node)) t/nil-t
+        :else t/unknown))))
 (defmethod special ::none [_ _ _] ::none)
 
 (defn- compile-regex-groups [pattern]

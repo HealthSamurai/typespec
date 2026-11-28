@@ -3714,10 +3714,21 @@
             definterface clojure.spec.alpha/def clojure.spec.alpha/fdef]]
   (defmethod special h [_ _ _] t/unknown))
 
+(defmethod special 'clojure.spec.alpha/with-gen [ctx node _]
+  (let [inputs (mapv #(infer ctx %) (args-of node))]
+    (cond
+      (not= 2 (count inputs))
+      (do (report! ctx node "TSP2554" "s/with-gen expects two arguments") t/unknown)
+
+      (some #{t/never} inputs) t/never
+      :else t/unknown)))
+
 (defmethod special 'clojure.spec.alpha/conform [ctx node _]
   (let [[spec value :as args] (args-of node)]
     (if (= 2 (count args))
-      (let [form (when (or (and (= :kw (:op spec)) (literal-node? spec))
+      (let [spec-type (infer ctx spec)
+            value-type (infer ctx value)
+            form (when (or (and (= :kw (:op spec)) (literal-node? spec))
                            (#{'clojure.spec.alpha/or 'clojure.spec.alpha/spec
                               'clojure.spec.alpha/and 'clojure.spec.alpha/with-gen
                               'clojure.spec.alpha/nonconforming 'clojure.spec.alpha/nilable
@@ -3734,8 +3745,7 @@
                                             form))]
         (when (and *spec-uses* (qualified-keyword? form) (not (:quiet ctx)) (not (:synthetic node)))
           (swap! *spec-uses* conj {:spec form :kind :conform :file (get-in ctx [:file :file]) :pos (:pos spec)}))
-        (when-not (and result (= :list (:op spec))) (infer ctx spec))
-        (if (= t/never (infer ctx value)) t/never (or result t/unknown)))
+        (if (some #{t/never} [spec-type value-type]) t/never (or result t/unknown)))
       (do (run! #(infer ctx %) args)
           (report! ctx node "TSP2554" "s/conform expects two arguments")
           t/unknown))))

@@ -15,6 +15,34 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-propagates-failure-to-evaluate-the-spec
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/or :text string? :num int?))
+(s/fdef stop-before-spec :args (s/cat :value any?) :ret int?)
+(defn stop-before-spec [value]
+  (if (s/conform (throw (Exception. \"spec failed\")) value) :wrong 1))
+(s/fdef stop-generator :args (s/cat :value any?) :ret int?)
+(defn stop-generator [value]
+  (if (s/conform (s/with-gen ::payload (throw (Exception. \"generator failed\"))) value) :wrong 1))
+(s/fdef good :args (s/cat :value any?) :ret int?)
+(defn good [value]
+  (let [out (s/conform ::payload value)]
+    (if (s/invalid? out) 0
+      (case (key out) :text (count (val out)) :num (inc (val out))))))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(inc (a/stop-before-spec :raw))
+(inc (a/stop-generator :raw))
+(inc (a/good 1))
+(inc (s/conform (s/or :text string? :num int?) 1))
+(s/with-gen ::a/payload)
+(s/with-gen ::a/payload (constantly nil) :extra)")
+        result (check/check-files [client api] {})
+        issues (:diagnostics result)]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2554"] ["client.clj" 7 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= ["t/never" "t/never"] (mapv #(main/type-at result "api.clj" % 3) [5 8])))))
+
 (deftest conform-recognizes-inline-structural-specs-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::payload (s/or :text string? :count int?))

@@ -33,7 +33,7 @@
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
          unsupported-sequence-member specialize-call-return run-composition map-entry-sequence
-         apply-preconditions regex-literal-type class-symbol-name)
+         apply-preconditions regex-literal-type class-symbol-name callable-data-result)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -2744,7 +2744,10 @@
             t/unknown)
 
         :else
-        (let [result (apply-type ctx ty arg-types fnode (parse/unparse fnode) require-match?)
+        (let [label (parse/unparse fnode)
+              result (or (callable-data-result ctx fnode fnode label ty
+                                               (repeat (count arg-types) fnode) arg-types)
+                         (apply-type ctx ty arg-types fnode label require-match?))
               refine (when (= 1 (count arg-types)) (core-callback-refiner ctx fnode))]
           (if refine
             (refine-unary-result ctx (first arg-types) result refine)
@@ -7196,6 +7199,20 @@
               ret (case h keep (t/remove-nil (:env ctx) ret) mapcat (elem-type ctx ret) ret)]
           (coll-of :seq ret))))))
 
+(defn- map-lookup-positions [ctx callback sources maximum]
+  (when (and maximum (<= 1 maximum 64) (not (callback-node? ctx callback)))
+    (let [positions (mapv #(:items (single-member ctx %)) sources)]
+      (when (every? some? positions)
+        (let [env (:env ctx)
+              members (t/members env (quietly ctx callback))]
+          (when (or (spread-map-target? members) (every? vector-member? members))
+            (let [lookup (infer ctx callback)
+                  label (parse/unparse callback)]
+              (apply mapv (fn [& inputs]
+                            (callable-data-result ctx callback callback label lookup
+                                                  (repeat (count inputs) callback) inputs))
+                     positions))))))))
+
 (doseq [[head kind] {'map :seq 'mapv :vector 'pmap :seq}]
   (defmethod special head [ctx node _]
     (let [[f & colls] (args-of node)
@@ -7222,13 +7239,18 @@
               minimum (apply min (map :lower parts))
               known-maxima (seq (keep :upper parts))
               maximum (when known-maxima (apply min known-maxima))
-              element (if (= 0 maximum)
-                        (do (infer ctx f) t/never)
-                        (apply-fn-node ctx f (mapv :element parts)))]
-          (t/with-assumption
-           (cond-> (length/with-bounds (coll-of kind element) minimum maximum)
-             (= :seq kind) (assoc :jvm-class "clojure.lang.LazySeq"))
-           (some t/assumption sources)))))))
+              positions (map-lookup-positions ctx f sources maximum)
+              element (cond
+                        (= 0 maximum) (do (infer ctx f) t/never)
+                        positions (apply t/union positions)
+                        :else (apply-fn-node ctx f (mapv :element parts)))]
+          (if (and (= :vector kind) (some #{t/never} positions))
+            t/never
+            (t/with-assumption
+             (cond-> (length/with-bounds (coll-of kind element) minimum maximum)
+               positions (assoc :items positions)
+               (= :seq kind) (assoc :jvm-class "clojure.lang.LazySeq"))
+             (or (some t/assumption sources) (t/assumption element)))))))))
 
 (defn- apply-indexed-callback [ctx callback element]
   (case (:op callback)

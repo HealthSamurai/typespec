@@ -11,6 +11,41 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest callable-collections-retain-mapped-positions
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef pick :args (s/cat :values (s/tuple int? int?)) :ret int?)
+(defn pick [[a b]] (+ a b))
+(s/fdef pick-maybe :args (s/cat :values (s/tuple int? (s/nilable int?))) :ret int?)
+(defn pick-maybe [[a b]] (+ a (or b 0)))
+(s/fdef palette :args (s/cat) :ret (s/tuple string? string?))
+(defn palette [] [\"cold\" \"warm\"])")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(a/pick (mapv [10 20] [0 1]))
+(a/pick (mapv [\"wrong\" \"also\"] [0 1]))
+(mapv [10 20] [\"zero\"])
+(mapv [10 20] [2])
+(mapv [10 20] [0] [1])
+(mapv [10 20] [])
+(mapv str/trim (mapv (a/palette) [0 1]))
+(a/pick (mapv {:one 1 :two 2} [:one :two]))
+(a/pick-maybe (mapv {:one 1} [:one :missing]))
+(a/pick (mapv {:one 1} [:one :missing]))
+(mapv {:one 1} [:missing] [0])
+(mapv [10 20] [0] [])
+(inc (first (map [10 20] [0 1])))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]
+            ["client.clj" 5 "TSP330-02"] ["client.clj" 6 "TSP2554"]
+            ["client.clj" 11 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= [10 20] (mapv [10 20] [0 1])))
+  (is (= [] (mapv [10 20] [0] [])))
+  (is (= [1 nil] (mapv {:one 1} [:one :missing])))
+  (is (= [0] (mapv {:one 1} [:missing] [0])))
+  (is (thrown? IllegalArgumentException (mapv [10 20] ["zero"])))
+  (is (thrown? IndexOutOfBoundsException (mapv [10 20] [2]))))
+
 (deftest partial-keeps-a-return-only-function-spec
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (defmulti render (fn [tag & _] tag))

@@ -162,6 +162,37 @@
            (mapv (fn [[row col]] (main/type-at result "api.clj" row col))
                  [[4 3] [6 37]])))))
 
+(deftest collection-literals-propagate-aborting-elements
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::n int?)
+(s/fdef stop-vector :args (s/cat) :ret int?)
+(defn stop-vector []
+  (if [1 (throw (Exception. \"vector item stopped\"))] :wrong 1))
+(s/fdef stop-set :args (s/cat) :ret int?)
+(defn stop-set []
+  (if #{1 (throw (Exception. \"set item stopped\"))} :wrong 1))
+(s/fdef stop-map :args (s/cat) :ret int?)
+(defn stop-map []
+  (if {::n (throw (Exception. \"map value stopped\"))} :wrong 1))
+(s/fdef pair :args (s/cat :x int?) :ret (s/tuple int? string?))
+(defn pair [x] [x \"ok\"])
+(s/fdef input :args (s/cat) :ret (s/keys :req [::n]))
+(defn input [] {::n 1})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/stop-vector))
+(inc (a/stop-set))
+(inc (a/stop-map))
+(inc (first (a/pair 2)))
+(inc (:api/n (a/input)))
+(a/pair \"bad\")
+(inc (second (a/pair 2)))")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= (repeat 3 "t/never")
+           (mapv #(main/type-at result "api.clj" % 3) [5 8 11])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

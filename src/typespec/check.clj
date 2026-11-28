@@ -10129,8 +10129,10 @@
                          t/unknown)
                  :else (or (:type (read-var ctx s node :value)) t/unknown)))
     :vector (let [items (mapv #(dissoc (infer ctx %) :fresh) (:children node))]
-              (cond-> (t/tuple items (literal-element-type ctx items))
-                (compiler-vector-class ctx node) (assoc :jvm-class "clojure.lang.PersistentVector")))
+              (if (some #{t/never} items)
+                t/never
+                (cond-> (t/tuple items (literal-element-type ctx items))
+                  (compiler-vector-class ctx node) (assoc :jvm-class "clojure.lang.PersistentVector"))))
     :set (let [items (:children node)
                types (mapv #(infer ctx %) items)
                elements (if (every? finite-value? types)
@@ -10140,25 +10142,28 @@
                minimum (if (every? literal-node? items)
                          (count (set (map :val items)))
                          (if (zero? size) 0 1))]
-           (length/with-bounds {:t :coll :kind :set :of elements}
-                               minimum size))
+           (if (some #{t/never} types)
+             t/never
+             (length/with-bounds {:t :coll :kind :set :of elements} minimum size)))
     :map (let [children (:children node)
                pairs (partition 2 children)
                static-keys (map map-literal-key (map first pairs))]
            (when (:missing-directive-target (peek children))
              (literal-directives ctx (peek children)))
            (if (every? some? static-keys)
-             {:t :map :fresh true :inferred true :complete-keys? true :opt {}
-              :req (into (array-map)
-                         (map (fn [[k v] kk]
-                           (let [_ (when (some literal-directive? (:directives k)) (infer ctx k))
-                                 vty (check-key-value! ctx kk v (infer ctx v))]
-                             (when (and (qualified-keyword? kk) (not (get-in (:env ctx) [:specs kk]))
-                                        (contains? (:key-nss (:env ctx)) (namespace kk))
-                                        (or (:strict (:opts ctx)) (similar kk (keys (:specs (:env ctx))))))
-                               (report! ctx k "TSP2304" (str "no spec for " kk (hint-suffix kk (keys (:specs (:env ctx)))))))
-                             [kk (dissoc vty :fresh)]))
-                              pairs static-keys))}
+             (let [fields (mapv (fn [[k v] kk]
+                                  (let [_ (when (some literal-directive? (:directives k)) (infer ctx k))
+                                        vty (check-key-value! ctx kk v (infer ctx v))]
+                                    (when (and (qualified-keyword? kk) (not (get-in (:env ctx) [:specs kk]))
+                                               (contains? (:key-nss (:env ctx)) (namespace kk))
+                                               (or (:strict (:opts ctx)) (similar kk (keys (:specs (:env ctx))))))
+                                      (report! ctx k "TSP2304" (str "no spec for " kk (hint-suffix kk (keys (:specs (:env ctx)))))))
+                                    [kk (dissoc vty :fresh)]))
+                                pairs static-keys)]
+               (if (some #{t/never} (map second fields))
+                 t/never
+                 {:t :map :fresh true :inferred true :complete-keys? true :opt {}
+                  :req (into (array-map) fields)}))
              (computed-map-literal ctx pairs static-keys (mapv #(infer ctx %) children))))
     :quote (quoted-data-type ctx (first (:children node)))
     :fn-lit (infer-callback ctx node nil)

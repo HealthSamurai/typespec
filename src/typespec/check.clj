@@ -926,21 +926,21 @@
     (computed-presence-contexts ctx source key-node)))
 
 (defn- vector-presence-parts [index member]
-  (cond
-    (= :nil (:t member)) [nil member]
-    (= :vector (:kind member))
-    (case (length/position member index)
-      :absent [nil member]
-      :present [member nil]
-      :possible [(collection-with-position member index) (collection-without-position member index)])
-    :else [member member]))
+  (case (length/position member index)
+    :absent [nil member]
+    :present [member nil]
+    :possible [(collection-with-position member index) (collection-without-position member index)]))
 
 (defn- contains-contexts [ctx source key-node]
   (or (when-not (:guards-disabled? ctx)
         (let [key (stable-selector-value ctx key-node)]
-          (when (integer? key)
-            (let [index (lookup-index key)]
-              (refine-path ctx source #(vector-presence-parts index %))))))
+          (when (or (integer? key) (boolean? key))
+            (let [env (:env ctx)
+                  index (when (integer? key) (lookup-index key))]
+              (refine-path ctx source (fn [member]
+                                        (if (and (some? index) (= :vector (:kind member)))
+                                          (vector-presence-parts index member)
+                                          (presence-parts env key member))))))))
       (presence-contexts ctx source key-node)))
 
 (defn- logical-contexts [ctx args and?]

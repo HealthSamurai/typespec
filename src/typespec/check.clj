@@ -3280,7 +3280,17 @@
         (mapv (fn [i arg ty] (or ty (infer ctx arg (java-callback-context possible i)))) (range) args types))
       (mapv #(infer ctx %) args))))
 
-(defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [tags]]
+(defn- java-next-element [ctx receiver cname mname arg-nodes]
+  (let [env (:env ctx)
+        owner (case mname
+                "next" "java.util.Iterator"
+                "nextElement" "java.util.Enumeration"
+                nil)]
+    (when (and owner receiver (empty? arg-nodes)
+               (t/sub? env (t/class-type cname) (t/class-type owner)))
+      (:java-element-class (t/remove-nil env receiver)))))
+
+(defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [{:keys [tags receiver]}]]
   (let [ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
         field-class (when (and (empty? arg-nodes)
                                (case field-fallback
@@ -3303,12 +3313,17 @@
       (let [candidates (when (seq methods)
                          (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
                                                  node label arg-nodes arg-types methods))
-            rets (distinct (map #(java-ret cname %) candidates))]
+            element (java-next-element ctx receiver cname mname arg-nodes)
+            rets (distinct
+                  (for [method candidates]
+                    (java-ret cname (cond-> method
+                                      (and element (= "java.lang.Object" (:ret method))) (assoc :ret element)))))]
         (if (= 1 (count rets))
           (let [result (first rets)
-                [element & others] (distinct (map :element-class candidates))]
+                [returned-element & others] (distinct (map :element-class candidates))]
             (cond-> result
-              (and (= :class (:t result)) element (empty? others)) (assoc :java-element-class element)))
+              (and (= :class (:t result)) returned-element (empty? others))
+              (assoc :java-element-class returned-element)))
           t/unknown)))))
 
 (defn- constructor-call [ctx node cname arg-nodes]
@@ -3366,7 +3381,8 @@
           boxed (assignable! ctx target {:t :class :name (.getName ^Class boxed)} {:t :class :name cname})
           (class-symbol-name ctx target) (assignable! ctx target (t/class-type "java.lang.Class") (t/class-type cname))
           :else (assignable! ctx target non-nil (t/class-type cname)))
-        (java-call (assoc ctx :java-direct? true) node member cname mname false arg-nodes nil (java-parameter-tags member))))))
+        (java-call (assoc ctx :java-direct? true) node member cname mname false arg-nodes nil
+                   {:tags (java-parameter-tags member) :receiver actual})))))
 
 (defn- instance-field-owner [ctx target]
   (let [ty (java-receiver-type ctx target)]
@@ -3463,7 +3479,7 @@
                                                :end [(:row (:pos target)) (:col (:pos target))]}
                                        :text (str "^" hint " ")}]}])))
         (java-call (assoc ctx :java-direct? (compiler-knows? ctx target))
-                   node member-node cname mname false arg-nodes field-fallback)))))
+                   node member-node cname mname false arg-nodes field-fallback {:receiver tty})))))
 
 ;; ---- special forms ----
 

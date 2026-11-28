@@ -116,3 +116,33 @@
   (is (= "java.util.List"
          (:element-class (first (java/methods-named (str owner "$NamedList") "values" false)))))
   (is (nil? (:element-class (first (java/methods-named (str owner "$RawList") "values" false))))))
+
+(deftest direct-java-iteration-keeps-the-reflected-element-class
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s])
+  (:import [java.util.jar JarFile JarEntry] [java.util.zip ZipFile] [java.nio.file Path]))
+(defn entries [^JarFile jar] (.entries jar))
+(defn zip-entries [^ZipFile zip] (.entries zip))
+(defn parts [^Path path] (.iterator path))
+(s/fdef jar-name :args (s/cat :entry (partial instance? JarEntry)) :ret string?)
+(defn jar-name [^JarEntry entry] (.getName entry))
+(s/fdef path-name :args (s/cat :entry (partial instance? Path)) :ret string?)
+(defn path-name [path] (str path))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a])
+  (:import [java.util.jar JarFile] [java.util.zip ZipFile]
+           [java.util Enumeration Iterator] [java.nio.file Path]))
+(defn jar-good [^JarFile jar] (a/jar-name (.nextElement (a/entries jar))))
+(defn zip-bad [^ZipFile zip] (a/jar-name (.nextElement (a/zip-entries zip))))
+(defn path-good [^Path path] (a/path-name (Iterator/.next (a/parts path))))
+(defn path-bad [^Path path] (inc (.next (a/parts path))))
+(defn raw [^Enumeration entries] (.nextElement entries))
+(defn arity [^JarFile jar] (.nextElement (a/entries jar) 12))
+(defn qualified-bad [^Path path] (inc (Iterator/.next (a/parts path))))")
+        result (check/check-files [client api] {})
+        issues (:diagnostics result)
+        errors (filter #(= :error (:severity %)) issues)]
+    (is (= [[5 "TSP2345"] [7 "TSP2345"] [9 "TSP2554"] [10 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) errors))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (re-find #"java\.util\.zip\.ZipEntry" (:message (first errors))))
+    (is (= "any?" (main/type-at result "client.clj" 8 34)))))

@@ -26,7 +26,8 @@ Clojure-код постоянно пересекает границу JVM: чи�
 на `StorageOptions$Builder`.
 
 Для Java-метода, возвращающего `Iterator<T>` или `Enumeration<T>`,
-`iterator-seq` и `enumeration-seq` используют известный класс элемента.
+`iterator-seq`, `enumeration-seq`, `.next()` и `.nextElement()`
+используют известный класс элемента.
 Подстановка через наследование и верхняя граница `? extends T` учитываются.
 Например, `JarFile.entries()` даёт `JarEntry`, а `ZipFile.entries()`
 даёт `ZipEntry`. Элемент из Java сохраняет platform-nullability.

@@ -15,6 +15,24 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest iterators-from-generic-collections-preserve-elements-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file FileSystems Path]))
+(defn roots [] (.getRootDirectories (FileSystems/getDefault)))
+(defn views [] (.supportedFileAttributeViews (FileSystems/getDefault)))
+(defn root-iterator [] (.iterator ^Iterable (roots)))
+(defn view-iterator [] (.iterator ^Iterable (views)))
+(defn name-count [^Path root] (.getNameCount root))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]) (:import [java.util Iterator]))
+(a/name-count (.next ^Iterator (a/root-iterator)))
+(subs (.next ^Iterator (a/view-iterator)) 0)
+(inc (.next ^Iterator (a/view-iterator)))
+(mapv #(subs % 0) (iterator-seq (a/view-iterator)))
+(mapv #(subs % 0) (iterator-seq (a/root-iterator)))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest compatible-expression-hints-preserve-java-element-types
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file FileSystems Path]))
 (defn roots [] (.getRootDirectories (FileSystems/getDefault)))

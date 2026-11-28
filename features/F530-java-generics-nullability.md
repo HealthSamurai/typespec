@@ -35,6 +35,8 @@ Clojure-код постоянно пересекает границу JVM: чи�
 тот же тип элемента используется в `for`, `doseq` и колбэках.
 Например, `FileSystem.getRootDirectories()` даёт элементы `Path`,
 а `supportedFileAttributeViews()` — строки.
+Вызов `.iterator()` на таком `Iterable` переносит тип элемента в
+`.next()` и `iterator-seq`.
 
 - `java/methods-named` сохраняет стёртые параметры перегрузок и использует
   `getGenericReturnType` для подстановки результата. При совпадающих

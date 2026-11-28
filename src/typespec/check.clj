@@ -3399,15 +3399,18 @@
         (mapv (fn [i arg ty] (or ty (infer ctx arg (java-callback-context possible i)))) (range) args types))
       (mapv #(infer ctx %) args))))
 
+(defn- java-receiver-element [ctx receiver cname owner]
+  (let [env (:env ctx)]
+    (when (and receiver (t/sub? env (t/class-type cname) (t/class-type owner)))
+      (:java-element-class (t/remove-nil env receiver)))))
+
 (defn- java-next-element [ctx receiver cname mname arg-nodes]
-  (let [env (:env ctx)
-        owner (case mname
+  (let [owner (case mname
                 "next" "java.util.Iterator"
                 "nextElement" "java.util.Enumeration"
                 nil)]
-    (when (and owner receiver (empty? arg-nodes)
-               (t/sub? env (t/class-type cname) (t/class-type owner)))
-      (:java-element-class (t/remove-nil env receiver)))))
+    (when (and owner (empty? arg-nodes))
+      (java-receiver-element ctx receiver cname owner))))
 
 (defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [{:keys [tags receiver]}]]
   (let [ms (map #(assoc % :name mname) (java/methods-named cname mname static?))
@@ -3433,13 +3436,15 @@
                          (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
                                                  node label arg-nodes arg-types methods))
             element (java-next-element ctx receiver cname mname arg-nodes)
+            iterator-element (when (and (= "iterator" mname) (empty? arg-nodes))
+                               (java-receiver-element ctx receiver cname "java.lang.Iterable"))
             rets (distinct
                   (for [method candidates]
                     (java-ret cname (cond-> method
                                       (and element (= "java.lang.Object" (:ret method))) (assoc :ret element)))))]
         (if (= 1 (count rets))
           (let [result (first rets)
-                [returned-element & others] (distinct (map :element-class candidates))]
+                [returned-element & others] (distinct (map #(or (:element-class %) iterator-element) candidates))]
             (cond-> result
               (and (= :class (:t result)) returned-element (empty? others))
               (assoc :java-element-class returned-element)))

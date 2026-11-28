@@ -717,6 +717,36 @@
     (is (= [:api/present :domain/maybe-request]
            (get (contracts/dependency-paths (:specs env) (t/ref-t :api/present)) :domain/maybe-request)))))
 
+(deftest spec-conjunction-uses-tagged-alternatives-as-input-shapes
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::text string?)
+(s/def ::value int?)
+(s/def ::message (s/keys :req-un [::text]))
+(s/def ::metric (s/keys :req-un [::value]))
+(s/def ::event (s/or :message ::message :metric ::metric))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/def ::event (s/and map? ::d/event (s/tuple keyword? map?)))
+(s/fdef payload-size :args (s/cat :event ::event) :ret int?)
+(defn payload-size [event] (count event))
+(s/fdef make-message :args (s/cat :text string?) :ret ::event)
+(defn make-message [text] {:text text})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/payload-size {:text \"ok\"})
+(a/payload-size {:value 2})
+(a/payload-size (a/make-message \"ok\"))
+(a/payload-size {:text 2})
+(a/payload-size {:value \"2\"})
+(a/payload-size {})
+(a/payload-size \"string\")")
+        {:keys [diagnostics env]} (check/check-files [client api domain] {})]
+    (is (= (mapv #(vector "client.clj" % "TSP2345") [5 6 7 8])
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= {:domain/event [:api/event :domain/event]
+            :domain/message [:api/event :domain/message]}
+           (select-keys (contracts/dependency-paths (:specs env) (t/ref-t :api/event))
+                        [:domain/event :domain/message])))))
+
 (deftest collection-specs-check-maps-as-entry-collections
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::entry (s/tuple keyword? int?))

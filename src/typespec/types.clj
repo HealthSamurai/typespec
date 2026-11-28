@@ -1087,11 +1087,22 @@
                      (when-let [inner (conjunction-input-shape ctx (second form) seen)]
                        (with-meta (union inner nil-t)
                          (select-keys (meta inner) [::referenced-specs]))))
+        :s/or (let [options (rest form)
+                    tags (take-nth 2 options)]
+                (when (and (seq tags) (even? (count options)) (every? keyword? tags) (apply distinct? tags))
+                  (let [branches (mapv #(conjunction-input-shape ctx % seen) (take-nth 2 (rest options)))]
+                    (when (every? some? branches)
+                      (with-meta (apply union branches)
+                        {::shape-form 's/or
+                         ::referenced-specs (into #{} (mapcat #(-> % meta ::referenced-specs)) branches)})))))
         (when-let [inner (wrapped-spec-form op form)]
           (recur ctx inner seen))))))
 
 (defn- map-input-shape [type]
-  (when (and type (every? #(= :map (:t %)) (members {} type))) type))
+  (when (and type
+             (not= 's/or (::shape-form (meta type)))
+             (every? #(= :map (:t %)) (members {} type)))
+    type))
 
 (defn- nonconforming-map-input [ctx form seen]
   (cond

@@ -454,6 +454,36 @@
     (is (= ["t/never" "t/never"]
            (mapv (fn [[row col]] (main/type-at result "api.clj" row col)) [[3 16] [6 25]])))))
 
+(deftest get-uses-the-lookup-rules-of-each-known-source-alternative
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::amount int?)
+(s/def ::kind #{:map :set :vector :missing})
+(s/def ::source (s/nilable (s/or :map (s/keys :req-un [::amount])
+                                :set (s/coll-of #{:amount :other} :kind set? :count 2)
+                                :vector (s/tuple int?))))
+(s/fdef source :args (s/cat :kind ::kind) :ret ::source)
+(defn source [kind] (case kind :map {:amount 21} :set #{:amount :other} :vector [22] nil))
+(s/def ::indexed (s/or :set (s/coll-of #{:amount} :kind set? :count 1) :vector (s/tuple int?)))
+(s/fdef indexed :args (s/cat :set? boolean?) :ret ::indexed)
+(defn indexed [set?] (if set? #{:amount} [22]))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef read-amount :args (s/cat :kind ::a/kind) :ret (s/or :number int? :marker #{:amount :absent}))
+(defn read-amount [kind] (get (a/source kind) :amount :absent))
+(s/fdef numeric-only :args (s/cat :kind ::a/kind) :ret number?)
+(defn numeric-only [kind] (get (a/source kind) :amount :absent))
+(s/fdef with-index :args (s/cat :set? boolean?) :ret (s/or :number int? :default string?))
+(defn with-index [set?] (get (a/indexed set?) 0 \"absent\"))
+(s/fdef wrong-index :args (s/cat :set? boolean?) :ret string?)
+(defn wrong-index [set?] (get (a/indexed set?) 0 \"absent\"))
+(read-amount :map)
+(read-amount :wrong)
+(with-index true)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2322"] ["client.clj" 9 "TSP2322"] ["client.clj" 11 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #":amount :absent" (:message (first issues))))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

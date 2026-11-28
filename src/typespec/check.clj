@@ -4517,6 +4517,27 @@
                (set-call-result ctx values key-type not-found)
                (typed-set-call-result ctx member key-type not-found))))))
 
+(defn- read-map-get [ctx type key-node key-type not-found]
+  (if (= :kw (:op key-node))
+    (read-key ctx type (:val key-node) key-node not-found t/unknown)
+    (let [env (:env ctx)
+          source (eff ctx type)
+          keys (when (some #(= :map (:t %)) (t/members env source))
+                 (finite-map-keys env key-type map-lookup-key))]
+      (if keys
+        (t/with-assumption
+         (apply t/union (map #(read-literal-map-key ctx source % not-found) keys))
+         (or (t/assumption source) (t/assumption key-type)))
+        (read-map-of ctx source key-type not-found)))))
+
+(defn- get-source-kind [member]
+  (cond
+    (#{:nil :never} (:t member)) (:t member)
+    (indexed-get-source? member) :indexed
+    (set-type? member) :set
+    (or (#{:map :map-of} (:t member)) (= (t/prim :map) (t/strip member))) :map
+    :else :other))
+
 (defmethod special 'get [ctx node _]
   (let [[m k default & extra :as arguments] (args-of node)
         mty (infer ctx m)]
@@ -4529,34 +4550,33 @@
             not-found (if default (infer ctx default) t/nil-t)
             env (:env ctx)
             members (t/members env source)
-            indexed? (and (some indexed-get-source? members)
-                          (every? #(or (indexed-get-source? %) (#{:nil :never} (:t %))) members))
-            sets? (and (some set-type? members)
-                       (every? #(or (set-type? %) (#{:nil :never} (:t %))) members))
-            map-key? (and (= :kw (:op k)) (not indexed?) (not sets?))
-            keys (when (and (not map-key?) (some #(= :map (:t %)) members))
-                   (finite-map-keys env key-type map-lookup-key))
+            groups (group-by get-source-kind members)
+            kinds (set (keys (dissoc groups :nil :never)))
             assumption (or (t/assumption source) (t/assumption key-type))]
         (cond
           (some #{t/never} [source key-type not-found])
           t/never
 
-          map-key?
-          (read-key ctx mty (:val k) k not-found t/unknown)
-
-          keys
-          (t/with-assumption
-           (apply t/union (map #(read-literal-map-key ctx source % not-found) keys))
-           assumption)
-
-          indexed?
+          (= #{:indexed} kinds)
           (t/with-assumption (read-indexed-get ctx members key-type not-found) assumption)
 
-          sets?
+          (= #{:set} kinds)
           (t/with-assumption (read-set-get ctx members key-type not-found) assumption)
 
+          (and (< 1 (count kinds)) (not (contains? kinds :other)))
+          (t/with-assumption
+           (apply t/union
+                  (for [[kind group] groups]
+                    (case kind
+                      :map (read-map-get ctx (apply t/union group) k key-type not-found)
+                      :set (read-set-get ctx group key-type not-found)
+                      :indexed (read-indexed-get ctx group key-type not-found)
+                      :nil not-found
+                      :never t/never)))
+           assumption)
+
           :else
-          (read-map-of ctx source key-type not-found))))))
+          (read-map-get ctx mty k key-type not-found))))))
 
 (defn- numeric-path-value [ctx members key]
   (let [env (:env ctx)

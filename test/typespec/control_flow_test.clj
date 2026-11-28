@@ -30,6 +30,33 @@
     (is (= #{:unknown} (get-in result [:diagnostics 3 :reasons])))
     (is (= [7 29 "TSP210-01" :error] (last (issues (checked source {:strict true})))))))
 
+(deftest nil-predicates-check-their-single-eager-argument
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef run :args (s/cat) :ret int?)
+(defn run [] (if (nil? (throw (Exception. \"stop\"))) :impossible 1))
+(s/fdef halt :args (s/cat) :ret int?)
+(defn halt [] (if (some? (throw (Exception. \"stop\"))) 1 :impossible))
+(s/fdef takes-bool :args (s/cat :v boolean?) :ret boolean?)
+(defn takes-bool [v] v)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/takes-bool (nil? nil))
+(a/takes-bool (some? false))
+(inc (a/run))
+(inc (a/halt))
+(nil?)
+(some?)
+(nil? nil (subs 42 0))
+(some? false (subs 42 0))
+(inc (some? false))")
+        result (check/check-files [api client] {})]
+    (is (= [[6 "TSP2554"] [7 "TSP2554"] [8 "TSP2554"] [8 "TSP2345"]
+            [9 "TSP2554"] [9 "TSP2345"] [10 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (every? #(= "client.clj" (:file %)) (:diagnostics result)))
+    (is (= ["t/never" "t/never"]
+           (mapv (fn [[row col]] (main/type-at result "api.clj" row col)) [[3 14] [5 15]])))))
+
 (deftest assertions-check-the-condition-and-reachable-message
   (let [source "(ns flow (:require [clojure.spec.alpha :as s]))
 (assert (string? (subs 42 0)))

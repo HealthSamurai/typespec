@@ -3976,12 +3976,19 @@
 
 (doseq [h '[some? nil?]]
   (defmethod special h [ctx node head]
-    (let [ty (eff ctx (infer ctx (first (args-of node))))
-          present (t/remove-nil (:env ctx) ty)
-          absent (nil-part (:env ctx) ty)]
-      (cond (= :never (:t present)) (t/lit (= head 'nil?))
-            (= :never (:t absent)) (t/lit (= head 'some?))
-            :else (t/prim :boolean)))))
+    (let [[ty :as types] (mapv #(eff ctx (infer ctx %)) (args-of node))]
+      (cond
+        (not= 1 (count types))
+        (do (report! ctx node "TSP2554" (str head " expects one argument")) t/unknown)
+
+        (= t/never ty) t/never
+
+        :else
+        (let [env (:env ctx)]
+          (cond
+            (= t/never (t/remove-nil env ty)) (t/lit (= head 'nil?))
+            (= t/never (nil-part env ty)) (t/lit (= head 'some?))
+            :else (t/prim :boolean)))))))
 
 (defn- conditional-result [ctx node contexts types]
   (when-let [continuation (form-continuation ctx node)]

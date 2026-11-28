@@ -1425,7 +1425,12 @@
     (:nil :never) t/never
     :map-of (t/prim :vector)
     :map (if (:map-index member) (t/prim :vector) t/unknown)
-    :class (if (str/starts-with? (:name member) "[") (array-sequence-element member) t/unknown)
+    :class (cond
+             (str/starts-with? (:name member) "[") (array-sequence-element member)
+             (and (:java-element-class member) (t/sub? {} member (t/class-type "java.lang.Iterable")))
+             (let [class-name (:java-element-class member)]
+               (t/platform (t/class-type class-name) (java/short-name class-name)))
+             :else t/unknown)
     (:prim :lit) (if (or (= :string (:name member)) (string? (:val member)))
                    (t/class-type "java.lang.Character") t/unknown)
     t/unknown))

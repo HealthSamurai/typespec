@@ -15,6 +15,22 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest java-iterable-returns-preserve-element-types-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file FileSystems Path]))
+(defn roots [] (.getRootDirectories (FileSystems/getDefault)))
+(defn views [] (.supportedFileAttributeViews (FileSystems/getDefault)))
+(defn name-count [^Path root] (.getNameCount root))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(for [p (a/roots)] (a/name-count p))
+(for [p (a/roots)] (subs p 0))
+(doseq [view (a/views)] (subs view 0))
+(doseq [view (a/views)] (inc view))
+(mapv #(subs % 0) (a/views))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (use-fixtures :once
   (fn [test]
     (let [root (.toFile (Files/createTempDirectory "typespec-java-return-" (make-array FileAttribute 0)))

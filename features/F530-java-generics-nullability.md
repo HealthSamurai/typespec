@@ -31,6 +31,10 @@ Clojure-код постоянно пересекает границу JVM: чи�
 Подстановка через наследование и верхняя граница `? extends T` учитываются.
 Например, `JarFile.entries()` даёт `JarEntry`, а `ZipFile.entries()`
 даёт `ZipEntry`. Элемент из Java сохраняет platform-nullability.
+Для `Iterable<T>`, `Collection<T>` и известных интерфейсов коллекций
+тот же тип элемента используется в `for`, `doseq` и колбэках.
+Например, `FileSystem.getRootDirectories()` даёт элементы `Path`,
+а `supportedFileAttributeViews()` — строки.
 
 - `java/methods-named` сохраняет стёртые параметры перегрузок и использует
   `getGenericReturnType` для подстановки результата. При совпадающих

@@ -41,6 +41,25 @@
           typed (assoc raw :java-map-classes ["java.lang.String" "java.lang.String"])]
       (is (= raw (t/union typed raw))))))
 
+(deftest java-map-values-preserve-value-types-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn traces [] (Thread/getAllStackTraces))
+(s/fdef stack-size :args (s/cat :trace #(instance? StackTraceElement/1 %)) :ret int?)
+(defn stack-size [^StackTraceElement/1 trace] (alength trace))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Map Collection Iterator]))
+(s/fdef sizes :args (s/cat) :ret (s/coll-of int? :kind vector?))
+(defn sizes [] (mapv #(a/stack-size %) (.values ^Map (a/traces))))
+(defn wrong [] (mapv #(subs % 0) (.values ^Map (a/traces))))
+(defn next-size []
+  (a/stack-size (.next ^Iterator (.iterator ^Collection (.values ^Map (a/traces))))))
+(defn next-wrong []
+  (subs (.next ^Iterator (.iterator ^Collection (.values ^Map (a/traces)))) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-collection-streams-retain-elements-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path] [java.util List]))
 (defn lines [^Path path] (Files/readAllLines path))

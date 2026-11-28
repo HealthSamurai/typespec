@@ -16,6 +16,35 @@
    (s/def ::event (s/or :string ::text :number ::count))
    (s/fdef render :args (s/cat :event ::event) :ret string?)\n")
 
+(deftest equality-with-class-refines-the-value-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef text :args (s/cat :value string?) :ret string?)
+(defn text [value] (str/trim value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(defn render [value] (when (= (class value) String) (a/text value)))
+(s/fdef choose :args (s/cat :value (s/or :text string? :number int?)) :ret any?)
+(defn choose [value] (if (= String (class value)) (a/text value) (inc value)))
+(defn wrong [value] (when (= (class value) String) (inc value)))
+(s/fdef inherited :args (s/cat :value java.util.Date) :ret number?)
+(defn inherited [value] (if (= (class value) java.util.Date) 0 (inc value)))
+(defn metadata-type [value] (when (= (type value) String) (a/text value)))
+(defn covariant [^\"[Ljava.lang.String;\" values]
+  (if (not= (class values) Object/1) (inc values) 0))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP210-01"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [date (java.sql.Date. 0)
+        strings (into-array String ["x"])
+        tagged (with-meta 'metadata {:type String})]
+    (is (instance? java.util.Date date))
+    (is (not= java.util.Date (class date)))
+    (is (instance? (class (object-array 0)) strings))
+    (is (not= (class (object-array 0)) (class strings)))
+    (is (= String (type tagged)))
+    (is (not= String (class tagged)))))
+
 (defn- checked [source]
   (check/check-files [(parse/parse-string "events.clj" (str specs source))] {:strict true :strict-nil true}))
 

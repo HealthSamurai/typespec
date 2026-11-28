@@ -33,7 +33,7 @@
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
          unsupported-sequence-member specialize-call-return run-composition map-entry-sequence
-         apply-preconditions regex-literal-type)
+         apply-preconditions regex-literal-type class-symbol-name)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -856,6 +856,21 @@
         [positive (when-not (= :never (:t leaf)) leaf)]
         [positive negative]))))
 
+(defn- class-equality-contexts [ctx call class-node]
+  (let [[subject & more] (rest (:children call))]
+    (when (and (not (:guards-disabled? ctx)) (= 'class (builtin-head ctx call)) subject (empty? more))
+      (when-let [^Class clazz (some-> (class-symbol-name ctx class-node) t/load-class)]
+        (let [class-name (.getName clazz)
+              array? (.isArray clazz)
+              modifiers (.getModifiers clazz)
+              final? (and (not array?) (Modifier/isFinal modifiers))]
+          (if (and (not array?) (Modifier/isAbstract modifiers))
+            [nil ctx]
+            (refine-path ctx subject
+                         (fn [leaf]
+                           (let [[matching other] (instance-parts ctx class-name leaf)]
+                             [matching (if final? other (when-not (= t/never leaf) leaf))])))))))))
+
 (defn- join-contexts [base paths]
   (let [paths (vec (remove nil? paths))]
     (case (count paths)
@@ -1027,7 +1042,9 @@
       (= 'or h) (logical-contexts ctx args false)
 
       (and (#{'= 'not=} h) (= 2 (count args)))
-      (let [branches (or (cond (and (literal-node? a) (literal-node? b))
+      (let [branches (or (class-equality-contexts ctx a b)
+                         (class-equality-contexts ctx b a)
+                         (cond (and (literal-node? a) (literal-node? b))
                                (if (= (:val a) (:val b)) [ctx nil] [nil ctx])
                                (literal-node? b) (or (count-equality-contexts ctx a (:val b))
                                                      (equality-contexts ctx a (:val b)))

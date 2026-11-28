@@ -11,6 +11,45 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest juxt-checks-components-and-keeps-result-positions
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::label string?)
+(s/def ::row (s/keys :req-un [::id ::label]))
+(s/def ::pair (s/tuple string? int?))
+(s/fdef pair :args (s/cat :row ::row) :ret ::pair)
+(defn pair [row] ((juxt :label :id) row))
+(s/fdef pair-all :args (s/cat :rows (s/coll-of ::row :kind vector?))
+                :ret (s/coll-of ::pair :kind vector?))
+(defn pair-all [rows] (mapv (juxt :label :id) rows))
+(defn projector [] (juxt :label :id))
+(defn variadic [] (juxt + *))
+(defn captured [] (partial (juxt + *) 2))
+(defn composed [] (comp second (juxt :label :id)))
+(defn malformed [] (juxt))
+(defn bad-stage [] (juxt inc 42))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/pair {:label \"ok\" :id 1})
+(a/pair {:label \"ok\" :id \"wrong\"})
+(a/pair-all [{:label \"ok\" :id 1}])
+(subs (first ((a/projector) {:label \"ok\" :id 1})) 1)
+(inc (first ((a/projector) {:label \"ok\" :id 1})))
+(inc (second ((a/projector) {:label \"ok\" :id 1})))
+(inc (second ((a/variadic) 2 3 4)))
+(subs (second ((a/variadic) 2 3 4)) 1)
+(inc (second ((a/captured) 3 4)))
+(inc ((a/composed) {:label \"ok\" :id 1}))
+((juxt inc dec) 1 2)
+(inc (second ((a/variadic))))
+(inc (second (apply (a/variadic) [1 1 1])))
+(subs (second ((a/projector) {:label \"ok\"} \"missing\")) 0)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 15 "TSP2554"] ["api.clj" 16 "TSP2345"] ["client.clj" 3 "TSP2322"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 12 "TSP2554"] ["client.clj" 12 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest constantly-retains-a-captured-value-through-rest-calls
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::value (s/tuple string? int?))

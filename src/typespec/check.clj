@@ -32,7 +32,7 @@
 (declare infer infer-body bind-pattern apply-fn-node why-of var-type infer-fn narrow record! force-callback fn-bodies
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
-         unsupported-sequence-member specialize-call-return run-composition map-entry-sequence
+         unsupported-sequence-member specialize-call-return run-composition run-juxt map-entry-sequence
          apply-preconditions regex-literal-type class-symbol-name callable-data-result)
 
 (defn- static-map-key [node]
@@ -2170,12 +2170,16 @@
         ret))))
 
 (defn- specialize-call-return [ctx node arity arg-types]
-  (if-let [steps (:composition arity)]
-    (let [[input default] (if-let [captured (:captured-args arity)]
-                            (into captured arg-types)
-                            arg-types)]
-      (run-composition ctx node steps input default))
-    (specialize-map-return ctx arity (first arg-types))))
+  (let [inputs (if-let [captured (:captured-args arity)]
+                 (into captured arg-types)
+                 arg-types)
+        steps (:composition arity)]
+    (cond
+      (:juxt arity) (let [tuple (run-juxt ctx node (:juxt arity) inputs)]
+                      (if steps (run-composition ctx node steps tuple) tuple))
+      steps (let [[input default] inputs]
+              (run-composition ctx node steps input default))
+      :else (specialize-map-return ctx arity (first arg-types)))))
 
 (defn- spec-inference-bodies [entry arities]
   (let [bodies (into {} (map (fn [{:keys [params] :as body}]
@@ -2973,7 +2977,7 @@
 (defn- compose-shape [ctx inner stage]
   (let [arities (:arities inner)
         result (when (empty? arities) (:ret inner))
-        deferred? (some :composition arities)
+        deferred? (some #(or (:composition %) (:juxt %)) arities)
         expected (when (and inner (not deferred?) (callback-node? ctx stage))
                    {:t :fn :arities [{:params [(if result (eff ctx result)
                                                   (apply t/union (map (comp #(eff ctx %) :ret) arities)))]
@@ -2986,8 +2990,8 @@
           result (when-let [ret (composition-step ctx stage step result nil)] (assoc inner :ret ret))
           :else
           (let [arities (mapv (fn [arity]
-                                (if (:composition arity)
-                                  (update arity :composition conj step)
+                                (if (or (:composition arity) (:juxt arity))
+                                  (update arity :composition (fnil conj []) step)
                                   (when-let [ret (composition-step ctx stage step (:ret arity) nil)]
                                     (assoc (dissoc arity :map-edits) :ret ret))))
                               arities)]
@@ -3081,10 +3085,11 @@
                            residual (-> arity
                                         (update :params #(vec (drop n %)))
                                         (dissoc :rest-min :map-edits :composition :captured-args))
-                           deferred? (and (:composition arity) (or (seq (:params residual)) (next valid)))]
+                           deferred? (or (:juxt arity)
+                                         (and (:composition arity) (or (seq (:params residual)) (next valid))))]
                        (cond-> residual
-                         deferred? (assoc :composition (:composition arity)
-                                          :captured-args (into (or (:captured-args arity) []) inputs))
+                         deferred? (assoc :captured-args (into (or (:captured-args arity) []) inputs))
+                         (and deferred? (:composition arity)) (assoc :composition (:composition arity))
                          (and (not deferred?) (or (:map-edits arity) (:composition arity)))
                          (assoc :ret (or (specialize-call-return ctx node arity inputs) t/unknown))
                          (pos? remaining) (assoc :rest-min remaining))))
@@ -5267,6 +5272,15 @@
        (t/tuple items (literal-element-type ctx items))
        (some t/assumption types)))))
 
+(defn- run-juxt [ctx node stages args]
+  (let [arg-nodes (vec (repeat (count args) node))]
+    (constructed-vector
+     ctx
+     (mapv (fn [{:keys [type label]}]
+             (or (callable-data-result ctx node nil label type arg-nodes args)
+                 (apply-type ctx type args node label true)))
+           stages))))
+
 (defmethod special 'vector [ctx node _]
   (constructed-vector ctx (mapv #(infer ctx %) (args-of node))))
 
@@ -7357,6 +7371,22 @@
 (def ^:private comp-identity
   (t/parse-type {:fail #(throw (ex-info "Invalid comp identity signature" {:form %}))}
                 '(t/all [a] [a :-> a])))
+
+(defmethod special 'juxt [ctx node _]
+  (if-let [functions (seq (args-of node))]
+    (let [env (:env ctx)
+          stages (mapv (fn [function]
+                         (let [type (t/resolve-t env (eff ctx (infer ctx function)))]
+                           (when (noncallable-scalar? type)
+                             (report! ctx function "TSP2345" (str "juxt expects a callable value, got " (t/show type))))
+                           {:type type :label (parse/unparse function)}))
+                       functions)]
+      (if (some #(= t/never (:type %)) stages)
+        t/never
+        (t/with-assumption
+         {:t :fn :arities [{:params [] :rest t/any :ret t/unknown :juxt stages}]}
+         (some (comp t/assumption :type) stages))))
+    (do (report! ctx node "TSP2554" "juxt expects at least one function") t/unknown)))
 
 (defmethod special 'comp [ctx node _]
   (let [stages (args-of node)]

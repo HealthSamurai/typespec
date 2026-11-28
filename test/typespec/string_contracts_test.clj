@@ -288,6 +288,28 @@
   (is (nil? (re-matches #"[a-z]+" "wrong 7")))
   (is (thrown? ClassCastException (re-matches #"x" 42))))
 
+(deftest regex-group-count-survives-local-and-cross-namespace-bindings
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(def captured #\"(a)?b\")
+(def plain #\"(?:b)+\")
+(s/fdef groups :args (s/cat :text string?) :ret (s/nilable (s/tuple string? (s/nilable string?))))
+(defn groups [text] (re-find captured text))
+(s/fdef whole :args (s/cat :text string?) :ret (s/nilable string?))
+(defn whole [text] (let [p plain] (re-matches p text)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(when-let [[whole optional] (re-find a/captured \"b\")] (str/trim whole))
+(when-let [word (re-matches a/plain \"bb\")] (str/trim word))
+(when-let [[whole optional] (re-find a/captured \"b\")] (str/trim optional))
+(let [p #\"(x)\"] (when-let [[whole part] (re-find p \"x\")] (str/trim whole)))
+(when-let [[whole optional] (a/groups \"b\")] (str/trim whole))
+(when-let [word (a/whole \"b\")] (str/trim word))
+(defn same-count [flag] (when-let [word (re-find (if flag #\"x\" #\"y\") \"x\")] (str/trim word)))
+(defn mixed-count [flag] (when-let [word (re-find (if flag #\"x\" #\"(x)\") \"x\")] (str/trim word)))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2531"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest regex-pattern-accepts-strings-and-compiled-patterns
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef as-pattern :args (s/cat :pattern (s/or :text string? :regex java.util.regex.Pattern)) :ret java.util.regex.Pattern)

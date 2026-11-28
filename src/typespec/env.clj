@@ -223,7 +223,7 @@
                   initializer (cond-> {:file (:file file) :pos (:pos form)}
                                 hint (assoc :hint {:type hint :class (hint-class file (tag-node target))})
                                 constant (assoc :constant constant)
-                                literal-regex? (assoc :literal-regex? true))
+                                literal-regex? (assoc :literal-regex value))
                   by-name (cond-> by-name later-write (assoc-in [later-write :root-may-change?] true))
                   by-name (reduce (fn [acc sym]
                                     (cond-> acc

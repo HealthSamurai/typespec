@@ -32,7 +32,8 @@
     (class (:val ty))))
 
 ;; These facts do not change the nominal type.
-(defn strip [t] (dissoc t :platform :as :generic-failure :exact-array? :array-length :ambiguous-number-box?))
+(defn strip [t]
+  (dissoc t :platform :as :generic-failure :exact-array? :array-length :ambiguous-number-box? :regex-groups))
 
 (defn union [& ts]
   (let [[flat nullable?]
@@ -45,7 +46,7 @@
                 :union (recur (concat (:types x) more) seen out (or nullable? (:platform x)))
                 :never (recur more seen out nullable?)
                 (if-let [i (get seen shape)]
-                  ;; Preserve platform nil risk and retain array facts shared by both paths.
+                  ;; Preserve platform nil risk and retain facts shared by both paths.
                   (recur more seen
                          (update out i
                                  #(cond-> %
@@ -53,6 +54,7 @@
                                     (not (:generic-failure x)) (dissoc :generic-failure)
                                     (not (:exact-array? x)) (dissoc :exact-array?)
                                     (not= (:array-length %) (:array-length x)) (dissoc :array-length)
+                                    (not= (:regex-groups %) (:regex-groups x)) (dissoc :regex-groups)
                                     (not= (literal-number-class %) (literal-number-class x))
                                     (assoc :ambiguous-number-box? true)))
                          nullable?)

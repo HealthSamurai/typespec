@@ -33,7 +33,7 @@
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
          unsupported-sequence-member specialize-call-return run-composition map-entry-sequence
-         apply-preconditions)
+         apply-preconditions regex-literal-type)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -2228,7 +2228,7 @@
               (let [ty (quietly {:env (:env ctx) :file file :opts (:opts ctx) :locals {} :load-time? true} node)]
                 (swap! *rets* assoc sym ty)
                 ty)))
-      (let [{:keys [constant hint literal-regex?]} (env/unique-var-initializer (:env ctx) sym)]
+      (let [{:keys [constant hint literal-regex]} (env/unique-var-initializer (:env ctx) sym)]
         (or (:type constant)
             (when-let [node (:node constant)]
               (or (get @*rets* sym)
@@ -2238,9 +2238,12 @@
                     (swap! *rets* assoc sym type)
                     type)))
             (:type hint)
-            (when (and literal-regex? (not (:guards-disabled? ctx))
+            (when (and literal-regex (not (:guards-disabled? ctx))
                        (not (get-in ctx [:env :var-declarations sym :root-may-change?])))
-              (t/class-type "java.util.regex.Pattern")))))))
+              (or (some-> *rets* deref (get sym))
+                  (let [type (regex-literal-type literal-regex)]
+                    (when *rets* (swap! *rets* assoc sym type))
+                    type))))))))
 
 (defn- why-of [ctx init ty]
   (cond
@@ -3443,11 +3446,17 @@
       text
       (t/tuple (into [text] (repeat groups (t/union text t/nil-t)))))))
 
+(defn- regex-literal-type [node]
+  (let [groups (regex-literal-groups node)]
+    (cond-> (t/class-type "java.util.regex.Pattern")
+      (some? groups) (assoc :regex-groups groups))))
+
 (defn- checked-regex-match [ctx node]
   (let [head (first (:children node))
         args (args-of node)
         {:keys [type]} (read-var ctx (:val head) head :call)
-        groups (when (= 2 (count args)) (regex-literal-groups (first args)))
+        arg-types (mapv #(infer ctx %) args)
+        groups (when (= 2 (count args)) (:regex-groups (t/resolve-t (:env ctx) (first arg-types))))
         type (if (and (some? groups) (< groups map-path-budget))
                (update type :arities
                        (fn [arities]
@@ -3455,7 +3464,7 @@
                                   (assoc % :ret (t/union t/nil-t (regex-match-type groups))) %)
                                arities)))
                type)]
-    (call-fn ctx node (str (:val head)) type args)))
+    (call-fn ctx node (str (:val head)) type args arg-types)))
 
 (doseq [head '[re-find re-matches]]
   (defmethod special head [ctx node _]
@@ -9351,7 +9360,7 @@
     :bool (t/lit (:val node))
     :nil t/nil-t
     :var (var-reference ctx (:children node))
-    :regex (t/class-type "java.util.regex.Pattern")
+    :regex (regex-literal-type node)
     :sym (let [s (:val node)
                cname (java-static? ctx s)]
            (cond (contains? (:locals ctx) s) (get-in ctx [:locals s])

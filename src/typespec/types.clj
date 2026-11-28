@@ -1086,12 +1086,15 @@
     (symbol? form) (let [predicate (core-name ctx form)]
                      (or (qualification-target predicate) (builtin-predicate-type predicate)))
     (and (set? form) (every? literal-set-member? form)) (literal-set-type (filter identity form))
-    (seq? form) (let [[head & predicates] form]
-                  (if (= 'every-pred (core-name ctx head))
+    (seq? form) (let [[head & predicates] form
+                      combinator (core-name ctx head)]
+                  (if (#{'every-pred 'some-fn} combinator)
                     (when (seq predicates)
                       (let [types (mapv #(callable-predicate-type ctx %) predicates)]
                         (when (every? some? types)
-                          (vary-meta (reduce refine-predicate-type types) assoc ::unchecked-contract true))))
+                          (case combinator
+                            every-pred (vary-meta (reduce refine-predicate-type types) assoc ::unchecked-contract true)
+                            some-fn (apply union types)))))
                     (or (partial-instance-type ctx form) (predicate-spec-type ctx form))))))
 
 (defn- transparent-predicate-type [ctx form seen]

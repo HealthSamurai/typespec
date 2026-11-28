@@ -102,6 +102,25 @@
            (t/parse-type {:spec? true :defined-symbols #{'every-pred} :fail (constantly nil)}
                          '(every-pred number? pos-int?))))))
 
+(deftest some-fn-spec-unions-truthy-predicate-alternatives
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::tag (some-fn string? #{:auto false nil}))
+(s/fdef use-tag :args (s/cat :data (s/tuple ::tag int?)) :ret int?)
+(defn use-tag [[tag n]] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/use-tag [\"custom\" 2]))
+(inc (a/use-tag [:auto 2]))
+(a/use-tag [false 2])
+(a/use-tag [nil 2])
+(a/use-tag [:wrong 2])")
+        diagnostics (:diagnostics (check/check-files [api client] {}))
+        runtime-predicate (some-fn string? #{:auto false nil})]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [true true false false false]
+           (mapv #(s/valid? runtime-predicate %) ["custom" :auto false nil :wrong])))))
+
 (deftest spec-predicate-types-agree-with-runtime-on-known-values
   (let [cases (concat
                (for [value [:get :post :put :delete :patch :head :trace "get" nil false]]

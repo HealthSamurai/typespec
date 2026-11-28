@@ -140,6 +140,28 @@
     (is (= ["::value" "t/never" "t/never"]
            (mapv #(main/type-at result "api.clj" % 3) [5 8 11])))))
 
+(deftest type-hints-preserve-expressions-without-a-normal-result
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef stop-hinted-receiver :args (s/cat) :ret int?)
+(defn stop-hinted-receiver []
+  (if (.length ^String (throw (Exception. \"receiver stopped\"))) :wrong 1))
+(s/fdef stop-hinted-result :args (s/cat) :ret int?)
+(defn stop-hinted-result [] ^String (throw (Exception. \"result stopped\")))
+(s/fdef text :args (s/cat :value string?) :ret int?)
+(defn text [value] (.length ^String value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/stop-hinted-receiver))
+(inc (a/stop-hinted-result))
+(inc (a/text \"ok\"))
+(a/text 42)")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= (repeat 2 "t/never")
+           (mapv (fn [[row col]] (main/type-at result "api.clj" row col))
+                 [[4 3] [6 37]])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

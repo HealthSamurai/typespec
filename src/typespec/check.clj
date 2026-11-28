@@ -1551,6 +1551,7 @@
                        ;; An opaque Java return type can absorb nil in a union.
                        (when (:null-return (meta original)) t/nil-t))]
     (cond
+      (= :never (:t original)) original
       (nil? nil-member) hint
       (every? #(= :nil (:t %)) members) nil-member
       :else (with-meta (t/union (dissoc hint :platform) nil-member)

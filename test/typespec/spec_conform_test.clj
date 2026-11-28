@@ -15,6 +15,39 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-preserves-outer-map-and-tuple-shapes-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/or :text string? :amount int?))
+(s/def ::packet (s/keys :req-un [::payload]))
+(s/def ::row (s/tuple ::payload int?))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :raw any?) :ret string?)
+(defn render [raw]
+  (let [packet (s/conform ::a/packet raw)]
+    (if (s/invalid? packet) \"invalid\"
+      (let [[tag value] (:payload packet)]
+        (case tag :text (subs value 0) :amount (str (a/accept value)))))))
+(s/fdef wrong :args (s/cat :raw any?) :ret int?)
+(defn wrong [raw]
+  (let [packet (s/conform ::a/packet raw)]
+    (if (s/invalid? packet) 0
+      (let [[tag value] (:payload packet)]
+        (case tag :text (a/accept value) :amount value)))))
+(s/fdef from-row :args (s/cat :raw any?) :ret string?)
+(defn from-row [raw]
+  (let [row (s/conform ::a/row raw)]
+    (if (s/invalid? row) \"invalid\"
+      (let [[[tag value] n] row]
+        (case tag :text (str (subs value 0) (inc n)) :amount (str (+ value n)))))))
+(render {:payload \"ok\"})
+(from-row [\"ok\" 42])")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 13 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest conform-returns-the-spec-tags-and-invalid-sentinel
   (let [runtime-spec (s/or :text string? :amount int?)]
     (is (= [[:text "raw"] [:amount 2] ::s/invalid]

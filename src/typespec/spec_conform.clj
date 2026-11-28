@@ -49,12 +49,14 @@
                                         t/unknown)
                       (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
                       :s/nilable (t/union t/nil-t (child (first args)))
-                      :s/tuple (tuple (mapv child args))
+                      :s/tuple (vary-meta (tuple (mapv child args)) assoc ::structured true)
                       :s/keys (let [shapes (t/members env (t/parse-type (assoc context :fail (constantly nil)) form))
                                     fields (fn [row]
                                              (update-vals row #(child (:name %))))]
                                 (if (every? #(= :map (:t %)) shapes)
-                                  (apply t/union (map #(-> % (update :req fields) (update :opt fields)) shapes))
+                                  (vary-meta
+                                   (apply t/union (map #(-> % (update :req fields) (update :opt fields)) shapes))
+                                   assoc ::structured true)
                                   t/unknown))
                       t/unknown))
                   :else t/unknown)))]
@@ -68,6 +70,6 @@
   (conform-result env context form ::tagged))
 
 (defn value-result
-  "Type of conform for a supported tagged or nonconforming spec, including failure."
+  "Output type of supported tagged, structured and nonconforming specs, including failure."
   [env context form]
-  (conform-result env context form #(or (::tagged %) (::original-value %))))
+  (conform-result env context form #(or (::tagged %) (::structured %) (::original-value %))))

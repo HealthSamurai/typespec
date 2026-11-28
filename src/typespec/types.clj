@@ -288,6 +288,10 @@
       (assoc (prim :int) :int-range [start end])
       never)))
 
+(defn- int-range-spec-type [form]
+  (when (= 3 (count form))
+    (fixed-int-range (second form) (nth form 2))))
+
 (defn- literal-in-int-range? [{:keys [val ambiguous-number-box?]} [start end :as expected]]
   (or (nil? expected)
       (and (integer? val)
@@ -1017,6 +1021,11 @@
                   (and (= some-t right) (nilable? {} left)) (remove-nil {} left)
                   (and (= some-t left) (nilable? {} right)) (remove-nil {} right)
                   :else (or (narrower-scalar-contract {} #{} left right) left))
+        ranges (seq (keep :int-range [left right]))
+        refined (if (and ranges (= :prim (:t refined)) (= :int (:name refined)))
+                  (let [overlap (fixed-int-range (apply max (map first ranges)) (apply min (map second ranges)))]
+                    (if (= never overlap) never (assoc refined :int-range (:int-range overlap))))
+                  refined)
         predicates (into (:numeric-predicates refined #{})
                          (concat (:numeric-predicates left) (:numeric-predicates right)))]
     (cond-> refined
@@ -1078,9 +1087,11 @@
     (symbol? form) (let [predicate (core-name ctx form)]
                      (or (qualification-target predicate) (builtin-predicate-type predicate)))
     (and (set? form) (every? literal-set-member? form)) (literal-set-type (filter identity form))
-    (seq? form) (if (and (= :s/nilable (type-form-op ctx (first form))) (= 2 (count form)))
-                  (when-let [type (transparent-predicate-type ctx (second form) seen)]
-                    (vary-meta (union type nil-t) merge (select-keys (meta type) [::referenced-specs])))
+    (seq? form) (case (type-form-op ctx (first form))
+                  :s/nilable (when (= 2 (count form))
+                               (when-let [type (transparent-predicate-type ctx (second form) seen)]
+                                 (vary-meta (union type nil-t) merge (select-keys (meta type) [::referenced-specs]))))
+                  :s/int-in (int-range-spec-type form)
                   (or (partial-instance-type ctx form) (predicate-spec-type ctx form)))))
 
 (defn spec-option-map
@@ -1518,7 +1529,7 @@
                            (or (packed-regex-type ctx form) (p (second form)))
                            (fail))
         :s/with-gen (if (= 3 (count form)) (p (second form)) (fail))
-        :s/int-in (or (when (= 3 (count form)) (fixed-int-range (second form) (nth form 2))) (fail))
+        :s/int-in (or (int-range-spec-type form) (fail))
         :s/keys (if-let [options (spec-keys-options (rest form))] (parse-keys options) (fail))
         :s/merge {:t :merge :types (mapv p (rest form))}
         (:s/coll-of :s/every) (if-let [options (when (next form) (spec-option-map (drop 2 form)))]

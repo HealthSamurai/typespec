@@ -51,6 +51,32 @@
     (is (= [true true false false false false]
            (mapv #(s/valid? range-spec %) [1 4 0 5 2N 2.0])))))
 
+(deftest spec-conjunction-intersects-named-and-inline-integer-ranges
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::short (s/int-in 1 6))
+(s/def ::limit (s/and integer? ::short (s/int-in 3 8)))
+(s/def ::body (s/keys :req-un [::limit]))
+(s/fdef accept :args (s/cat :body ::body) :ret ::limit)
+(defn accept [{:keys [limit]}] limit)
+(s/def ::empty (s/and (s/int-in 1 2) (s/int-in 2 3)))
+(s/fdef impossible :args (s/cat :value ::empty) :ret any?)
+(defn impossible [value] value)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/accept {:limit 3}))
+(inc (a/accept {:limit 5}))
+(a/accept {:limit 2})
+(a/accept {:limit 6})
+(a/accept {:limit 4N})
+(a/impossible 1)")
+        diagnostics (:diagnostics (check/check-files [api client] {}))
+        runtime-range (s/and integer? (s/int-in 1 6) (s/int-in 3 8))]
+    (is (= [["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2322"]
+            ["client.clj" 6 "TSP2322"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [false true true false false]
+           (mapv #(s/valid? runtime-range %) [2 3 5 6 4N])))))
+
 (deftest spec-predicate-types-agree-with-runtime-on-known-values
   (let [cases (concat
                (for [value [:get :post :put :delete :patch :head :trace "get" nil false]]

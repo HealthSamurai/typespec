@@ -11,10 +11,9 @@
  clojure.string/reverse     [java.lang.CharSequence :-> string?]
  ;; The receiver is tested for truthiness before CharSequence methods are used.
  clojure.string/blank?      [(s/nilable (t/or false? java.lang.CharSequence)) :-> boolean?]
- ;; Bounded seqable domain: arrays are not yet represented. Elements and the
- ;; separator are stringified; no element contract or any escape is needed.
- clojure.string/join        ([(t/or nil? java.lang.CharSequence clojure.lang.Seqable java.lang.Iterable java.util.Map) :-> string?]
-                            [t/unknown (t/or nil? java.lang.CharSequence clojure.lang.Seqable java.lang.Iterable java.util.Map) :-> string?])
+ ;; Elements and the separator are stringified.
+ clojure.string/join        ([seqable? :-> string?]
+                            [t/unknown seqable? :-> string?])
  clojure.string/split       ([java.lang.CharSequence java.util.regex.Pattern :-> (s/coll-of string? :kind vector?)]
                             [java.lang.CharSequence java.util.regex.Pattern int? :-> (s/coll-of string? :kind vector?)])
  clojure.string/split-lines [java.lang.CharSequence :-> (s/coll-of string? :kind vector?)]

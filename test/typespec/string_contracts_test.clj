@@ -126,6 +126,26 @@
   (is (true? (str/blank? false)))
   (is (thrown? ClassCastException (str/blank? true))))
 
+(deftest join-consumes-primitive-and-reference-arrays
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.string :as str]))
+(defn ^String render [^String/1 parts] (str/join \",\" parts))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(a/render (into-array String [\"a\" \"b\"]))
+(str/join (int-array [1 2]))
+(str/join \",\" (long-array [1 2]))
+(str/join (into-array Object [:k 2]))
+(str/join nil)
+(str/join 42)
+(str/join \",\" (java.util.Date.))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= ["12" "1,2" ":k2" ""]
+         [(str/join (int-array [1 2])) (str/join "," (long-array [1 2]))
+          (str/join (into-array Object [:k 2])) (str/join nil)]))
+  (is (thrown? IllegalArgumentException (str/join 42))))
+
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
   (let [writer (java.io.StringWriter.)]

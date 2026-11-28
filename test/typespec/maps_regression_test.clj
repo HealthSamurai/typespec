@@ -307,6 +307,30 @@
         (pr-str issues))
     (is (= "42" (main/type-at result "client.clj" 11 6)))))
 
+(deftest literal-spec-fields-are-checked-alongside-computed-map-keys
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/fdef build :args (s/cat :entry-key keyword? :id ::d/id) :ret map?)
+(defn build [entry-key id] {::d/id id entry-key \"extra\"})
+(defn malformed [entry-key] {::d/id \"wrong\" entry-key \"extra\"})
+(defn text [] \"name\")
+(defn extension [] :extension)
+(s/fdef size :args (s/cat :record map?) :ret int?)
+(defn size [record] (count record))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [domain :as d]))
+(a/build :extra 42)
+(a/size {::d/id 1 (a/extension) 2})
+(a/size {::d/id (a/text) (a/extension) 2})
+(a/size {(a/extension) 2 ::d/id nil})
+(a/build :extra \"wrong\")")
+        issues (:diagnostics (check/check-files [client api domain] {}))]
+    (is (= [["api.clj" 4 37 "TSP2322"] ["client.clj" 4 17 "TSP2322"]
+            ["client.clj" 5 33 "TSP2322"] ["client.clj" 6 17 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(re-find #":domain/id" (:message %)) issues))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

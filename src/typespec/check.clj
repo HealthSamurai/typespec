@@ -9719,7 +9719,11 @@
                                    (t/ref-t kk)
                                    (dissoc vty :fresh))]))
                               pairs static-keys))}
-             (do (run! #(infer ctx %) (:children node)) (t/prim :map))))
+             (let [types (mapv #(infer ctx %) children)
+                   value-types (take-nth 2 (rest types))]
+               (doseq [[[_ vnode] key value-type] (map vector pairs static-keys value-types)]
+                 (check-key-value! ctx key vnode value-type))
+               (t/prim :map))))
     :quote (quoted-data-type ctx (first (:children node)))
     :fn-lit (infer-callback ctx node nil)
     :list (infer-list ctx node)

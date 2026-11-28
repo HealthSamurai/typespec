@@ -21,13 +21,16 @@
 (s/def ::label string?)
 (s/fdef strict-label :args (s/cat :opts (s/keys :opt [::label])) :ret string?)
 (defn strict-label [{:keys [::label] :or {label \"default\"}}] label)
-(defn label [{:keys [::label] :or {label \"default\"}}] label)
+(defn label [{:keys [::label] :or {label \"default\"} :as ignored}] label)
 (defn bounded
   ([] (bounded nil))
   ([{:keys [max] :or {max 10}}] max))
 (defn checked [{:keys [max] :as opts}]
   {:pre [(map? opts)]}
-  max)")
+  max)
+(s/fdef consume :args (s/cat :value map?) :ret map?)
+(defn consume [value] value)
+(defn pass-options [{:keys [max] :as whole}] (consume whole))")
         client (parse/parse-string
                 "client.clj"
                 "(ns client (:require [api :as a]))
@@ -36,9 +39,12 @@
 (a/label {::a/label 42})
 (a/strict-label nil)
 (a/checked nil)
-(a/bounded)")
+(a/bounded)
+(a/pass-options {:max 3})
+(a/pass-options nil)")
         issues (:diagnostics (check/check-files [client api] {}))]
-    (is (= [["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+    (is (= [["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 9 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 

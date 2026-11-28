@@ -1081,18 +1081,29 @@
           (when-let [type (read-input source spec-form (conj seen name))]
             (vary-meta type assoc ::referenced-specs #{name})))))))
 
-(defn- transparent-predicate-type [ctx form seen]
+(defn- callable-predicate-type [ctx form]
   (cond
-    (qualified-keyword? form) (named-spec-input ctx form seen transparent-predicate-type)
     (symbol? form) (let [predicate (core-name ctx form)]
                      (or (qualification-target predicate) (builtin-predicate-type predicate)))
     (and (set? form) (every? literal-set-member? form)) (literal-set-type (filter identity form))
+    (seq? form) (let [[head & predicates] form]
+                  (if (= 'every-pred (core-name ctx head))
+                    (when (seq predicates)
+                      (let [types (mapv #(callable-predicate-type ctx %) predicates)]
+                        (when (every? some? types)
+                          (vary-meta (reduce refine-predicate-type types) assoc ::unchecked-contract true))))
+                    (or (partial-instance-type ctx form) (predicate-spec-type ctx form))))))
+
+(defn- transparent-predicate-type [ctx form seen]
+  (cond
+    (qualified-keyword? form) (named-spec-input ctx form seen transparent-predicate-type)
     (seq? form) (case (type-form-op ctx (first form))
                   :s/nilable (when (= 2 (count form))
                                (when-let [type (transparent-predicate-type ctx (second form) seen)]
                                  (vary-meta (union type nil-t) merge (select-keys (meta type) [::referenced-specs]))))
                   :s/int-in (int-range-spec-type form)
-                  (or (partial-instance-type ctx form) (predicate-spec-type ctx form)))))
+                  (callable-predicate-type ctx form))
+    :else (callable-predicate-type ctx form)))
 
 (defn spec-option-map
   "Reads keyword argument pairs with an optional trailing map."
@@ -1551,5 +1562,5 @@
         :t/class (if-let [c (resolve-class (:imports ctx) (second form))] (class-type c) (fail))
         (:t/pick :t/omit :t/partial :t/keys-of :t/get)
         (if (:operator-error ctx) (parse-operator ctx (first form) form) (fail))
-        (fail))
+        (or (callable-predicate-type ctx form) (fail)))
       :else (fail))))

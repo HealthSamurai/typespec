@@ -77,6 +77,31 @@
     (is (= [false true true false false]
            (mapv #(s/valid? runtime-range %) [2 3 5 6 4N])))))
 
+(deftest every-pred-spec-reuses-known-predicate-constraints
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::id (every-pred number? pos-int?))
+(s/def ::body (s/keys :req-un [::id]))
+(s/fdef accept :args (s/cat :body ::body) :ret int?)
+(defn accept [{:keys [id]}] id)
+(s/fdef wrong :args (s/cat) :ret ::id)
+(defn wrong [] 0)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/accept {:id 2}))
+(a/accept {:id 0})
+(a/accept {:id -2})
+(a/accept {:id 2N})")
+        diagnostics (:diagnostics (check/check-files [api client] {}))
+        runtime-predicate (every-pred number? pos-int?)]
+    (is (= [["api.clj" 7 "TSP2322"] ["client.clj" 3 "TSP2322"]
+            ["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [true false false false]
+           (mapv #(s/valid? runtime-predicate %) [2 0 -2 2N])))
+    (is (= t/unknown
+           (t/parse-type {:spec? true :defined-symbols #{'every-pred} :fail (constantly nil)}
+                         '(every-pred number? pos-int?))))))
+
 (deftest spec-predicate-types-agree-with-runtime-on-known-values
   (let [cases (concat
                (for [value [:get :post :put :delete :patch :head :trace "get" nil false]]

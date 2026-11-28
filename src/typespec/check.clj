@@ -1187,9 +1187,10 @@
                           :else (str key " may be absent")))]
     (when (and bang? declared? (or optional? (t/nilable? env type)))
       (report! ctx node "TSP2741" (str ":keys! below requires " key ", but it is optional in " tname)))
-    (bind-pattern ctx pattern (cond bang? (t/remove-nil env type)
-                                    optional? (t/union type (or default-type t/nil-t))
-                                    :else type)
+    (bind-pattern (cond-> ctx (= :never (:t default-type)) (assoc ::binding-stopped? true))
+                  pattern (cond bang? (t/remove-nil env type)
+                                optional? (t/union type (or default-type t/nil-t))
+                                :else type)
                   why
                   (when-not (or default bang?) projection))))
 
@@ -1213,6 +1214,7 @@
   (if-let [key (static-map-key selector)]
     (bind-map-entry ctx pattern selector key source why (project key) defaults)
     (let [selector-type (eff ctx (infer ctx selector))
+          ctx (cond-> ctx (= :never (:t selector-type)) (assoc ::binding-stopped? true))
           keys (mapv map-lookup-key (mapcat expand-boolean (t/members (:env ctx) selector-type)))
           key (first keys)]
       (if (and (some? key) (= 1 (count keys)))
@@ -2451,6 +2453,7 @@
                   ctx' (bind-pattern ctx p ty why (stable-path ctx init))]
               (when-not callback (record! ctx p (get-in ctx' [:locals (:val p)] ty)))
               (cond-> ctx'
+                (= :never (:t ty)) (assoc ::binding-stopped? true)
                 captured (assoc-in [:conditions sym] captured)
                 compiler-class (assoc-in [:compiler-local-classes sym] compiler-class)
                 (and sym (compiler-knows? ctx init)) (update :hinted (fnil conj #{}) sym))))
@@ -4042,17 +4045,15 @@
 (defmethod special 'let [ctx node _]
   (let [[bindings & body] (args-of node)
         pending (volatile! [])
-        stopped? (volatile! false)
-        c (bind-pairs (assoc ctx :pending-callbacks pending) bindings
-                      (fn [_ _ _ ty]
-                        (when (= :never (:t ty)) (vreset! stopped? true))))
-        analysis (cond-> (dissoc c :pending-callbacks)
-                   @stopped? (dissoc :recur-types))
+        c (bind-pairs (assoc (dissoc ctx ::binding-stopped?) :pending-callbacks pending) bindings)
+        stopped? (::binding-stopped? c)
+        analysis (cond-> (dissoc c :pending-callbacks ::binding-stopped?)
+                   stopped? (dissoc :recur-types))
         result (infer-body analysis body)]
     ;; Later bindings may provide context for earlier callbacks.
     (doseq [callback (rseq @pending)]
       (finish-callback! ctx callback))
-    (if @stopped? t/never result)))
+    (if stopped? t/never result)))
 
 (defmethod special 'letfn [ctx node _]
   (let [[bindings & body] (args-of node)

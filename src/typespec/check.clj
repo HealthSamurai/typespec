@@ -8116,14 +8116,14 @@
         (= iterations 7) nil
         :else (recur (join-accumulator ctx acc (widen (dissoc step :fresh))) (inc iterations))))))
 
-(defn- iteration-element [ctx f seed]
+(defn- iteration-element [ctx seed next-elements step-shape]
   (let [env (:env ctx)]
     (loop [element seed attempts 0]
-      (let [step (probe ctx #(apply-fn-node % f [element] true))]
+      (let [step (probe ctx #(next-elements % element))]
         (cond
           (t/sub? env step element) [element true]
           (or (= :unknown (:t step)) (= attempts 7)) [element false]
-          :else (recur (t/union element (widen (dissoc step :fresh))) (inc attempts)))))))
+          :else (recur (t/union element (step-shape (dissoc step :fresh))) (inc attempts)))))))
 
 (defmethod special 'iterate [ctx node _]
   (let [[f seed :as args] (args-of node)]
@@ -8135,11 +8135,65 @@
         (if (= t/never initial)
           (do (infer ctx f) t/never)
           (let [start (widen (dissoc initial :fresh))
-                [element stable?] (iteration-element ctx f start)
+                [element stable?] (iteration-element ctx start #(apply-fn-node %1 f [%2] true) widen)
                 step (apply-fn-node ctx f [element])]
             (t/with-assumption
              (length/with-bounds (coll-of :seq (if stable? element t/unknown)) 1 nil)
              (or (t/assumption initial) (t/assumption step)))))))))
+
+(defn- tree-callback-result [ctx callback element]
+  (if (= :kw (:op callback))
+    (let [key (:val callback)]
+      (apply-key-lookup ctx callback (str key) key [element]))
+    (apply-fn-node ctx callback [element])))
+
+(defn- tree-branches [ctx branch element]
+  (let [env (:env ctx)
+        truthy? #(not= t/never (truth-part env % true))]
+    (if (= :kw (:op branch))
+      (let [members (vec (t/members env element))
+            branches (filterv #(truthy? (tree-callback-result ctx branch %)) members)]
+        (t/with-assumption (if (= members branches) element (apply t/union branches))
+                           (t/assumption element)))
+      (let [[decision branches] (apply-predicate ctx branch element true)]
+        (t/with-assumption (if (truthy? decision) branches t/never)
+                           (or (t/assumption element) (t/assumption decision)))))))
+
+(defn- tree-child-elements [ctx branch children element]
+  (let [env (:env ctx)
+        branches (tree-branches ctx branch element)]
+    (if (= t/never branches)
+      (do (infer ctx children) branches)
+      (let [source (eff ctx (tree-callback-result ctx children branches))]
+        (assignable! ctx children source t/seqable-type)
+        (t/with-assumption
+         (apply t/union
+                (for [member (t/members env source)
+                      :when (not= :never (:t member))
+                      :let [member (or (map-entry-sequence member) member)]
+                      :when (not= 0 (second (sequence-member-bounds member)))]
+                  (if-let [items (:items member)]
+                    (apply t/union items)
+                    (spread-element-type ctx member))))
+         (or (t/assumption branches) (t/assumption source)))))))
+
+(defmethod special 'tree-seq [ctx node _]
+  (let [[branch children root :as args] (args-of node)]
+    (if (not= 3 (count args))
+      (do (run! #(infer ctx %) args)
+          (report! ctx node "TSP2554" "tree-seq expects three arguments")
+          t/unknown)
+      (let [initial (dissoc (infer ctx root) :fresh)]
+        (if (= t/never initial)
+          (do (infer ctx branch) (infer ctx children) t/never)
+          (let [step #(tree-child-elements %1 branch children %2)
+                [element stable?] (iteration-element ctx initial step identity)
+                child-elements (step ctx element)
+                result (if (and stable? (= t/never child-elements))
+                         (assoc (t/tuple [initial]) :kind :seq)
+                         {:t :coll :kind :seq :of (if stable? element t/unknown) :min-count 1})]
+            (t/with-assumption (assoc result :jvm-class "clojure.lang.LazySeq")
+                               (or (t/assumption initial) (t/assumption child-elements)))))))))
 
 (defn- map-entry-sequence [member]
   (let [source (or (:entry-map member) member)

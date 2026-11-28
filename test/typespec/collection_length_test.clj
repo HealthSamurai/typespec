@@ -2972,6 +2972,42 @@
                           nil))" {})]
     (is (= ["TSP2531"] (codes r)) (pr-str (:diagnostics r)))))
 
+(deftest tree-seq-checks-children-and-preserves-possible-node-types
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/def ::children (s/coll-of ::node :kind vector?))
+(s/def ::node (s/keys :req-un [::label] :opt-un [::children]))
+(s/fdef walk :args (s/cat :root ::node) :ret (s/coll-of ::node :kind seq? :min-count 1))
+(defn walk [root] (tree-seq :children :children root))
+(s/fdef label :args (s/cat :root ::node) :ret string?)
+(defn label [{:keys [label]}] label)
+(defn invalid-children [root] (tree-seq (constantly true) (constantly 42) root))
+(defn leaf [] (tree-seq (constantly false) identity \"root\"))
+(defn malformed [] (tree-seq map? identity))
+(defn non-boolean [] (tree-seq (fn [x] (when (= x :start) \"yes\")) (constantly [nil]) :start))
+(defn vector-tree [] (tree-seq vector? (fn [node] node) [1 [2]]))
+(defn mixed [] (tree-seq :children :children {:children [\"leaf\"]}))
+(defn keyword-leaf [] (tree-seq vector? :children [1 2]))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(mapv a/label (a/walk {:label \"root\" :children [{:label \"leaf\"}]}))
+(mapv inc (a/walk {:label \"root\"}))
+(mapv #(subs % 1) (a/leaf))
+(mapv inc (a/leaf))
+(a/walk {:label 1})
+(mapv inc (a/vector-tree))
+(mapv a/label (a/non-boolean))
+(mapv (fn [node] (if (vector? node) (count node) (inc node))) (a/vector-tree))
+(mapv #(subs % 1) (filter string? (a/mixed)))
+(count (a/keyword-leaf))")
+        result (check/check-files [client api] {})
+        issues (:diagnostics result)]
+    (is (= [["api.clj" 9 "TSP2345"] ["api.clj" 11 "TSP2554"] ["client.clj" 3 "TSP2345"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2322"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "1" (main/type-at result "client.clj" 11 1)))))
+
 (deftest spec-count-uses-an-upper-bound-on-counted-inputs
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::one (s/coll-of int? :count 1))

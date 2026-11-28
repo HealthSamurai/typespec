@@ -11,6 +11,37 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest captured-position-callbacks-use-invocation-types-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::row (s/tuple string? int?))
+(s/fdef reorder :args (s/cat :row ::row) :ret (s/tuple int? string?))
+(defn reorder [row] ((juxt second first) row))
+(defn values [] (juxt first second))
+(defn pair [] (juxt key val))
+(defn fallback [] (fnil second [\"none\" 0]))
+(defn custom [] (let [first (fn [_] \"shadowed\")] (juxt first second)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(let [[text n] ((a/values) [\"x\" 42])] (+ (count text) (inc n)))
+(let [[label n] ((a/pair) (find {:x 42} :x))] (str (name label) (inc n)))
+(inc ((a/fallback) nil))
+(inc (second ((a/custom) [nil 42])))
+(inc (second (a/reorder [\"x\" 42])))
+(subs (second ((a/values) [\"x\" 42])) 0)
+((a/values) :invalid)
+((a/values) [\"x\" 42] 1)
+((a/pair) 42)
+((a/pair) nil)
+(inc (second ((a/values) [\"x\"])))
+(a/reorder [42 \"x\"])
+(subs (first ((a/custom) [nil 42])) 0)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"] [8 "TSP2345"]
+            [9 "TSP2554"] [9 "TSP2554"] [10 "TSP2345"] [10 "TSP2345"]
+            [11 "TSP2531"] [11 "TSP2531"] [12 "TSP2531"] [13 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))))
+
 (deftest fnil-substitutes-defaults-when-the-call-can-use-them
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::count int?)

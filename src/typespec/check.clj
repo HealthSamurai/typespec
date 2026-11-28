@@ -5347,10 +5347,16 @@
        (t/tuple items (literal-element-type ctx items))
        (some t/assumption types)))))
 
-(defn- call-inferred-target [ctx node {:keys [type label]} args]
-  (let [arg-nodes (vec (repeat (count args) node))]
-    (or (callable-data-result ctx node nil label type arg-nodes args)
-        (apply-type ctx type args node label true))))
+(defn- call-inferred-target [ctx node {:keys [type label projection]} args]
+  (if-let [[kind index] projection]
+    (if (= 1 (count args))
+      (case kind
+        :sequence (checked-sequence-position ctx node label (first args) index)
+        :entry (checked-entry-position ctx node label (first args) index))
+      (do (report! ctx node "TSP2554" (str label " expects one argument")) t/unknown))
+    (let [arg-nodes (vec (repeat (count args) node))]
+      (or (callable-data-result ctx node nil label type arg-nodes args)
+          (apply-type ctx type args node label true)))))
 
 (defn- run-deferred-call [ctx node {:keys [op stages target defaults]} args]
   (case op
@@ -7459,10 +7465,14 @@
                 '(t/all [a] [a :-> a])))
 
 (defn- inferred-call-target [ctx head function]
-  (let [type (t/resolve-t (:env ctx) (eff ctx (infer ctx function)))]
+  (let [type (t/resolve-t (:env ctx) (eff ctx (infer ctx function)))
+        index (positional-callback-index ctx function)
+        entry-index (when-not (:guards-disabled? ctx) (entry-callback-index ctx function))]
     (when (noncallable-scalar? type)
       (report! ctx function "TSP2345" (str head " expects a callable value, got " (t/show type))))
-    {:type type :label (parse/unparse function)}))
+    (cond-> {:type type :label (parse/unparse function)}
+      (some? index) (assoc :projection [:sequence index])
+      (some? entry-index) (assoc :projection [:entry entry-index]))))
 
 (defmethod special 'juxt [ctx node head]
   (if-let [functions (seq (args-of node))]

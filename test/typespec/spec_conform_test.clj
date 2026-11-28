@@ -15,6 +15,38 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-predicate-combinations-preserve-successful-values
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::tag (some-fn string? #{:auto false nil}))
+(s/def ::count (every-pred number? pos-int?))
+(s/def ::entry (s/tuple ::tag ::count))
+(defn tag [value] (s/conform ::tag value))
+(defn amount [value] (s/conform ::count value))
+(defn entry [value] (s/conform ::entry value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef positive :args (s/cat :value any?) :ret (s/nilable number?))
+(defn positive [value]
+  (let [n (a/amount value)]
+    (when-not (s/invalid? n) (inc n))))
+(defn wrong-tag [value]
+  (let [tag (a/tag value)]
+    (when-not (s/invalid? tag) (inc tag))))
+(s/fdef row-count :args (s/cat :value any?) :ret (s/nilable number?))
+(defn row-count [value]
+  (let [entry (a/entry value)]
+    (when-not (s/invalid? entry) (inc (second entry)))))
+(defn wrong-count [value]
+  (let [entry (a/entry value)]
+    (when-not (s/invalid? entry) (subs (second entry) 0))))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 8 "TSP2345"] ["client.clj" 15 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [:auto ::s/invalid]
+           (mapv #(s/conform (some-fn string? #{:auto false nil}) %) [:auto false])))
+    (is (= [2 ::s/invalid]
+           (mapv #(s/conform (every-pred number? pos-int?) %) [2 2N])))))
+
 (deftest conform-integer-ranges-preserve-the-validated-value
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::limit (s/int-in 1 5))

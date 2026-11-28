@@ -28,6 +28,27 @@
 (defn- issue [diagnostic]
   ((juxt :file (comp :row :pos) :code :type-path) diagnostic))
 
+(deftest properties-get-property-may-return-nil-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.util Properties]))
+(defn property [^Properties props ^String key] (.getProperty props key))
+(defn with-fallback [^Properties props ^String key ^String fallback]
+  (.getProperty props key fallback))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Properties]))
+(s/fdef load-required :args (s/cat :prefs #(instance? Properties %)) :ret string?)
+(defn load-required [prefs] (a/property prefs \"key\"))
+(s/fdef load-default :args (s/cat :prefs #(instance? Properties %)) :ret string?)
+(defn load-default [prefs] (a/with-fallback prefs \"key\" \"\"))
+(s/fdef guarded :args (s/cat :prefs #(instance? Properties %)) :ret (s/nilable int?))
+(defn guarded [prefs] (when-some [value (a/property prefs \"key\")] (.length ^String value)))
+(load-default (Properties.))
+(load-default \"bad\")")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2322" nil] ["client.clj" 10 "TSP2345" nil]]
+           (mapv issue diagnostics))
+        (pr-str diagnostics))
+    (is (str/includes? (:message (first diagnostics)) "may return nil"))))
+
 (deftest map-remove-nullability-follows-the-selected-overload
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s])
   (:import [java.util Map]))
@@ -191,8 +212,8 @@
 
 (deftest inference-through-a-generic-tuple-does-not-erase-nil
   (let [source "(defn unbox {:t/sig '(t/all [a] [(s/tuple a) :-> a])} [[value]] value)
-(clojure.string/upper-case (unbox [(.getProperty (java.util.Properties.) \"key\")]))
-(when-let [value (unbox [(.getProperty (java.util.Properties.) \"key\")])]
+(clojure.string/upper-case (unbox [(.getParent (java.io.File. \"file\"))]))
+(when-let [value (unbox [(.getParent (java.io.File. \"file\"))])]
   (clojure.string/upper-case value))"
         strict (:diagnostics (run-project source {:strict-nil true}))]
     (is (= [["client.clj" 3 "TSP2531" nil]] (mapv issue strict)) (pr-str strict))

@@ -4450,6 +4450,12 @@
       (= :vector (:op pattern))
       (let [elements (mapv #(match-pattern ctx %) (group-match-patterns (:children pattern)))]
         (when (every? some? elements) elements))
+      (= :map (:op pattern))
+      (let [entries (mapv (fn [[key value]]
+                            [(when (#{:kw :str} (:op key)) (:val key))
+                             (match-pattern ctx value)])
+                          (partition 2 (:children pattern)))]
+        (when (every? #(every? some? %) entries) {:fields entries}))
       (= :list (:op pattern))
       (let [[head marker predicate & extra :as children] (:children pattern)
             alternatives (rest children)]
@@ -4464,7 +4470,8 @@
 
 (defn- match-pattern-children [pattern]
   (cond (vector? pattern) (seq pattern)
-        (:guard pattern) [(:pattern pattern)]))
+        (:guard pattern) [(:pattern pattern)]
+        (:fields pattern) (map second (:fields pattern))))
 
 (defn- match-row [ctx vector-input? width pattern]
   (let [grouped (when (= :vector (:op pattern)) (group-match-patterns (:children pattern)))
@@ -4492,14 +4499,47 @@
         (when-let [matched (match-columns ctx elements patterns)]
           (update matched :certain? #(and % known-vector? (= width minimum maximum))))))))
 
-(defn- match-vector [ctx actual patterns]
+(defn- match-alternatives [ctx actual match-member]
   (let [members (t/members (:env ctx) (eff ctx actual))
-        matches (keep #(match-vector-member ctx % patterns) members)]
+        matches (keep match-member members)]
     (when (seq matches)
       {:certain? (and (= (count members) (count matches)) (every? :certain? matches))
        :bindings (apply merge-with t/union (map :bindings matches))})))
 
 (declare ^:private match-column)
+
+(def ^:private match-missing-key (t/lit :clojure.core.match/not-found))
+
+(defn- match-map-field [ctx member known-lookup? [key pattern]]
+  (let [env (:env ctx)
+        {:keys [status type]} (when known-lookup? (lookup-key ctx member key true))
+        present-type (or type t/unknown)]
+    (if (symbol? pattern)
+      ;; Bare bindings and _ test for key presence. Other patterns receive
+      ;; the lookup's raw result, including core.match's missing-key value.
+      (when-not (= :absent status)
+        (let [members (remove #(and (= :lit (:t %)) (= (:val match-missing-key) (:val %)))
+                              (t/members env present-type))]
+          (when (seq members)
+            (when-let [matched (match-column ctx (apply t/union members) pattern)]
+              (update matched :certain?
+                      #(and % (= :req status)
+                            (= :mismatch (:status (t/sub-result env match-missing-key present-type)))))))))
+      (match-column ctx (case status
+                          :req present-type
+                          :absent match-missing-key
+                          (t/union present-type match-missing-key))
+                    pattern))))
+
+(defn- match-map-member [ctx member fields]
+  (when-not (or (finite-value? member) (#{:seq :list :set} (:kind member))
+                (and (= :prim (:t member)) (scalar-primitives (:name member))))
+    (let [known-lookup? (or (vector-member? member) (#{:map :map-of} (:t member))
+                            (= (t/prim :map) (t/strip member)))
+          matches (mapv #(match-map-field ctx member known-lookup? %) fields)]
+      (when (every? some? matches)
+        {:certain? (and known-lookup? (every? :certain? matches))
+         :bindings (into {} (mapcat :bindings) matches)}))))
 
 (defn- match-guard [ctx actual {:keys [guard pattern]}]
   (let [env (:env ctx)
@@ -4517,7 +4557,8 @@
   (cond
     (= '_ pattern) {:certain? true}
     (symbol? pattern) {:certain? true :bindings {pattern actual}}
-    (vector? pattern) (match-vector ctx actual pattern)
+    (vector? pattern) (match-alternatives ctx actual #(match-vector-member ctx % pattern))
+    (:fields pattern) (match-alternatives ctx actual #(match-map-member ctx % (:fields pattern)))
     (:guard pattern) (match-guard ctx actual pattern)
     :else (let [members (t/members (:env ctx) (eff ctx actual))
                 matches (fn [type] (and (finite-value? type) (contains? pattern (:val type))))]

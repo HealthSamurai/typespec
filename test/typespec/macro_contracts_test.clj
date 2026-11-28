@@ -530,6 +530,30 @@ api/delayed")
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest core-match-map-patterns-use-spec-fields-and-key-presence
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns api (:require [clojure.core.match :as m] [clojure.spec.alpha :as s]))
+(s/def ::tag #{:value})
+(s/def ::value int?)
+(s/fdef value-from :args (s/cat :opts (s/keys :req-un [::tag ::value])))
+(defn value-from [opts]
+  (m/match opts {:tag :value :value n} n :else (inc \"unreachable\")))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [api :as a] [clojure.core.match :as m]))
+(inc (a/value-from {:tag :value :value 42}))
+(subs (a/value-from {:tag :value :value 42}) 0)
+(m/match [{:value \"bad\"}] [{:value n}] (inc n) :else 0)
+(m/match [{}] [{:tag n}] (inc \"missing\") :else 0)
+(m/match [{:tag nil}] [{:tag nil}] 0 :else (inc \"unreachable\"))
+(m/match [{}] [{:tag :clojure.core.match/not-found}] (inc \"sentinel\") :else 0)
+(m/match [{:tag :clojure.core.match/not-found}] [{:tag n}] (inc \"absent\") :else 0)")
+        ds (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest explicit-macro-contracts-on-the-reexport-take-precedence
   (let [provider (parse/parse-string "provider.clj" "(ns provider)
 (defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")

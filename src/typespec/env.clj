@@ -697,9 +697,12 @@
                              boxed ({"long" "java.lang.Long" "double" "java.lang.Double"} hint)]
                          [(keyword (:val field)) (when boxed {:t :class :name boxed})]))
                      field-nodes)
+        params (if record-map?
+                 [t/unknown]
+                 (mapv (fn [[_ coerced]] (if coerced (t/prim :number) t/unknown)) fields))
         arities (if (seq valid)
                   valid
-                  [{:params (vec (repeat factory-arity t/unknown)) :ret (or return-only t/unknown)}])]
+                  [{:params params :ret (or return-only t/unknown)}])]
     (when (and fdef (some (complement matches?) contracts))
       (note diags fdef fdef "TSP2790"
             (str "s/fdef of " sym " must have the generated factory arity " factory-arity)))

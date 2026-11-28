@@ -8,6 +8,31 @@
                       (parse/parse-string "client.clj" client)]
                      {}))
 
+(deftest positional-record-factories-check-primitive-field-arguments
+  (let [result (checked
+                "(ns records.provider (:require [clojure.spec.alpha :as s]))
+(defrecord Reading [^long n ^double rate ^String label])
+(s/fdef build :args (s/cat :n (s/nilable number?)) :ret any?)
+(defn build [n] (->Reading n 0.5 \"x\"))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)"
+                "(ns records.client (:require [records.provider :as a]))
+(a/accept (:n (a/->Reading 1.9 2 42)))
+(a/->Reading 1M 2/3 \"ok\")
+(a/->Reading \\A 1 \"bad\")
+(a/->Reading 1 \\B \"bad\")
+(a/->Reading nil 1 \"nil\")
+(a/->Reading \"not-number\" 1 \"bad\")
+(a/->Reading 1 false \"bad\")
+(apply a/->Reading [1 \"wrong\" \"bad\"])
+(a/->Reading [1] 1 \"bad\")")
+        issues (:diagnostics result)]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 10 "TSP2345"] ["provider.cljc" 4 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest map-record-factories-preserve-extra-and-nil-fields-across-files
   (let [result (checked
                 "(ns records.provider (:require [clojure.spec.alpha :as s]))

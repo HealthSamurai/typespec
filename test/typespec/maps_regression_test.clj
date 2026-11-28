@@ -1237,6 +1237,31 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest find-reports-unsupported-containers-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn rows [] {:value 42})
+(defn index [] [42])
+(defn invalid [] \"bad\")
+(s/def ::maybe-source (s/or :m (s/map-of keyword? int?) :invalid keyword?))
+(s/fdef from-mixed :args (s/cat :source ::maybe-source) :ret (s/nilable int?))
+(defn from-mixed [source] (when-let [entry (find source :value)] (val entry)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (val (find (a/rows) :value)))
+(inc (val (find (a/index) 0)))
+(find nil :value)
+(find (a/invalid) 0)
+(find #{:value} :value)
+(find (list 1 2) 0)
+(find (int-array [1 2]) 0)
+(find (java.util.HashMap.) :value)
+(a/from-mixed {:value 42})
+(a/from-mixed false)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["api.clj" 7 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"] ["client.clj" 11 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest find-on-vectors-preserves-the-entry-and-guards-its-position
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::row (s/tuple string? int?))

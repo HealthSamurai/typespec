@@ -60,6 +60,25 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest java-map-key-set-preserves-key-types-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn traces [] (Thread/getAllStackTraces))
+(s/fdef thread-name :args (s/cat :thread #(instance? Thread %)) :ret string?)
+(defn thread-name [^Thread thread] (.getName thread))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Map Set Iterator]))
+(s/fdef names :args (s/cat) :ret (s/coll-of string? :kind vector?))
+(defn names [] (mapv #(a/thread-name %) (.keySet ^Map (a/traces))))
+(defn wrong [] (mapv #(subs % 0) (.keySet ^Map (a/traces))))
+(defn next-name []
+  (a/thread-name (.next ^Iterator (.iterator ^Set (.keySet ^Map (a/traces))))))
+(defn next-wrong []
+  (subs (.next ^Iterator (.iterator ^Set (.keySet ^Map (a/traces)))) 0))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-collection-streams-retain-elements-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.nio.file Files Path] [java.util List]))
 (defn lines [^Path path] (Files/readAllLines path))

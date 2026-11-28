@@ -3438,6 +3438,8 @@
     (java-receiver-element ctx receiver cname "java.util.stream.Stream")
     ["values" []]
     (second (java-receiver-fact ctx receiver cname "java.util.Map" :java-map-classes))
+    ["keySet" []]
+    (first (java-receiver-fact ctx receiver cname "java.util.Map" :java-map-classes))
     nil))
 
 (defn- java-callback-element [ctx receiver cname mname params]

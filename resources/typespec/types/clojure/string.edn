@@ -8,6 +8,9 @@
  clojure.string/lower-case  [some? :-> string?]
  clojure.string/capitalize  [some? :-> string?]
  clojure.string/trim        [java.lang.CharSequence :-> string?]
+ clojure.string/triml       [java.lang.CharSequence :-> string?]
+ clojure.string/trimr       [java.lang.CharSequence :-> string?]
+ clojure.string/trim-newline [java.lang.CharSequence :-> string?]
  clojure.string/reverse     [java.lang.CharSequence :-> string?]
  ;; The receiver is tested for truthiness before CharSequence methods are used.
  clojure.string/blank?      [(s/nilable (t/or false? java.lang.CharSequence)) :-> boolean?]

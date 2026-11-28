@@ -146,6 +146,26 @@
           (str/join (into-array Object [:k 2])) (str/join nil)]))
   (is (thrown? IllegalArgumentException (str/join 42))))
 
+(deftest trimming-variants-check-char-sequences-and-return-strings
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef trim-left :args (s/cat :text java.lang.CharSequence) :ret string?)
+(defn trim-left [text] (str/triml text))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/trim (a/trim-left (StringBuilder. \" a\")))
+(str/trim (str/trimr (StringBuilder. \"a \")))
+(str/trim (str/trim-newline (StringBuilder. \"a\\n\\r\")))
+(str/triml 42)
+(str/trimr nil)
+(str/trim-newline false)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= ["a" "a" "a"] [(str/triml (StringBuilder. " a")) (str/trimr (StringBuilder. "a "))
+                        (str/trim-newline (StringBuilder. "a\n\r"))]))
+  (is (thrown? ClassCastException (str/triml 42)))
+  (is (thrown? NullPointerException (str/trimr nil))))
+
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
   (let [writer (java.io.StringWriter.)]

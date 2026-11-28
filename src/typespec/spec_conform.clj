@@ -24,10 +24,13 @@
                   (let [context (assoc context :defined-symbols (get-in env [:ns-defs (:ns context)]))
                         predicate (t/core-name context form)]
                     (if (and predicate (str/ends-with? (name predicate) "?"))
-                      (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
+                      (vary-meta (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
+                                 assoc ::predicate-result true)
                       t/unknown))
 
-                  (set? form) (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
+                  (set? form)
+                  (vary-meta (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
+                             assoc ::predicate-result true)
                   (seq? form)
                   (let [args (rest form)
                         child #(output context % active)]
@@ -41,13 +44,22 @@
                                 t/unknown))
                       :s/spec (child (first args))
                       :s/with-gen (if (= 2 (count args)) (child (first args)) t/unknown)
-                      :s/and (child (last args))
+                      :s/and (reduce (fn [previous spec]
+                                       (let [result (child spec)]
+                                         (if (and (::predicate-result (meta result))
+                                                  (not (#{:unknown :any} (:t previous)))
+                                                  (t/sub? env previous result))
+                                           previous
+                                           result)))
+                                     t/unknown args)
                       :s/nonconforming (if (= 1 (count args))
                                         (vary-meta (t/parse-type (assoc context :fail (constantly nil) :spec? true)
                                                                  (first args))
                                                    assoc ::original-value true)
                                         t/unknown)
-                      (:fn :fn*) (or (t/predicate-spec-type context form) t/unknown)
+                      (:fn :fn*) (if-let [result (t/predicate-spec-type context form)]
+                                   (vary-meta result assoc ::predicate-result true)
+                                   t/unknown)
                       :s/nilable (if (= 1 (count args))
                                    (vary-meta (t/union t/nil-t (child (first args)))
                                               assoc ::structured true)

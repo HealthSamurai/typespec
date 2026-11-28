@@ -15,6 +15,36 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-keeps-types-through-compatible-following-predicates
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/or :text string? :amount int?))
+(s/def ::union (s/and ::payload vector? any?))
+(s/def ::n int?)
+(s/def ::packet (s/and (s/keys :req-un [::n]) map?))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :raw any?) :ret string?)
+(defn render [raw]
+  (let [x (s/conform ::a/union raw)]
+    (if (s/invalid? x) \"invalid\"
+      (let [[tag value] x]
+        (case tag :text (subs value 0) :amount (str (a/accept value)))))))
+(s/fdef unwrap :args (s/cat :raw any?) :ret int?)
+(defn unwrap [raw]
+  (let [x (s/conform ::a/packet raw)]
+    (if (s/invalid? x) 0 (a/accept (:n x)))))
+(s/fdef wrong :args (s/cat :raw any?) :ret int?)
+(defn wrong [raw]
+  (let [x (s/conform ::a/union raw)]
+    (if (s/invalid? x) 0
+      (let [[tag value] x]
+        (case tag :text (a/accept value) :amount value)))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 17 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest conform-preserves-nilable-results-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::n int?)

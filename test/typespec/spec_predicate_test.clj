@@ -170,6 +170,30 @@
     (is (= [false true false] (mapv #(s/valid? nonempty-vector %) [[] [1] nil])))
     (is (= [false true false] (mapv #(s/valid? nonempty-texts %) [[] ["text"] [1]])))))
 
+(deftest spec-validation-refines-a-stable-map-field
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::limit (s/int-in 1 5))
+(s/fdef use-limit :args (s/cat :limit ::limit) :ret int?)
+(defn use-limit [limit] limit)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/def ::candidate (s/nilable integer?))
+(s/def ::input (s/keys :req-un [::candidate]))
+(s/fdef checked :args (s/cat :m ::input) :ret (s/nilable int?))
+(defn checked [m]
+  (when (s/valid? ::a/limit (:candidate m)) (a/use-limit (:candidate m))))
+(s/fdef unchecked :args (s/cat :m ::input) :ret int?)
+(defn unchecked [m] (a/use-limit (:candidate m)))
+(checked {:candidate 3})
+(checked {:candidate 7})
+(checked {:candidate nil})")
+        issues (:diagnostics (check/check-files [api client] {}))
+        limits (s/int-in 1 5)
+        validated (fn [m] (when (s/valid? limits (:candidate m)) (:candidate m)))]
+    (is (= [["client.clj" 8 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [3 nil nil] (mapv validated [{:candidate 3} {:candidate 7} {:candidate nil}])))))
+
 (deftest spec-predicate-types-agree-with-runtime-on-known-values
   (let [cases (concat
                (for [value [:get :post :put :delete :patch :head :trace "get" nil false]]

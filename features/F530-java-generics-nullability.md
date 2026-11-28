@@ -25,6 +25,12 @@ Clojure-код постоянно пересекает границу JVM: чи�
 `ServiceOptions$Builder.setCredentials`. Следующий `.build()` проверяется
 на `StorageOptions$Builder`.
 
+Для Java-метода, возвращающего `Iterator<T>` или `Enumeration<T>`,
+`iterator-seq` и `enumeration-seq` используют известный класс элемента.
+Подстановка через наследование и верхняя граница `? extends T` учитываются.
+Например, `JarFile.entries()` даёт `JarEntry`, а `ZipFile.entries()`
+даёт `ZipEntry`. Элемент из Java сохраняет platform-nullability.
+
 - `java/methods-named` сохраняет стёртые параметры перегрузок и использует
   `getGenericReturnType` для подстановки результата. При совпадающих
   сигнатурах параметров предпочитаются обычные методы перед bridge и

@@ -60,8 +60,13 @@ are also covered by the single-file regression. `TSP2531` at
 can reach `str/split` as `nil`. `TSP330-02` at `dsql/pg.clj:116:8` catches
 an empty accumulator passed to `pop` in `join-vec`. Calling the pinned
 `join-vec` with empty input reproduced the exception. The check pins warning counts by diagnostic
-code (**86 total**) and verifies warnings inside the conditional step in
+code (**91 total**) and verifies warnings inside the conditional step in
 `mk-table-constraint` and the reducers in `mk-columns` and `mk-options`.
+In `pg/migrations.clj`, the sequence adapters check the unhinted
+enumeration at `53:38` and file root at `62:18`. The two reflective
+calls at `64:17` and `65:41` now identify `File` receivers.
+`ClassLoader.getResources` supplies `URL` elements, resolving the argument
+check at `73:11`.
 In `pg/q`, `remove nil?` proves that the `str/starts-with?` receiver at
 `pg.clj:132:45` meets its `some?` contract.
 The reducers now report five unknown arguments to `name` at their source

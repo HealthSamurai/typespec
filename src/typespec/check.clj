@@ -3304,7 +3304,12 @@
                          (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
                                                  node label arg-nodes arg-types methods))
             rets (distinct (map #(java-ret cname %) candidates))]
-        (if (= 1 (count rets)) (first rets) t/unknown)))))
+        (if (= 1 (count rets))
+          (let [result (first rets)
+                [element & others] (distinct (map :element-class candidates))]
+            (cond-> result
+              (and (= :class (:t result)) element (empty? others)) (assoc :java-element-class element)))
+          t/unknown)))))
 
 (defn- constructor-call [ctx node cname arg-nodes]
   (let [^Class cls (when cname (t/load-class cname))
@@ -3662,12 +3667,21 @@
                             iterator-seq "clojure.lang.LazySeq"
                             enumeration-seq "clojure.lang.EnumerationSeq"}]
   (defmethod special head [ctx node _]
-    (let [[_ result] (core-call-result ctx node)]
+    (let [[inputs result] (core-call-result ctx node)
+          env (:env ctx)
+          [element & others] (when (and (not= 'file-seq head) (= 1 (count inputs)))
+                               (->> (t/members env (first inputs))
+                                    (remove #(= :nil (:t %)))
+                                    (map :java-element-class)
+                                    distinct))
+          element-type (when (and element (empty? others))
+                         (t/platform (t/class-type element) element))]
       (t/with-assumption
        (apply t/union
-              (for [member (t/members (:env ctx) result)]
+              (for [member (t/members env result)]
                 (cond-> member
-                  (= :coll (:t member)) (assoc :jvm-class class-name))))
+                  (= :coll (:t member)) (assoc :jvm-class class-name)
+                  (and (= :coll (:t member)) element-type) (assoc :of element-type))))
        (t/assumption result)))))
 
 (defn- core-unary-result [ctx node refine]
@@ -8727,7 +8741,7 @@
             (t/prim (:kind ty))
             (dissoc ty :items :min-count :max-count :fresh :entry-map))
     :union (apply t/union (map initial-atom-content (:types ty)))
-    (widen (dissoc ty :fresh))))
+    (widen (dissoc ty :fresh :java-element-class))))
 
 (defn- atom-contents [ctx node ty]
   (let [members (t/members (:env ctx) (eff ctx ty))

@@ -6,13 +6,15 @@
 проверки ограничена исходниками Ring Core из JAR.
 [Артефакт на Clojars](https://clojars.org/ring/ring-core/versions/1.15.3)
 
-Результат на Clojure 1.12.4 и JDK 27 — **1 ошибка, 66 предупреждений**.
+Результат на Clojure 1.12.4 и JDK 27 — **1 ошибка, 65 предупреждений**.
 Trust-счётчики равны нулю. Прогоны до и после поддержки списка ключей
 из `s/tuple` в `select-keys` дали одинаковые диагностики. Проверка
 низкоуровневого `extend` добавила одно предупреждение об отсутствующем
 `s/fdef` для реализации на байтовых массивах. Чтение типа статического поля
 `File/separatorChar` убрало `TSP210-01` в `src/ring/util/response.clj:175:23`.
 На JVM значение поля `char` передаётся в `clojure.string/replace` как `Character`.
+Тип `URL` из `ClassLoader.getResources` сохраняется через `enumeration-seq`
+и убирает `TSP210-01` на вызове `url-as-file` в `src/ring/util/response.clj:321:74`.
 Контракт `re-find` добавил `TSP210-01` в `util/mime_type.clj:107:52`,
 `util/parsing.clj:30:25`, `util/parsing.clj:30:36` и `websocket.clj:72:38`.
 Проверка теперь доходит до аргументов `Pattern` и `CharSequence`.
@@ -88,7 +90,7 @@ clojure -Sdeps "$ring_deps" -M:check check --root "$ring_root"
 эта ветка давала `TSP2322`. Проверка variadic-сигнатуры `str` также
 подтверждает результат `(apply str (:body request))` в методе `ISeq`.
 Каталог `clojure.core` выводит `string?` для `slurp` в методах `File`
-и `InputStream`. С контрактом получены **1 ошибка, 66 предупреждений**.
+и `InputStream`. С контрактом получены **1 ошибка, 65 предупреждений**.
 Диагностики совпадают с прогоном без добавленного `s/fdef`.
 
 ## Проверка `SizableResponseBody`
@@ -102,7 +104,7 @@ clojure -Sdeps "$ring_deps" -M:check check --root "$ring_root"
 ```
 
 С обоими контрактами проверка охватывает 30 файлов и даёт **1 ошибку,
-61 предупреждение**. Проверены пять реализаций `body-size-in-bytes`, включая
+60 предупреждений**. Проверены пять реализаций `body-size-in-bytes`, включая
 `extend` на `(Class/forName "[B")`. В отдельной копии исходников подмена
 `(alength bs)` строкой дала `TSP2322` в `content_length.clj:17:22`.
 

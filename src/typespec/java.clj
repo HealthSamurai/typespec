@@ -2,7 +2,8 @@
   "Java members, read by reflection from classes that are loaded but never initialized."
   (:require [typespec.types :as t])
   (:import [clojure.lang Reflector]
-           [java.lang.reflect Constructor Field MalformedParameterizedTypeException Method Modifier ParameterizedType TypeVariable]))
+           [java.lang.reflect Constructor Field MalformedParameterizedTypeException Method Modifier
+            ParameterizedType TypeVariable WildcardType]))
 
 (defn- nominal-class [bindings ty]
   (cond
@@ -54,6 +55,27 @@
                      (catch LinkageError _ nil)))]
     (.getName ^Class (if (and resolved (.isAssignableFrom ^Class erased resolved)) resolved erased))))
 
+(defn- method-element-class [^Class receiver ^Method method]
+  (when (#{java.util.Iterator java.util.Enumeration} (.getReturnType method))
+    (try
+      (let [generic (.getGenericReturnType method)]
+        (when (instance? ParameterizedType generic)
+          (let [[argument] (.getActualTypeArguments ^ParameterizedType generic)
+                argument (if (instance? WildcardType argument)
+                           (let [[upper & more] (.getUpperBounds ^WildcardType argument)]
+                             (when (empty? more) upper))
+                           argument)
+                owner (.getDeclaringClass method)
+                ^Class element (if (and (instance? TypeVariable argument)
+                                        (= owner (.getGenericDeclaration ^TypeVariable argument)))
+                                 (inherited-return receiver owner argument)
+                                 (nominal-class {} argument))]
+            (when (and element (not= Object element))
+              (.getName element)))))
+      (catch TypeNotPresentException _ nil)
+      (catch MalformedParameterizedTypeException _ nil)
+      (catch LinkageError _ nil))))
+
 (defn- most-specific [class-of methods]
   (let [classes (distinct (map class-of methods))]
     (if (next classes)
@@ -88,11 +110,13 @@
                        (sort-by (fn [^Method m] [(.getParameterCount m) (if (= Object (.getReturnType m)) 1 0)])))
           by-params (group-by params methods)]
       (mapv (fn [ps]
-              (let [^Method m (select-method (get by-params ps))]
-                {:params ps
-                 :varargs (.isVarArgs m)
-                 :ret (method-return c m)
-                 :declaring (.getName (.getDeclaringClass m))}))
+              (let [^Method m (select-method (get by-params ps))
+                    element (method-element-class c m)]
+                (cond-> {:params ps
+                         :varargs (.isVarArgs m)
+                         :ret (method-return c m)
+                         :declaring (.getName (.getDeclaringClass m))}
+                  element (assoc :element-class element))))
             (distinct (map params methods))))))
 
 (defn method-names [cname]

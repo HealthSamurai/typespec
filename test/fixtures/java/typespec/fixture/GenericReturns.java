@@ -1,6 +1,8 @@
 package typespec.fixture;
 
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 
 public final class GenericReturns {
@@ -13,6 +15,10 @@ public final class GenericReturns {
     public interface Provider<T> {
         default T fromInterface() {
             return null;
+        }
+
+        default Iterator<T> values() {
+            return Collections.emptyIterator();
         }
     }
 

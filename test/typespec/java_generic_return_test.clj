@@ -74,3 +74,45 @@
                             (when (some? builder) (.build (.settings builder nil))))"
                         {:strict-nil true})]
     (is (= ["TSP2531"] (mapv :code (:diagnostics result))) (pr-str (:diagnostics result)))))
+
+(deftest java-sequence-adapters-read-generic-element-classes
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s])
+  (:import [java.util.jar JarFile JarEntry] [java.util.zip ZipFile ZipEntry]
+           [java.net URL] [java.nio.file Path]))
+(defn jar-entries [^JarFile jar] (.entries jar))
+(defn zip-entries [^ZipFile zip] (.entries zip))
+(defn resources [^ClassLoader loader] (.getResources loader \"clojure/core.clj\"))
+(defn path-parts [^Path path] (.iterator path))
+(s/fdef jar-name :args (s/cat :entry (partial instance? JarEntry)) :ret string?)
+(defn jar-name [^JarEntry entry] (.getName entry))
+(s/fdef zip-name :args (s/cat :entry (partial instance? ZipEntry)) :ret string?)
+(defn zip-name [^ZipEntry entry] (.getName entry))
+(s/fdef resource-name :args (s/cat :url (partial instance? URL)) :ret string?)
+(defn resource-name [^URL url] (.getPath url))
+(s/fdef path-name :args (s/cat :path (partial instance? Path)) :ret string?)
+(defn path-name [path] (str path))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a])
+  (:import [java.util.jar JarFile] [java.util.zip ZipFile] [java.util Enumeration] [java.nio.file Path]))
+(defn jar-names [^JarFile jar] (mapv a/jar-name (enumeration-seq (a/jar-entries jar))))
+(defn zip-names [^ZipFile zip] (mapv a/zip-name (enumeration-seq (a/zip-entries zip))))
+(defn resource-names [^ClassLoader loader] (mapv a/resource-name (enumeration-seq (a/resources loader))))
+(defn path-names [^Path path] (mapv a/path-name (iterator-seq (a/path-parts path))))
+(defn bad-jar [^JarFile jar] (mapv inc (enumeration-seq (a/jar-entries jar))))
+(defn bad-zip [^ZipFile zip] (mapv a/jar-name (enumeration-seq (a/zip-entries zip))))
+(defn opaque [^Enumeration values] (mapv a/resource-name (enumeration-seq values)))
+(defn choices [choose? ^JarFile jar ^ClassLoader loader]
+  (mapv a/jar-name (enumeration-seq (if choose? (a/jar-entries jar) (a/resources loader)))))
+(defn changing [^JarFile jar ^ClassLoader loader]
+  (let [values (atom (a/jar-entries jar))]
+    (reset! values (a/resources loader))
+    (mapv a/jar-name (enumeration-seq @values))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[7 "TSP2345"] [8 "TSP2345"] [9 "TSP210-01"] [11 "TSP210-01"] [15 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (re-find #"java\.util\.zip\.ZipEntry" (:message (second issues)))))
+  (is (= builder (:element-class (first (java/methods-named builder "values" false)))))
+  (is (= "java.util.List"
+         (:element-class (first (java/methods-named (str owner "$NamedList") "values" false)))))
+  (is (nil? (:element-class (first (java/methods-named (str owner "$RawList") "values" false))))))

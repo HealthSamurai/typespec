@@ -34,7 +34,7 @@
 ;; These facts do not change the nominal type.
 (defn strip [t]
   (dissoc t :platform :as :generic-failure :exact-array? :array-length :ambiguous-number-box?
-          :regex-groups))
+          :regex-groups :java-element-class))
 
 (defn union [& ts]
   (let [[flat nullable?]
@@ -56,6 +56,7 @@
                                     (not (:exact-array? x)) (dissoc :exact-array?)
                                     (not= (:array-length %) (:array-length x)) (dissoc :array-length)
                                     (not= (:regex-groups %) (:regex-groups x)) (dissoc :regex-groups)
+                                    (not= (:java-element-class %) (:java-element-class x)) (dissoc :java-element-class)
                                     (not= (literal-number-class %) (literal-number-class x))
                                     (assoc :ambiguous-number-box? true)))
                          nullable?)

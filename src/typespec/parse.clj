@@ -164,6 +164,17 @@
 
 (defn parse-file [file] (parse-string (str file) (slurp file)))
 
+(defn reader-fn-parameters
+  "Parameter nodes for a reader function within Clojure's fixed arity limit."
+  [node]
+  (let [syms (keep #(when (and (= :sym (:op %)) (simple-symbol? (:val %))) (name (:val %)))
+                   (tree-seq :children :children node))
+        n (reduce max 0 (keep #(cond (= "%" %) 1
+                                    (re-matches #"%[1-9][0-9]*" %) (or (parse-long (subs % 1)) 21)) syms))]
+    (when (<= n 20)
+      {:fixed (mapv #(hash-map :op :sym :val (symbol (str "%" %))) (range 1 (inc n)))
+       :rest (when (some #{"%&"} syms) {:op :sym :val '%&})})))
+
 (defn unparse
   "Short source text of a node, for messages."
   [node]

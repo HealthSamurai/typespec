@@ -479,31 +479,38 @@
                           :file (:file file) :pos (:pos method) :arities arities}])))
 
 (defn- dispatch-function [file dispatch]
-  (let [[head params body & extra] (:children dispatch)
-        parameters (:children params)
-        names (mapv :val parameters)]
-    (when (and (#{'fn 'fn*} (t/core-name file (:val head)))
-               (= :vector (:op params)) (every? simple-symbol? names)
-               (not-any? #{'&} names) (= (count names) (count (distinct names)))
-               (empty? extra) (= :list (:op body)))
-      {:names names :parameters parameters :body body})))
+  (if (= :fn-lit (:op dispatch))
+    (let [{:keys [fixed rest]} (parse/reader-fn-parameters dispatch)]
+      (when (and (seq fixed) (nil? rest))
+        {:names (mapv :val fixed) :parameters fixed :reader? true
+         :body (assoc dispatch :op :list)}))
+    (let [[head params body & extra] (:children dispatch)
+          parameters (:children params)
+          names (mapv :val parameters)]
+      (when (and (#{'fn 'fn*} (t/core-name file (:val head)))
+                 (= :vector (:op params)) (every? simple-symbol? names)
+                 (not-any? #{'&} names) (= (count names) (count (distinct names)))
+                 (empty? extra) (= :list (:op body)))
+        {:names names :parameters parameters :body body}))))
 
-(defn- dispatch-parameter-index [names target]
+(defn- dispatch-parameter-index [{:keys [names reader?]} target]
   (when (= :sym (:op target))
-    (first (keep-indexed #(when (= %2 (:val target)) %1) names))))
+    (let [parameter (if (and reader? (= '% (:val target))) '%1 (:val target))]
+      (first (keep-indexed #(when (= %2 parameter) %1) names)))))
 
 (defn- dispatch-projection [file dispatch]
   (case (:op dispatch)
     :kw {:index 0 :key (:val dispatch) :arity 1}
-    :list (when-let [{:keys [names body]} (dispatch-function file dispatch)]
-            (let [[key target & args] (:children body)]
-              (when (and (= :kw (:op key)) (empty? args))
-                (when-let [index (dispatch-parameter-index names target)]
-                  {:index index :key (:val key) :arity (count names)}))))
+    (:list :fn-lit)
+    (when-let [{:keys [names body] :as function} (dispatch-function file dispatch)]
+      (let [[key target & args] (:children body)]
+        (when (and (= :kw (:op key)) (empty? args))
+          (when-let [index (dispatch-parameter-index function target)]
+            {:index index :key (:val key) :arity (count names)}))))
     nil))
 
 (defn- class-function-projection [file dispatch]
-  (when-let [{:keys [names parameters body]} (dispatch-function file dispatch)]
+  (when-let [{:keys [names parameters body] :as function} (dispatch-function file dispatch)]
     (let [[head value & more] (:children body)
           [key parameter & lookup-args] (:children value)
           key (when (and (= :list (:op value)) (= :kw (:op key)) (empty? lookup-args)) key)
@@ -512,7 +519,7 @@
       (when (and (= 'class (t/core-name ctx (:val head))) (empty? more)
                  (every? #(and (empty? (:directives %)) (not (tag-node %)))
                          (into parameters [body head value key target])))
-        (when-let [index (dispatch-parameter-index names target)]
+        (when-let [index (dispatch-parameter-index function target)]
           (cond-> {:kind :class :index index :arity (count names)}
             key (assoc :key (:val key))))))))
 
@@ -521,6 +528,7 @@
     (case (:op dispatch)
       :sym (when (= 'class (t/core-name file (:val dispatch)))
              {:kind :class :index 0 :arity 1})
+      :fn-lit (class-function-projection file dispatch)
       :list (or (class-function-projection file dispatch)
                 (let [[head f key & more] (:children dispatch)]
                   (when (and (= 'comp (t/core-name file (:val head)))

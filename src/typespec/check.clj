@@ -1760,15 +1760,6 @@
                (not-any? unresolved-type? (:params ca)))
       (:params ca))))
 
-(defn- fn-lit-parameters [node]
-  (let [syms (keep #(when (and (= :sym (:op %)) (simple-symbol? (:val %))) (name (:val %)))
-                   (tree-seq :children :children node))
-        n (reduce max 0 (keep #(cond (= "%" %) 1
-                                    (re-matches #"%[1-9][0-9]*" %) (or (parse-long (subs % 1)) 21)) syms))]
-    (when (<= n 20)
-      {:fixed (mapv #(hash-map :op :sym :val (symbol (str "%" %))) (range 1 (inc n)))
-       :rest (when (some #{"%&"} syms) {:op :sym :val '%&})})))
-
 (defn- inline-callback? [ctx node]
   (or (= :fn-lit (:op node))
       (#{'fn 'fn*} (builtin-head ctx (dissoc node :directives :meta)))))
@@ -2406,7 +2397,7 @@
 
 (defn- fn-bodies [node]
   (if (= :fn-lit (:op node))
-    (when-let [params (fn-lit-parameters node)]
+    (when-let [params (parse/reader-fn-parameters node)]
       [(assoc params :body [{:op :list :children (:children node) :pos (:pos node) :synthetic true}]
                      :reader? true)])
     (let [more (rest (:children node))

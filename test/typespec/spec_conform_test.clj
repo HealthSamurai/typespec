@@ -15,6 +15,42 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-coll-of-uses-the-output-collection-kind
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::choice (s/or :text string? :count int?))
+(s/def ::rows (s/coll-of ::choice :kind list? :into [] :min-count 2 :max-count 2))
+(s/def ::unique (s/coll-of ::choice :kind vector? :into #{} :min-count 2))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef labels :args (s/cat :raw any?) :ret (s/coll-of string? :kind vector?))
+(defn labels [raw]
+  (let [rows (s/conform ::a/rows raw)]
+    (if (s/invalid? rows) []
+      (mapv (fn [[tag x]] (case tag :text (subs x 0) :count (str (a/accept x)))) rows))))
+(s/fdef fixed-count :args (s/cat :raw any?) :ret #{2})
+(defn fixed-count [raw]
+  (let [rows (s/conform ::a/rows raw)]
+    (if (s/invalid? rows) 2 (count rows))))
+(s/fdef values :args (s/cat :raw any?) :ret set?)
+(defn values [raw]
+  (let [rows (s/conform ::a/unique raw)]
+    (if (s/invalid? rows) #{} rows)))
+(s/fdef wrong :args (s/cat :raw any?) :ret any?)
+(defn wrong [raw]
+  (let [rows (s/conform ::a/rows raw)]
+    (when-not (s/invalid? rows)
+      (mapv (fn [[tag x]] (case tag :text (a/accept x) :count x)) rows))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 19 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [context {:aliases {'s 'clojure.spec.alpha}}
+        result (conform/value-result {} context '(s/coll-of int? :kind seq? :into [] :count 2))
+        collection (first (filter #(= :coll (:t %)) (t/members {} result)))]
+    (is (= [:vector 2 nil nil] ((juxt :kind :min-count :max-count :counted-max) collection)))
+    (is (= [1 2 3] (s/conform (s/coll-of int? :kind seq? :into [] :count 2) (map identity [1 2 3]))))))
+
 (deftest conform-map-of-into-vector-keeps-pair-data-and-entry-identity
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::val (s/or :text string? :count int?))

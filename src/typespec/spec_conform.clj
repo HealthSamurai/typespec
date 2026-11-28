@@ -109,9 +109,13 @@
                       (let [[item & options] args
                             {:keys [into]} (when (even? (count options)) (apply hash-map options))
                             input (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)
-                            kind (:kind input)]
-                        (if (and (= :coll (:t input)) (#{:vector :set :seq} kind) (nil? into))
-                          (vary-meta (cond-> (assoc (dissoc input :distinct?) :of (child item))
+                            kind (cond
+                                   (nil? into) (:kind input)
+                                   (and (vector? into) (empty? into)) :vector
+                                   (and (set? into) (empty? into)) :set)]
+                        (if (and (= :coll (:t input)) (#{:vector :set :seq} kind))
+                          (vary-meta (cond-> (assoc (dissoc input :distinct? :counted-max) :kind kind :of (child item))
+                                       (some? into) (dissoc :jvm-class :list-kind?)
                                        (= :set kind) (dissoc :min-count))
                                      assoc ::structured true)
                           t/unknown))

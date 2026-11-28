@@ -44,8 +44,7 @@
 ((comp a/render inc) \"x\")
 (inc ((comp #(inc %) a/size) \"x\"))")
         diagnostics (:diagnostics (check/check-files [client api] {}))]
-    (is (= [["api.clj" 6 "TSP210-01"] ["client.clj" 3 "TSP2345"]
-            ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 

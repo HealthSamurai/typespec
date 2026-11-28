@@ -8990,7 +8990,8 @@
                   expected (or (when return-only {:ret return-only})
                                (merge-implementation-contracts (count fixed) (map second (get by-params params))))
                   types (or (:params expected) (mapv #(env/pattern-type env file %) fixed))
-                  types (if (and (:params expected) selector (nil? rest))
+                  types (if (and selector (nil? rest)
+                                 (or (:params expected) (and return-only (= :class (:kind selector)))))
                           (narrow-dispatch-params ctx types selector dispatch)
                           types)
                   method-ctx (reduce (fn [c [param type]]

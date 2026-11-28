@@ -178,6 +178,29 @@
         (pr-str (:diagnostics result)))
     (is (= (:diagnostics result) (:diagnostics (check/check-files [provider client] {}))))))
 
+(deftest class-dispatch-refines-methods-with-return-only-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defmulti measured class)
+(s/fdef measured :ret int?)
+(defmulti bad class)
+(s/fdef bad :ret any?)
+(def custom (make-hierarchy))
+(defmulti custom-measured class :hierarchy #'custom)
+(s/fdef custom-measured :ret int?)")
+        extension (parse/parse-string "extension.clj" "(ns extension (:require [api :as a]))
+(defmethod a/measured java.lang.CharSequence [value] (count value))
+(defmethod a/measured java.lang.Number [value] (int value))
+(defmethod a/measured nil [value] (count value))
+(defmethod a/measured :default [value] (count value))
+(defmethod a/bad String [value] (inc value))
+(defmethod a/custom-measured String [value] (count value))
+(inc (a/measured (StringBuilder. \"abc\")))
+(inc (a/measured nil))")
+        result (check/check-files [extension api] {})]
+    (is (= [["extension.clj" 5 "TSP210-01"] ["extension.clj" 6 "TSP2345"] ["extension.clj" 7 "TSP210-01"]]
+           (locations result))
+        (pr-str (:diagnostics result)))))
+
 (deftest class-dispatch-keeps-the-contract-for-custom-hierarchies-and-functions
   (let [file (parse/parse-string "demo.clj" "(ns demo (:refer-clojure :exclude [class])
   (:require [clojure.spec.alpha :as s]))

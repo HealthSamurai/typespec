@@ -1015,21 +1015,30 @@
     (and (seq? form) (= :s/nonconforming (type-form-op ctx (first form))) (= 2 (count form)))
     (map-input-shape (conjunction-input-shape ctx (second form) seen))))
 
-(defn- nonconforming-map-conjunction [ctx forms]
-  (let [preserving (vec (take-while some? (map #(nonconforming-map-input ctx % #{}) forms)))]
-    (when (seq preserving)
-      (let [last-shape (map-input-shape (conjunction-input-shape ctx (nth forms (count preserving) nil) #{}))
-            shapes (cond-> preserving last-shape (conj last-shape))]
+(defn- map-conjunction [ctx forms]
+  (loop [[form & more] forms, shapes [], conformed-keys nil]
+    (let [preserving (nonconforming-map-input ctx form #{})
+          shape (or preserving (map-input-shape (conjunction-input-shape ctx form #{})))
+          fields (when shape
+                   (into #{} (mapcat (fn [{:keys [req opt]}] (concat (keys req) (keys opt))))
+                         (members {} shape)))]
+      ;; s/keys can conform every registered qualified key, as well as the
+      ;; unqualified keys it declares. Other unqualified fields are untouched.
+      (if (and shape
+               (or (nil? conformed-keys)
+                   (and (not-any? qualified-keyword? fields) (not-any? conformed-keys fields))))
+        (recur more (conj shapes shape) (if preserving conformed-keys (into (or conformed-keys #{}) fields)))
         (when (< 1 (count shapes))
-          (with-meta {:t :merge :types shapes}
-            {::referenced-specs (into #{} (mapcat #(-> % meta ::referenced-specs)) shapes)}))))))
+          (when-let [combined (map-input-shape {:t :merge :types shapes})]
+            (with-meta combined
+              {::referenced-specs (into #{} (mapcat #(-> % meta ::referenced-specs)) shapes)})))))))
 
 (defn- spec-conjunction-type [ctx forms]
   ;; The first transforming spec can still constrain the original input
   ;; when all earlier predicates preserve it.
   (let [prefix (seq (take-while some? (map #(transparent-predicate-type ctx % #{}) forms)))
         remaining (drop (count prefix) forms)
-        map-shape (nonconforming-map-conjunction ctx remaining)]
+        map-shape (map-conjunction ctx remaining)]
     (if prefix
       (let [leading (first forms)
             refined (reduce refine-predicate-type prefix)

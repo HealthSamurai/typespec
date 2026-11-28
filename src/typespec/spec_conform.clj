@@ -22,6 +22,17 @@
 
     :else (tuple [key value])))
 
+(defn- merged-keys-output [shapes last-shape qualified-output]
+  (let [last-fields (merge (:opt last-shape) (:req last-shape))
+        fields (fn [entries]
+                 (into (empty entries)
+                       (map (fn [[key type]]
+                              [key (or (get last-fields key)
+                                       (when (qualified-keyword? key) (qualified-output key))
+                                       type)]))
+                       entries))]
+    (apply t/union (map #(-> % (update :req fields) (update :opt fields)) shapes))))
+
 (defn- conform-result [env context form supported?]
   (let [budget (volatile! 256)]
     (letfn [(output [context form active]
@@ -58,14 +69,16 @@
                                 t/unknown))
                       :s/spec (child (first args))
                       :s/with-gen (if (= 2 (count args)) (child (first args)) t/unknown)
-                      :s/and (reduce (fn [previous spec]
+                      :s/and (vary-meta
+                              (reduce (fn [previous spec]
                                        (let [result (child spec)]
                                          (if (and (::predicate-result (meta result))
                                                   (not (#{:unknown :any} (:t previous)))
                                                   (t/sub? env previous result))
                                            previous
                                            result)))
-                                     t/unknown args)
+                                      t/unknown args)
+                              dissoc ::keys-output)
                       :s/nonconforming (if (= 1 (count args))
                                         (vary-meta (t/parse-type (assoc context :fail (constantly nil) :spec? true)
                                                                  (first args))
@@ -85,8 +98,21 @@
                                 (if (every? #(= :map (:t %)) shapes)
                                   (vary-meta
                                    (apply t/union (map #(-> % (update :req fields) (update :opt fields)) shapes))
-                                   assoc ::structured true)
+                                   assoc ::structured true ::keys-output true)
                                   t/unknown))
+                      :s/merge
+                      (let [outputs (mapv child args)
+                            last-shapes (t/members env (peek outputs))
+                            shapes (t/members env (t/parse-type (assoc context :fail (constantly nil) :spec? true)
+                                                               form))]
+                        (if (and (seq outputs) (every? #(-> % meta ::keys-output) outputs)
+                                 (= 1 (count last-shapes)) (= :map (:t (first last-shapes)))
+                                 (every? #(= :map (:t %)) shapes))
+                          ;; Each s/keys conforms the original input. The last map
+                          ;; supplies the final values for the keys it left untouched too.
+                          (vary-meta (merged-keys-output shapes (first last-shapes) child)
+                                     assoc ::structured true)
+                          t/unknown))
                       :s/map-of
                       (let [[key value & options] args
                             {:keys [conform-keys into]} (when (even? (count options)) (apply hash-map options))

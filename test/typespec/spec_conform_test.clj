@@ -15,6 +15,47 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-merge-uses-the-last-keys-spec-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/or :text string? :count int?))
+(s/def ::n int?)
+(s/def ::by-payload (s/keys :req-un [::payload]))
+(s/def ::by-n (s/keys :req-un [::n]))
+(s/def ::raw (s/merge ::by-payload ::by-n))
+(s/def ::tagged (s/merge ::by-n ::by-payload))
+(s/def ::qualified (s/merge (s/keys :req [::payload]) ::by-n))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef raw-text :args (s/cat :x any?) :ret string?)
+(defn raw-text [x]
+  (let [row (s/conform ::a/raw x)]
+    (if (s/invalid? row) \"\"
+      (let [{:keys [payload n]} row]
+        (if (string? payload) (subs payload (a/accept n)) (str (inc payload)))))))
+(s/fdef tagged-text :args (s/cat :x any?) :ret string?)
+(defn tagged-text [x]
+  (let [row (s/conform ::a/tagged x)]
+    (if (s/invalid? row) \"\"
+      (let [{:keys [payload n]} row [tag value] payload]
+        (case tag :text (subs value (a/accept n)) :count (str (inc value)))))))
+(s/fdef qualified-text :args (s/cat :x any?) :ret string?)
+(defn qualified-text [x]
+  (let [row (s/conform ::a/qualified x)]
+    (if (s/invalid? row) \"\"
+      (let [[tag value] (::a/payload row)]
+        (case tag :text (subs value 0) :count (str (a/accept value)))))))
+(s/fdef wrong :args (s/cat :x any?) :ret int?)
+(defn wrong [x]
+  (let [row (s/conform ::a/qualified x)]
+    (if (s/invalid? row) 0
+      (let [[tag value] (::a/payload row)]
+        (case tag :text (a/accept value) :count value)))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 25 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest conform-coll-of-uses-the-output-collection-kind
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::choice (s/or :text string? :count int?))

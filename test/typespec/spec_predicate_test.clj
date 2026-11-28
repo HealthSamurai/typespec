@@ -483,6 +483,27 @@
     (is (= "42 is not assignable to :api/input (seqable?)" (:message (first diagnostics))))
     (is (= "true is not assignable to seqable?" (:message (peek diagnostics))))))
 
+(deftest associative-and-indexed-specs-check-collection-capabilities
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::entries #(associative? %))
+(s/fdef copy-value :args (s/cat :x ::entries) :ret ::entries)
+(defn copy-value [x] x)
+(s/fdef read-first :args (s/cat :x indexed?) :ret any?)
+(defn read-first [x] (nth x 0 nil))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/copy-value {:id 1})
+(a/copy-value [1])
+(a/copy-value #{1})
+(a/copy-value (java.util.HashMap.))
+(a/read-first [1])
+(a/read-first {:id 1})
+(a/read-first \"one\")")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))))
+
 (deftest an-unknown-qualified-key-write-remains-inconclusive
   (let [client (parse/parse-string "client.clj"
                                    "(ns client (:require [api]))

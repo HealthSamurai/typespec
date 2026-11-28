@@ -727,6 +727,8 @@
       some? some-t
       nil? nil-t
       seqable? seqable-type
+      associative? (class-type "clojure.lang.Associative")
+      indexed? (class-type "clojure.lang.Indexed")
       list? (class-type "clojure.lang.IPersistentList")
       char? (class-type "java.lang.Character")
       bytes? (class-type "[B")
@@ -816,7 +818,7 @@
              (when (and (seq branches) (every? some? branches))
                (apply union branches)))
         (when (and (= 2 (count expression)) (parameter? arg)
-                   (contains? '#{list? vector? map? set? seqable? string? keyword? symbol? boolean?
+                   (contains? '#{list? vector? map? set? seqable? associative? indexed? string? keyword? symbol? boolean?
                                  true? false? nil? some? any? char? bytes? class? int? number?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 

@@ -3408,7 +3408,15 @@
   (when-let [owner (case [mname params]
                      ["next" []] "java.util.Iterator"
                      ["nextElement" []] "java.util.Enumeration"
+                     ["previous" []] "java.util.ListIterator"
                      ["get" ["int"]] "java.util.List"
+                     nil)]
+    (java-receiver-element ctx receiver cname owner)))
+
+(defn- java-iterator-element [ctx receiver cname mname params]
+  (when-let [owner (case [mname params]
+                     ["iterator" []] "java.lang.Iterable"
+                     (["listIterator" []] ["listIterator" ["int"]]) "java.util.List"
                      nil)]
     (java-receiver-element ctx receiver cname owner)))
 
@@ -3435,8 +3443,6 @@
       (let [candidates (when (seq methods)
                          (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
                                                  node label arg-nodes arg-types methods))
-            iterator-element (when (and (= "iterator" mname) (empty? arg-nodes))
-                               (java-receiver-element ctx receiver cname "java.lang.Iterable"))
             rets (distinct
                   (for [method candidates
                         :let [element (when (= "java.lang.Object" (:ret method))
@@ -3444,7 +3450,9 @@
                     (java-ret cname (cond-> method element (assoc :ret element)))))]
         (if (= 1 (count rets))
           (let [result (first rets)
-                [returned-element & others] (distinct (map #(or (:element-class %) iterator-element) candidates))]
+                [returned-element & others] (distinct (map #(or (:element-class %)
+                                                               (java-iterator-element ctx receiver cname mname (:params %)))
+                                                            candidates))]
             (cond-> result
               (and (= :class (:t result)) returned-element (empty? others))
               (assoc :java-element-class returned-element)))

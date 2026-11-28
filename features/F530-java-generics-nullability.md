@@ -39,6 +39,8 @@ Clojure-код постоянно пересекает границу JVM: чи�
 `.next()` и `iterator-seq`.
 Для `List<T>` известный тип элемента также используется как результат
 `.get(int)`, например у списка строк из `Files.readAllLines()`.
+`listIterator()` и `listIterator(int)` сохраняют его для `.next()`,
+`.previous()` и `iterator-seq`.
 
 - `java/methods-named` сохраняет стёртые параметры перегрузок и использует
   `getGenericReturnType` для подстановки результата. При совпадающих

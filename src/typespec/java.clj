@@ -56,7 +56,7 @@
     (.getName ^Class (if (and resolved (.isAssignableFrom ^Class erased resolved)) resolved erased))))
 
 (def ^:private element-parameter-classes
-  #{Iterable java.util.Iterator java.util.Enumeration java.util.Collection java.util.List
+  #{Iterable java.util.Iterator java.util.ListIterator java.util.Enumeration java.util.Collection java.util.List
     java.util.Set java.util.SortedSet java.util.NavigableSet java.util.Queue java.util.Deque})
 
 (defn- method-element-class [^Class receiver ^Method method]

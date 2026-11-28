@@ -121,6 +121,31 @@
     (is (= [true true false false false]
            (mapv #(s/valid? runtime-predicate %) ["custom" :auto false nil :wrong])))))
 
+(deftest spec-integer-parity-predicates-check-tuple-elements
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::even (s/and pos-int? even?))
+(s/def ::odd #(and (integer? %) (odd? %)))
+(s/def ::pair (s/tuple ::even ::odd))
+(s/fdef use-pair :args (s/cat :pair ::pair) :ret integer?)
+(defn use-pair [[even odd]] (+ even odd))
+(s/fdef incorrect :args (s/cat) :ret ::even)
+(defn incorrect [] 3)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/use-pair [2 3]))
+(inc (a/use-pair [4 3N]))
+(a/use-pair [3 3])
+(a/use-pair [2 4])
+(a/use-pair [0 3])
+(a/use-pair [2 3.0])")
+        diagnostics (:diagnostics (check/check-files [api client] {}))
+        runtime-pair (s/tuple (s/and pos-int? even?) #(and (integer? %) (odd? %)))]
+    (is (= [["api.clj" 8 "TSP2322"] ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [true true false false false false]
+           (mapv #(s/valid? runtime-pair %) [[2 3] [4 3N] [3 3] [2 4] [0 3] [2 3.0]])))))
+
 (deftest spec-predicate-types-agree-with-runtime-on-known-values
   (let [cases (concat
                (for [value [:get :post :put :delete :patch :head :trace "get" nil false]]

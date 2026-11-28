@@ -270,6 +270,8 @@
   {'pos-int? [:int pos-int? pos?]
    'nat-int? [:int nat-int? #(not (neg? %))]
    'neg-int? [:int neg-int? neg?]
+   'even? [:int #(and (integer? %) (even? %))]
+   'odd? [:int #(and (integer? %) (odd? %))]
    'pos? [:number pos?]
    'neg? [:number neg?]
    'zero? [:number zero?]})
@@ -1056,8 +1058,8 @@
         (when (and (= 2 (count expression)) (parameter? arg)
                    (contains? '#{list? vector? map? set? seqable? sequential? counted? associative? indexed? string? keyword?
                                  symbol? boolean?
-                                 true? false? nil? some? any? char? bytes? class? int? number?
-                                 pos-int? nat-int? neg-int? pos? neg? zero?} op))
+                                 true? false? nil? some? any? char? bytes? class? int? integer? number?
+                                 pos-int? nat-int? neg-int? even? odd? pos? neg? zero?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 
 (defn predicate-spec-type

@@ -158,6 +158,23 @@
              form)))
        (:forms file)))
 
+(defn- grouped-declaration-forms [file]
+  (letfn [(forms [form]
+            (case (head file form)
+              do (mapcat forms (rest (:children form)))
+              clojure.test/with-test (forms (second (:children form)))
+              [form]))]
+    (mapcat forms (:forms file))))
+
+(defn macro-declarations
+  "Qualified names and source forms of macros defined at load time."
+  [file]
+  (for [form (grouped-declaration-forms file)
+        :when (= 'defmacro (head file form))
+        :let [sym (var-name file (second (:children form)))]
+        :when sym]
+    [sym form]))
+
 (declare ^:private parameter-bindings)
 
 (defn- wrapped-functions [file form]
@@ -234,12 +251,10 @@
          (= :sym (:op forwarded)) (= (:val parameter) (:val forwarded))
          (empty? args) (empty? splice-extra))))
 
-(defn- import-vars-forwarders [files]
+(defn- import-vars-forwarders [definitions]
   (into #{}
-        (for [file files form (declaration-forms file)
-              :when (= 'defmacro (head file form))
-              :let [sym (var-name file (second (:children form)))]
-              :when (and sym (import-vars-forwarder? file form))]
+        (for [[sym [[_ file form] & more]] definitions
+              :when (and (empty? more) (import-vars-forwarder? file form))]
           sym)))
 
 (defn- import-var-group [prefix node]
@@ -283,9 +298,7 @@
 (defn- var-imports [files ns-defs forwarders]
   (into {}
         (for [file files
-              form (mapcat #(tree-seq (fn [node] (= 'do (head file node)))
-                                       (fn [node] (rest (:children node))) %)
-                           (declaration-forms file))
+              form (grouped-declaration-forms file)
               :let [op (head file form)
                     qualified (when op (if (qualified-symbol? op) op
                                            (symbol (str (:ns file)) (name op))))]
@@ -421,7 +434,7 @@
     {:var-declarations declarations
      :ns-defs (reduce (fn [acc sym]
                        (update acc (symbol (namespace sym)) (fnil conj #{}) (symbol (name sym))))
-                     top-level (keys declarations))}))
+                     top-level (concat (keys declarations) macros))}))
 
 (defn type-ctx [file fail]
   (assoc (select-keys file [:ns :aliases :refers :imports :refer-clojure :defined-symbols]) :fail fail))
@@ -920,14 +933,12 @@
   ([files] (build files {}))
   ([files contracts]
   (let [diags (atom [])
-        macros (into #{} (for [file files form (declaration-forms file)
-                               :when (= 'defmacro (head file form))
-                               :let [sym (var-name file (second (:children form)))]
-                               :when sym]
-                           sym))
+        macro-definitions (group-by first (for [file files [sym form] (macro-declarations file)]
+                                            [sym file form]))
+        macros (set (keys macro-definitions))
         files (mapv index-wrapped-functions files)
         names (namespace-vars files macros)
-        forwarders (import-vars-forwarders files)
+        forwarders (import-vars-forwarders macro-definitions)
         imports (var-imports files (:ns-defs names) forwarders)
         origins (into {} (keep (fn [target]
                                  (when-let [source (import-origin imports target)]

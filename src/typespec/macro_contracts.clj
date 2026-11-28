@@ -257,11 +257,8 @@
   "Read a fixed syntax-quoted Spec guard and direct function call as an argument check."
   [env files]
   (when (seq (:macros env))
-    (let [definitions (for [file files form (:forms file)
-                            :when (= 'defmacro (env/head file form))
-                            :let [nm (:val (second (:children form)))]
-                            :when (simple-symbol? nm)]
-                        [(symbol (str (:ns file)) (name nm)) file form])]
+    (let [definitions (for [file files [sym form] (env/macro-declarations file)]
+                        [sym file form])]
       (into {}
             (for [[sym [[_ file form] & more]] (group-by first definitions)
                   :when (and (empty? more) (not (get-in env [:root-definitions sym])))

@@ -363,6 +363,35 @@ api/delayed")
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest macros-inside-top-level-do-retain-their-contracts
+  (let [provider (parse/parse-string
+                  "portable.cljc"
+                  "(ns portable (:require [clojure.spec.alpha :as s]))
+(s/def ::kind #{:live})
+(defn accept [kind] kind)
+#?(:clj
+   (do
+     (defmacro discard [_] :done)
+     (do
+       (defmacro validate-kind [kind]
+         `(let [value# (s/conform ~::kind ~kind)]
+            (if (s/invalid? value#)
+              (throw (ex-info \"bad kind\" (s/explain-data ~::kind ~kind)))
+              (accept ~kind))))))
+   :cljs (defmacro cljs-only [_] :cljs))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [portable :as p]))
+#'p/discard
+(p/discard (inc \"syntax\"))
+(p/validate-kind :live)
+(p/validate-kind :typo)
+(p/cljs-only :value)")
+        ds (:diagnostics (check/check-files [client provider] {}))]
+    (is (= [["client.clj" 3 "TSP7031"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2305"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest explicit-macro-contracts-on-the-reexport-take-precedence
   (let [provider (parse/parse-string "provider.clj" "(ns provider)
 (defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")

@@ -30,6 +30,10 @@ origin: Typespec
 
 Макрос с единственным rest-параметром может передавать его в `import-vars` через syntax quote и `~@`. Это правило также действует для ветки `:clj` литерального `net.cgrand.macrovich/case`, как в `metabase.util.namespaces/import-fns`.
 
+Одиночные `import-fn`, `import-def` и `import-macro` поддерживают
+исходное имя и явное переименование. `import-macro` указывает на
+макрос даже без исходника импортируемого Var.
+
 ## Объявления функций с синтаксисом Malli
 
 В `typespec.edn` можно указать форму top-level макроса. Например, для Metabase:

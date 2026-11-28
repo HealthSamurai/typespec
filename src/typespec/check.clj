@@ -3753,15 +3753,16 @@
 
 (defmulti special (fn [_ctx _node head] head) :default ::none)
 
-(doseq [head '[potemkin/import-vars potemkin.namespaces/import-vars]]
+(doseq [head env/potemkin-import-macros]
   (defmethod special head [ctx node _]
-    (let [imports (env/imported-vars node)]
+    (let [imports (env/imported-vars head node)]
       (doseq [{:keys [source node]} imports
               :when (qualified-symbol? (env/resolve-sym (:file ctx) source))]
         (resolve-var ctx source node))
       (cond
         (seq imports) (t/class-type "clojure.lang.Var")
-        (empty? (args-of node)) t/nil-t
+        (and (#{'potemkin/import-vars 'potemkin.namespaces/import-vars} head)
+             (empty? (args-of node))) t/nil-t
         :else t/unknown))))
 (defmethod special ::none [_ _ _] ::none)
 

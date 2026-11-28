@@ -203,6 +203,12 @@
 (def ^:private import-vars-heads
   '#{potemkin/import-vars potemkin.namespaces/import-vars})
 
+(def ^:private single-var-imports
+  '#{potemkin/import-fn potemkin/import-def potemkin/import-macro
+     potemkin.namespaces/import-fn potemkin.namespaces/import-def potemkin.namespaces/import-macro})
+
+(def potemkin-import-macros (into import-vars-heads single-var-imports))
+
 (defn- clj-macro-body [file body]
   (if (= 'net.cgrand.macrovich/case (head file body))
     (let [options (rest (:children body))
@@ -264,8 +270,15 @@
 
 (defn imported-vars
   "Literal Var references in a Potemkin import. These forms are macro syntax."
-  [node]
-  (mapcat import-var-clause (rest (:children node))))
+  [head node]
+  (if (contains? single-var-imports head)
+    (let [[_ source target & extra] (:children node)]
+      (when (and (= :sym (:op source)) (empty? extra)
+                 (or (#{nil :nil} (:op target))
+                     (and (= :sym (:op target)) (simple-symbol? (:val target)))))
+        [{:source (:val source) :target (:val target) :node source
+          :macro? (= "import-macro" (name head))}]))
+    (mapcat import-var-clause (rest (:children node)))))
 
 (defn- var-imports [files ns-defs forwarders]
   (into {}
@@ -276,20 +289,24 @@
               :let [op (head file form)
                     qualified (when op (if (qualified-symbol? op) op
                                            (symbol (str (:ns file)) (name op))))]
-              :when (or (import-vars-heads op) (contains? forwarders qualified))
-              {:keys [source target]} (imported-vars form)
-              :let [source (resolve-sym file source)]
+              :when (or (potemkin-import-macros op) (contains? forwarders qualified))
+              {:keys [source target macro?]} (imported-vars op form)
+              :let [source (resolve-sym file source)
+                    local-names (get ns-defs (:ns file))
+                    source (if (and (simple-symbol? source) (contains? local-names source))
+                             (symbol (str (:ns file)) (name source))
+                             source)]
               :when (qualified-symbol? source)
               :let [target (or target (symbol (name source)))]
-              :when (not (contains? (get ns-defs (:ns file)) target))]
-          [(symbol (str (:ns file)) (name target)) source])))
+              :when (not (contains? local-names target))]
+          [(symbol (str (:ns file)) (name target)) {:source source :macro? macro?}])))
 
 (defn- import-origin [imports target]
-  (loop [sym target seen #{}]
+  (loop [sym target seen #{} macro? false]
     (when-not (contains? seen sym)
-      (if-let [source (get imports sym)]
-        (recur source (conj seen sym))
-        sym))))
+      (if-let [{source :source imported-macro? :macro?} (get imports sym)]
+        (recur source (conj seen sym) (or macro? imported-macro?))
+        {:source sym :macro? macro?}))))
 
 (defn- expression-children [form operator]
   (let [[_ a & more] (:children form)]
@@ -919,8 +936,11 @@
         names (reduce (fn [env target]
                         (update-in env [:ns-defs (symbol (namespace target))] (fnil conj #{})
                                    (symbol (name target))))
-                      (assoc names :var-imports origins) (keys imports))
-        macros (into macros (keep (fn [[target source]] (when (contains? macros source) target))) origins)
+                      (assoc names :var-imports (update-vals origins :source)) (keys imports))
+        macros (into macros
+                     (keep (fn [[target {:keys [source macro?]}]]
+                             (when (or macro? (contains? macros source)) target)))
+                     origins)
         files (mapv #(assoc % :defined-symbols (get-in names [:ns-defs (:ns %)])) files)
         spec-definitions (into {} (for [file files form (declaration-forms file)
                                         :when (= 'clojure.spec.alpha/def (head file form))

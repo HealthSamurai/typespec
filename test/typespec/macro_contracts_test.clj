@@ -58,6 +58,35 @@
            (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest individual-potemkin-imports-retain-types-and-macro-syntax
+  (let [origin (parse/parse-string
+                "origin.clj"
+                "(ns origin (:require [clojure.spec.alpha :as s]))
+(s/fdef size :args (s/cat :value string?) :ret int?)
+(defn size [value] (count value))
+(def ^String label \"ready\")
+(defmacro twice [x] x)")
+        facade (parse/parse-string
+                "facade.clj"
+                "(ns facade (:require [origin :as impl] [potemkin :as p] [foreign :as ext]
+  [potemkin.namespaces :refer [import-macro]]))
+(p/import-fn impl/size length)
+(p/import-def impl/label nil)
+(import-macro impl/twice duplicate)
+(import-macro ext/syntax foreign-syntax)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [facade :as f]))
+(inc (f/length \"text\"))
+(f/length 42)
+(subs f/label 0)
+(f/duplicate 1)
+(f/foreign-syntax (inc \"syntax\"))")
+        ds (:diagnostics (check/check-files [client facade origin] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP7031"] ["client.clj" 6 "TSP7031"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest source-forwarders-reexport-vars-through-the-jvm-branch
   (let [wrapper (parse/parse-string
                  "wrapper.clj"

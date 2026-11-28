@@ -2389,7 +2389,8 @@
      (if form
        (let [reachable? (not= :never (:t result))
              continuation (when (and reachable? (seq more)
-                                     (#{'if 'if-not 'when 'when-not} (builtin-head ctx form)))
+                                     (#{'if 'if-not 'when 'when-not 'if-let 'when-let 'if-some 'when-some}
+                                      (builtin-head ctx form)))
                             (volatile! nil))
              analysis (cond-> ctx
                         (not reachable?) (dissoc :recur-types)
@@ -3935,12 +3936,14 @@
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
         [tc fc] (binding-test-contexts ctx init some?)]
-    [(if (or (nil? tc) (= :never (:t positive))) t/never
-         (infer (bind-conditional-pattern tc p init positive) then))
-     (if (or (nil? fc) (= :never (:t negative))) t/never (if else (infer fc else) t/nil-t))]))
+    (conditional-result ctx node [tc fc]
+                        [(if (or (nil? tc) (= :never (:t positive))) t/never
+                             (infer (bind-conditional-pattern tc p init positive) then))
+                         (if (or (nil? fc) (= :never (:t negative))) t/never
+                             (if else (infer fc else) t/nil-t))])))
 
-(defmethod special 'if-let [ctx node _] (apply t/union (if-let-form ctx node false)))
-(defmethod special 'if-some [ctx node _] (apply t/union (if-let-form ctx node true)))
+(defmethod special 'if-let [ctx node _] (if-let-form ctx node false))
+(defmethod special 'if-some [ctx node _] (if-let-form ctx node true))
 
 (defn- when-let-form [ctx node some?]
   (let [[bindings & body] (args-of node)
@@ -3949,9 +3952,10 @@
         positive (if some? (t/remove-nil (:env ctx) ty) (truth-part (:env ctx) ty true))
         negative (if some? (nil-part (:env ctx) ty) (truth-part (:env ctx) ty false))
         [tc fc] (binding-test-contexts ctx init some?)]
-    (t/union (if (or (nil? tc) (= :never (:t positive))) t/never
-                 (infer-body (bind-conditional-pattern tc p init positive) body))
-             (if (or (nil? fc) (= :never (:t negative))) t/never t/nil-t))))
+    (conditional-result ctx node [tc fc]
+                        [(if (or (nil? tc) (= :never (:t positive))) t/never
+                             (infer-body (bind-conditional-pattern tc p init positive) body))
+                         (if (or (nil? fc) (= :never (:t negative))) t/never t/nil-t)])))
 
 (defmethod special 'when-let [ctx node _] (when-let-form ctx node false))
 (defmethod special 'when-some [ctx node _] (when-let-form ctx node true))

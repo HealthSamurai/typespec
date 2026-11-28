@@ -118,6 +118,47 @@
     (is (= "bcbc" (suffix {:path "abc"})))
     (is (thrown? IllegalArgumentException (suffix {})))))
 
+(deftest conditional-bindings-retain-input-facts-without-leaking-locals
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::maybe (s/nilable string?))
+(s/def ::path ::maybe)
+(s/def ::row (s/keys :opt-un [::path]))
+(s/fdef require-path :args (s/cat :req ::row) :ret string?)
+(defn require-path [{:keys [path] :as request}]
+  (if-let [present path] present (throw (IllegalArgumentException.)))
+  (str (subs path 1) (subs (:path request) 1)))
+(s/fdef require-some :args (s/cat :value ::maybe) :ret string?)
+(defn require-some [value]
+  (if-some [present value] present (throw (IllegalArgumentException.)))
+  (subs value 1))
+(s/fdef empty-required :args (s/cat :value (s/nilable (s/or :boolean boolean? :text string?))) :ret nil?)
+(defn empty-required [value]
+  (when-some [value value] (throw (IllegalArgumentException.)))
+  value)
+(s/fdef still-optional :args (s/cat :value ::maybe :other ::maybe) :ret string?)
+(defn still-optional [value other]
+  (if-some [value other] value (throw (IllegalArgumentException.)))
+  (subs value 1))
+(s/fdef still-false :args (s/cat :value (s/nilable boolean?)) :ret nil?)
+(defn still-false [value]
+  (when-let [value value] (throw (IllegalArgumentException.)))
+  value)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/require-path {:path \"abc\"})
+(a/require-some \"abc\")
+(a/require-some 1)
+(a/empty-required nil)")
+        result (check/check-files [client api] {})]
+    (is (= [["api.clj" 20 "TSP2531"] ["api.clj" 24 "TSP2322"] ["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (re-find #"false" (get-in result [:diagnostics 1 :message]))))
+  (let [require-some (fn [value] (if-some [present value] present (throw (IllegalArgumentException.))))
+        require-falsy (fn [value] (when-let [value value] (throw (IllegalArgumentException.))) value)]
+    (is (false? (require-some false)))
+    (is (false? (require-falsy false)))
+    (is (thrown? IllegalArgumentException (require-some nil)))))
+
 (deftest dead-recur-does-not-widen-live-loop-locals
   (let [result (checked "(ns flow (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat :stop? boolean?) :ret string?)

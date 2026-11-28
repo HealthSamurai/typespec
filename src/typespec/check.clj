@@ -2382,30 +2382,39 @@
                              (body-initializers ctx definition))
     nil))
 
+(defn- form-continuation [ctx node]
+  (let [[tracked continuation] (::form-continuation ctx)]
+    (when (identical? node tracked)
+      continuation)))
+
 (defn infer-body
   ([ctx forms] (infer-body ctx forms nil))
-  ([ctx forms expected]
+  ([ctx forms expected] (infer-body ctx forms expected nil))
+  ([ctx forms expected after]
    (loop [[form & more] forms, ctx ctx, result t/nil-t]
      (if form
        (let [reachable? (not= :never (:t result))
-             continuation (when (and reachable? (seq more)
-                                     (#{'if 'if-not 'when 'when-not 'if-let 'when-let 'if-some 'when-some}
+             continuation (when (and reachable? (or after (seq more))
+                                     (#{'do 'if 'if-not 'when 'when-not 'if-let 'when-let 'if-some 'when-some}
                                       (builtin-head ctx form)))
                             (volatile! nil))
              analysis (cond-> ctx
                         (not reachable?) (dissoc :recur-types)
-                        continuation (assoc ::conditional-continuation [form continuation]))
+                        continuation (assoc ::form-continuation [form continuation]))
              ;; Keep diagnostics for later forms without adding dead loop edges.
              inferred (infer-with-expected analysis form (when-not (seq more) expected))
              result (if reachable? inferred result)
              ctx (if-let [surviving (some-> continuation deref)]
-                   (cond-> (dissoc surviving ::conditional-continuation)
-                     (::conditional-continuation ctx) (assoc ::conditional-continuation (::conditional-continuation ctx)))
+                   (cond-> (dissoc surviving ::form-continuation)
+                     (::form-continuation ctx) (assoc ::form-continuation (::form-continuation ctx)))
                    ctx)
              initialized (when (not= :never (:t result))
                            (seq (body-initializers ctx form)))]
          (recur more (cond-> ctx initialized (update :initialized-vars (fnil into #{}) initialized)) result))
-       result))))
+       (do
+         (when (and after (not= :never (:t result)))
+           (vreset! after ctx))
+         result)))))
 
 (defn- fn-bodies [node]
   (if (= :fn-lit (:op node))
@@ -3786,7 +3795,8 @@
          (and (= :class (:t member)) (= "clojure.lang.Var" (:name member)))
          (qualified-name-type :symbol true))))))
 
-(defmethod special 'do [ctx node _] (infer-body ctx (args-of node)))
+(defmethod special 'do [ctx node _]
+  (infer-body ctx (args-of node) nil (form-continuation ctx node)))
 
 (defmethod special 'time [ctx node _]
   (let [[expr & more :as args] (args-of node)]
@@ -3920,15 +3930,13 @@
             :else (t/prim :boolean)))))
 
 (defn- conditional-result [ctx node contexts types]
-  (when-let [[tracked continuation] (::conditional-continuation ctx)]
-    ;; A nested conditional cannot publish a context for its enclosing form.
-    (when (identical? node tracked)
-      (let [[surviving & others] (keep identity (map (fn [branch type]
-                                                     (when (or (not= :never (:t type)) (t/assumption type))
-                                                       branch))
-                                                   contexts types))]
-        (when (and surviving (empty? others))
-          (vreset! continuation surviving)))))
+  (when-let [continuation (form-continuation ctx node)]
+    (let [[surviving & others] (keep identity (map (fn [branch type]
+                                                   (when (or (not= :never (:t type)) (t/assumption type))
+                                                     branch))
+                                                 contexts types))]
+      (when (and surviving (empty? others))
+        (vreset! continuation surviving))))
   (apply t/union types))
 
 (defn- if-form [ctx node inverted?]

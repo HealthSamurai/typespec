@@ -118,6 +118,39 @@
     (is (= "bcbc" (suffix {:path "abc"})))
     (is (thrown? IllegalArgumentException (suffix {})))))
 
+(deftest do-exports-narrowing-from-its-normally-completing-body
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::path (s/nilable string?))
+(s/def ::request (s/keys :opt-un [::path]))
+(s/fdef suffix :args (s/cat :req ::request) :ret string?)
+(defn suffix [{:keys [path] :as request}]
+  (do
+    (do (when-not (string? path) (throw (IllegalArgumentException.))))
+    :validated)
+  (str (subs path 1) (subs (:path request) 1)))
+(s/fdef shadowed :args (s/cat :path ::path :other ::path) :ret string?)
+(defn shadowed [path other]
+  (do (let [path other]
+        (when-not (string? path) (throw (IllegalArgumentException.)))
+        path))
+  (subs path 1))
+(s/fdef conditional :args (s/cat :path ::path :guard? boolean?) :ret string?)
+(defn conditional [path guard?]
+  (if guard? (do (when-not (string? path) (throw (IllegalArgumentException.)))) nil)
+  (subs path 1))
+(s/fdef bind-path :args (s/cat :path ::path) :ret string?)
+(defn bind-path [path]
+  (do (if-some [bound path] bound (throw (IllegalArgumentException.))))
+  (subs path 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/suffix {:path \"abc\"})
+(a/suffix {:path 1})
+(a/bind-path \"abc\")")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 15 "TSP2531"] ["api.clj" 19 "TSP2531"] ["client.clj" 3 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest conditional-bindings-retain-input-facts-without-leaking-locals
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::maybe (s/nilable string?))

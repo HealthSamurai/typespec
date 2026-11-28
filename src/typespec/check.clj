@@ -3120,6 +3120,7 @@
       (let [m (first ms)]
         (case (:t m)
           :class (:name m)
+          :coll (:jvm-class m)
           :prim (t/prim->class (:name m))
           :lit (t/prim->class (:name (t/lit-prim (:val m))))
           nil)))))

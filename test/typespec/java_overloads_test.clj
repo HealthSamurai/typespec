@@ -4,6 +4,28 @@
             [typespec.main :as main]
             [typespec.parse :as parse]))
 
+(deftest known-collection-classes-drive-java-receiver-checks
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.io File] [java.util Iterator]))
+(defn files [^File root] (file-seq root))
+(defn from-iterator [^Iterator values] (iterator-seq values))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a])
+  (:import [java.io File] [java.util Iterator] [clojure.lang LazySeq]))
+(defn good [^File root] (.first ^LazySeq (a/files root)))
+(defn missing [^File root] (.missingMethod (a/files root)))
+(defn wrong-arity [^File root] (.first (a/files root) 42))
+(defn maybe-empty [^Iterator values] (.first (a/from-iterator values)))
+(defn present [^Iterator values]
+  (when-some [items (a/from-iterator values)] (.first ^LazySeq items)))
+(defn literal-list [] (.missingMethod (list 1 2)))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[4 "TSP2339"] [5 "TSP2554"] [5 "TSP7023"]
+            [6 "TSP7023"] [6 "TSP2531"] [9 "TSP2339"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (re-find #"clojure\.lang\.LazySeq" (:message (first issues))))
+    (is (re-find #"clojure\.lang\.PersistentList" (:message (last issues))))))
+
 (deftest metadata-map-tags-participate-in-interop-and-project-contracts
   (let [api (parse/parse-string "api.clj" "(ns api)
 (defn upper ^{:tag String} [^{:tag String} ^Long text]

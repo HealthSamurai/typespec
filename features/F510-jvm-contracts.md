@@ -24,6 +24,7 @@ Clojure-программы используют JDK и Java-библиотеки
 - `java/field-info` читает объявленный JVM-тип и модификатор `final` публичного поля через `Reflector/getField`, учитывая static и instance. `java/field-class` возвращает имя типа. Чтение метаданных обходится без значения поля и инициализации класса.
 - `java/constructors` читает типы параметров и признак varargs публичных конструкторов через `getConstructors`. Обе формы вызова передают эти сигнатуры в проверку [F520](F520-java-overloads.md).
 - `check/java-call` потребляет эти записи; `types/class-type` переводит Java-типы во внутренние карты. Например, `String` → `{:t :prim :name :string}`, `LocalDate` → `{:t :class :name "java.time.LocalDate"}`, `Object` → `:any`, `void` → `:nil`.
+- Когда форма коллекции хранит JVM-класс, `check` проверяет методы этого класса. Например, результат `file-seq` сохраняет `LazySeq`, а вызов метода на возможном `nil` из `iterator-seq` получает `TSP2531`.
 - Результаты Java обычно получают platform-пометку. Отдельный ручной список `nullable-returns` даёт nilable-результаты для известных методов. Это не чтение nullability из байткода.
 
 `make-array` выводит класс и ранг результата из известного класса

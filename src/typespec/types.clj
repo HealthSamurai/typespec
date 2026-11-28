@@ -251,7 +251,8 @@
                        :seq #{:coll} :map #{:coll} :keyword #{:fn}} a) b)))
 
 (defn map-of-entry [env ty k]
-  (when-not (= :mismatch (:status (sub-result env (lit k) (:k ty))))
+  (when (and (not= 0 (:max-count ty))
+             (not= :mismatch (:status (sub-result env (lit k) (:k ty)))))
     (:v ty)))
 
 (defn map-length [ty]

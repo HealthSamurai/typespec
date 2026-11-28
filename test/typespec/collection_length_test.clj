@@ -1559,6 +1559,34 @@
             "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest count-guards-refine-homogeneous-maps
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::values (s/map-of keyword? string?))
+(s/def ::two (s/map-of keyword? string? :count 2))
+(s/def ::many (s/map-of keyword? string? :min-count 3))
+(s/fdef only-two :args (s/cat :xs ::two) :ret int?)
+(defn only-two [xs] (count xs))
+(s/fdef many :args (s/cat :xs ::many) :ret int?)
+(defn many [xs] (count xs))
+(s/def ::numbers (s/map-of keyword? int?))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef exact :args (s/cat :xs ::a/values) :ret (s/nilable int?))
+(defn exact [xs] (when (= 2 (count xs)) (a/only-two xs)))
+(s/fdef ranged :args (s/cat :xs ::a/values) :ret (s/nilable int?))
+(defn ranged [xs] (when (> (count xs) 2) (a/many xs)))
+(s/fdef incompatible :args (s/cat :xs ::a/values) :ret (s/nilable int?))
+(defn incompatible [xs] (when (= (count xs) 1) (a/only-two xs)))
+(s/fdef otherwise :args (s/cat :xs ::a/values) :ret int?)
+(defn otherwise [xs] (if (< (count xs) 3) (count xs) (a/many xs)))
+(s/fdef label :args (s/cat :m ::a/numbers :k keyword?) :ret string?)
+(defn label [m k] (if (= (count m) 0) (get m k \"empty\") \"nonempty\"))
+(s/fdef empty-value :args (s/cat :m ::a/numbers) :ret string?)
+(defn empty-value [m] (if (empty? m) (get m :known \"empty\") \"nonempty\"))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 7 "TSP330-01" "expected collection length 2, got 1"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) issues))
+        (pr-str issues))))
+
 (deftest map-of-count-bounds-check-cross-namespace-contracts
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::labels (s/map-of keyword? string? :min-count 1 :max-count 2))

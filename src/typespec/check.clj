@@ -758,7 +758,7 @@
   (case (:t member)
     :never [nil nil]
     :nil (if (zero? size) [member nil] [nil member])
-    :coll
+    (:coll :map-of)
     (let [[lo hi] (length/bounds member)]
       (if (or (< size lo) (and hi (> size hi)))
         [nil member]
@@ -782,12 +782,12 @@
   (case (:t member)
     :never [nil nil]
     :nil (if (pos? cutoff) [member nil] [nil member])
-    :coll (let [[lo hi] (length/bounds member)]
-            (cond
-              (and hi (< hi cutoff)) [member nil]
-              (>= lo cutoff) [nil member]
-              :else [(length/with-bounds member lo (dec' cutoff))
-                     (length/with-bounds member cutoff hi)]))
+    (:coll :map-of) (let [[lo hi] (length/bounds member)]
+                      (cond
+                        (and hi (< hi cutoff)) [member nil]
+                        (>= lo cutoff) [nil member]
+                        :else [(length/with-bounds member lo (dec' cutoff))
+                               (length/with-bounds member cutoff hi)]))
     [member member]))
 
 (defn- count-order-contexts [ctx op a b]
@@ -4135,7 +4135,8 @@
         values (cond
                  (every? plain-member? members)
                  (for [{:keys [k v] :as member} members
-                       :when (and (= :map-of (:t member)) (overlaps? key-members k))]
+                       :when (and (= :map-of (:t member)) (not= 0 (:max-count member))
+                                  (overlaps? key-members k))]
                    v)
 
                  (and (some :map-index members)
@@ -4145,7 +4146,8 @@
                                  index (if (= :map-of (:t member)) member (:map-index member))
                                  unlisted (remove #(and (= :lit (:t %)) (contains? fields (:val %))) key-members)]
                              (cond-> (for [[k value] fields :when (overlaps? key-members (t/lit k))] value)
-                               (and index (overlaps? unlisted (:k index))) (conj (:v index)))))
+                               (and index (not= 0 (:max-count index)) (overlaps? unlisted (:k index)))
+                               (conj (:v index)))))
                          members))]
     (if values
       (t/with-assumption

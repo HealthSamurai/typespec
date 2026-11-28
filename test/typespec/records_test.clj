@@ -8,6 +8,33 @@
                       (parse/parse-string "client.clj" client)]
                      {}))
 
+(deftest map-record-factories-check-sequences-of-entries
+  (let [result (checked
+                "(ns records.provider (:require [clojure.spec.alpha :as s]))
+(defrecord Row [label n])
+(s/def ::entries (s/coll-of (s/tuple #{:n} int?) :kind vector? :min-count 1))
+(s/fdef build :args (s/cat :entries ::entries) :ret (s/nilable int?))
+(defn build [entries] (:n (map->Row entries)))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)"
+                "(ns records.client (:require [records.provider :as a]))
+(a/accept (:n (a/map->Row [[:n 42]])))
+(subs (:label (a/map->Row (list [:label \"ok\"]))) 0)
+(inc (:n (a/map->Row [[:n \"discarded\"] [:n 42]])))
+(subs (:n (a/map->Row [[:n \"discarded\"] [:n 42]])) 0)
+(inc (:n (a/map->Row [])))
+(a/map->Row [[:bad]])
+(a/map->Row [[1 2 3]])
+(a/map->Row [true])
+(a/build [[:n 42]])
+(a/build [[:n \"bad\"]])")
+        issues (:diagnostics result)]
+    (is (= [[5 "TSP2345"] [6 "TSP2531"] [7 "TSP2345"]
+            [8 "TSP2345"] [9 "TSP2345"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))))
+
 (deftest positional-record-factories-check-primitive-field-arguments
   (let [result (checked
                 "(ns records.provider (:require [clojure.spec.alpha :as s]))

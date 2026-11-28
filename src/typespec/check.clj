@@ -33,7 +33,7 @@
          assoc-map-key dissoc-map-key specialize-map-return dynamic-definition? read-map-of literal-element-type
          finite-map-keys array-component array-read-type append-to-vectors checked-vector-into
          unsupported-sequence-member specialize-call-return run-composition run-deferred-call map-entry-sequence
-         apply-preconditions regex-literal-type class-symbol-name callable-data-result)
+         apply-preconditions regex-literal-type class-symbol-name callable-data-result map-into-member)
 
 (defn- static-map-key [node]
   (case (:op node)
@@ -2172,12 +2172,15 @@
               (assoc-map-key result key type)))
           (dissoc shape :fresh) fields))
 
-(defn- specialize-record-return [ctx {:keys [record-fields record-map?]} inputs]
+(defn- specialize-record-return [ctx node {:keys [record-fields record-map?]} inputs]
   (t/with-assumption
    (if record-map?
      (let [env (:env ctx)]
        (apply t/union
-              (for [member (t/members env (eff ctx (first inputs)))]
+              (for [source (t/members env (eff ctx (first inputs)))
+                    member (if (= :coll (:t source))
+                             (t/members env (map-into-member ctx node empty-map-shape source))
+                             [source])]
                 (case (:t member)
                   :nil (record-map-value env empty-map-shape record-fields)
                   :map (record-map-value env member record-fields)
@@ -2198,7 +2201,7 @@
       (:deferred-call arity) (let [result (run-deferred-call ctx node (:deferred-call arity) inputs)]
                                (if steps (run-composition ctx node steps result) result))
       (:record-fields arity)
-      (let [result (specialize-record-return ctx arity inputs)]
+      (let [result (specialize-record-return ctx node arity inputs)]
         (if steps (run-composition ctx node steps result) result))
       steps (let [[input default] inputs]
               (run-composition ctx node steps input default))

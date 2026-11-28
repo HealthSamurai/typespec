@@ -682,6 +682,41 @@
     (is (= [:api/wrapped :domain/request]
            (get (contracts/dependency-paths (:specs env) (t/ref-t :api/wrapped)) :domain/request)))))
 
+(deftest spec-conjunction-retains-nullable-structural-inputs
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::name string?)
+(s/def ::request (s/keys :req-un [::id ::name]))
+(s/def ::maybe-request (s/nilable ::request))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/def ::present (s/and some? ::d/maybe-request))
+(s/def ::optional (s/and any? ::d/maybe-request))
+(s/def ::map-only (s/and map? (s/nilable ::d/request)))
+(s/fdef present-name :args (s/cat :request ::present) :ret string?)
+(defn present-name [{:keys [name]}] name)
+(s/fdef maybe-name :args (s/cat :request ::optional) :ret (s/nilable string?))
+(defn maybe-name [request] (:name request))
+(s/fdef map-name :args (s/cat :request ::map-only) :ret string?)
+(defn map-name [{:keys [name]}] (subs name 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/present-name {:id 1 :name \"A\"})
+(a/present-name {:id 1 :name 2})
+(a/present-name {:id 1})
+(a/present-name nil)
+(a/maybe-name {:id 1 :name \"A\"})
+(a/maybe-name nil)
+(a/maybe-name \"not-a-map\")
+(a/map-name {:id 1 :name \"A\"})
+(a/map-name {:id \"1\" :name \"A\"})
+(a/map-name nil)")
+        {:keys [diagnostics env]} (check/check-files [client api domain] {})]
+    (is (= [[3 "TSP2322"] [4 "TSP2741"] [5 "TSP2345"] [8 "TSP2345"] [10 "TSP2322"] [11 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (every? #(= "client.clj" (:file %)) diagnostics))
+    (is (= [:api/present :domain/maybe-request]
+           (get (contracts/dependency-paths (:specs env) (t/ref-t :api/present)) :domain/maybe-request)))))
+
 (deftest collection-specs-check-maps-as-entry-collections
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::entry (s/tuple keyword? int?))

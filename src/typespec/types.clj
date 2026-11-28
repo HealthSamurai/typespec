@@ -1083,6 +1083,10 @@
         :s/coll-of (let [{:keys [kind]} (spec-option-map (drop 2 form))]
                      (when (or (nil? kind) (#{'map? 'vector? 'set? 'list? 'seq?} (core-name ctx kind)))
                        (parse-type ctx form)))
+        :s/nilable (when (= 2 (count form))
+                     (when-let [inner (conjunction-input-shape ctx (second form) seen)]
+                       (with-meta (union inner nil-t)
+                         (select-keys (meta inner) [::referenced-specs]))))
         (when-let [inner (wrapped-spec-form op form)]
           (recur ctx inner seen))))))
 
@@ -1123,6 +1127,10 @@
       (let [leading (first forms)
             refined (reduce refine-predicate-type prefix)
             shape (or map-shape (conjunction-input-shape ctx (first remaining) #{}))
+            shape (if (and (= :union (:t shape)) (nilable? {} shape)
+                           (= :mismatch (:status (contract-sub-result nil-t refined))))
+                    (vary-meta (remove-nil {} shape) merge (select-keys (meta shape) [::referenced-specs]))
+                    shape)
             refined (if (and shape (= :proved (:status (contract-sub-result shape refined))))
                       shape
                       refined)

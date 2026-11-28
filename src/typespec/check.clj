@@ -4425,6 +4425,21 @@
 (defn- match-literal? [pattern]
   (contains? #{:kw :str :bool :nil} (:op pattern)))
 
+(defn- group-match-patterns [nodes]
+  (loop [[pattern & rest] nodes, patterns []]
+    (if pattern
+      (let [[operator predicate & remaining] rest]
+        (if (= :guard (:val operator))
+          (recur remaining (conj patterns {:op :list :children [pattern operator predicate]}))
+          (recur rest (conj patterns pattern))))
+      patterns)))
+
+(defn- match-guard-head [ctx predicate]
+  (let [head (builtin-head ctx {:op :list :children [predicate]})]
+    (when (and (not (:guards-disabled? ctx)) (or (primitive-predicates head) (#{'nil? 'some?} head))
+               (= head (t/core-name (:file ctx) (:val predicate))))
+      head)))
+
 (defn- match-pattern [ctx pattern]
   (let [value (:val pattern)]
     (cond
@@ -4433,20 +4448,32 @@
       (and (= :sym (:op pattern)) (simple-symbol? value) (not= '& value)
            (not (contains? (:locals ctx) value))) value
       (= :vector (:op pattern))
-      (let [elements (mapv #(match-pattern ctx %) (:children pattern))]
+      (let [elements (mapv #(match-pattern ctx %) (group-match-patterns (:children pattern)))]
         (when (every? some? elements) elements))
       (= :list (:op pattern))
-      (let [[head & alternatives] (:children pattern)]
-        (when (and (= :or (:val head)) (seq alternatives) (every? match-literal? alternatives))
-          (into #{} (map :val) alternatives))))))
+      (let [[head marker predicate & extra :as children] (:children pattern)
+            alternatives (rest children)]
+        (cond
+          (and (= :or (:val head)) (seq alternatives) (every? match-literal? alternatives))
+          (into #{} (map :val) alternatives)
+
+          (and (= :guard (:val marker)) (empty? extra))
+          (when-let [guard (match-guard-head ctx predicate)]
+            (when-let [inner (match-pattern ctx head)]
+              {:guard guard :pattern inner})))))))
+
+(defn- match-pattern-children [pattern]
+  (cond (vector? pattern) (seq pattern)
+        (:guard pattern) [(:pattern pattern)]))
 
 (defn- match-row [ctx vector-input? width pattern]
-  (let [patterns (cond
+  (let [grouped (when (= :vector (:op pattern)) (group-match-patterns (:children pattern)))
+        patterns (cond
                    (= :else (:val pattern)) (vec (repeat width '_))
                    (not vector-input?) [(match-pattern ctx pattern)]
-                   (and (= :vector (:op pattern)) (= width (count (:children pattern))))
-                   (mapv #(match-pattern ctx %) (:children pattern)))
-        bindings (filter #(and (simple-symbol? %) (not= '_ %)) (tree-seq vector? seq patterns))]
+                   (= width (count grouped)) (mapv #(match-pattern ctx %) grouped))
+        bindings (filter #(and (simple-symbol? %) (not= '_ %))
+                         (tree-seq match-pattern-children match-pattern-children patterns))]
     (when (and patterns (every? some? patterns) (= (count bindings) (count (distinct bindings))))
       patterns)))
 
@@ -4472,11 +4499,26 @@
       {:certain? (and (= (count members) (count matches)) (every? :certain? matches))
        :bindings (apply merge-with t/union (map :bindings matches))})))
 
+(declare ^:private match-column)
+
+(defn- match-guard [ctx actual {:keys [guard pattern]}]
+  (let [env (:env ctx)
+        parts (if (#{'nil? 'some?} guard)
+                (let [parts [(nil-part env actual) (t/remove-nil env actual)]]
+                  [(if (= 'nil? guard) parts (rseq parts))])
+                (let [target (t/prim (first (primitive-predicates guard)))]
+                  (map #(predicate-parts ctx guard target %) (t/members env (eff ctx actual)))))
+        positive (apply t/union (keep first parts))]
+    (when-not (= t/never positive)
+      (when-let [matched (match-column ctx positive pattern)]
+        (update matched :certain? #(and % (not-any? (fn [[_ no]] (and no (not= t/never no))) parts)))))))
+
 (defn- match-column [ctx actual pattern]
   (cond
     (= '_ pattern) {:certain? true}
     (symbol? pattern) {:certain? true :bindings {pattern actual}}
     (vector? pattern) (match-vector ctx actual pattern)
+    (:guard pattern) (match-guard ctx actual pattern)
     :else (let [members (t/members (:env ctx) (eff ctx actual))
                 matches (fn [type] (and (finite-value? type) (contains? pattern (:val type))))]
             (when (some #(or (matches %) (not (finite-value? %))) members)

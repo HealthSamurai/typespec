@@ -510,6 +510,26 @@ api/delayed")
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest core-match-guards-narrow-the-bound-value
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns api (:require [clojure.core.match :as m]))
+(defn label [value]
+  (m/match [value] [text :guard string?] (subs text 0) :else \"fallback\"))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [api :as a] [clojure.core.match :as m]))
+(subs (a/label 42) 0)
+(inc (a/label :none))
+(m/match [\"bad\"] [(text :guard string?)] (inc text) :else 0)
+(m/match [5] [(text :guard string?)] (inc \"unreachable\") :else 0)
+(m/match [nil] [_ :guard some?] (inc \"unreachable\") :else 0)
+(let [string? number?] (m/match [5] [text :guard string?] text :else 0))")
+        ds (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"] ["client.clj" 7 "TSP7031"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest explicit-macro-contracts-on-the-reexport-take-precedence
   (let [provider (parse/parse-string "provider.clj" "(ns provider)
 (defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")

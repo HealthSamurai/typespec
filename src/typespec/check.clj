@@ -9684,6 +9684,31 @@
 (defn- literal-element-type [ctx types]
   (apply t/union (if (:preserve-literals? ctx) types (map widen types))))
 
+(defn- computed-map-literal [ctx pairs static-keys types]
+  (let [env (:env ctx)
+        entries (mapv (fn [[_ vnode] literal-key [key-type value-type]]
+                        (let [key-type (t/resolve-t env (eff ctx key-type))
+                              key (if (some? literal-key) literal-key (map-lookup-key key-type))]
+                          {:key key
+                           :key-type key-type
+                           :value-type (dissoc (check-key-value! ctx key vnode value-type) :fresh)}))
+                      pairs static-keys (partition 2 types))
+        known (filterv (comp some? :key) entries)
+        dynamic (filterv (comp nil? :key) entries)
+        shape (assoc empty-map-shape :fresh true
+                     :req (into (array-map) (map (juxt :key :value-type)) known))
+        index (when (and (seq dynamic) (every? #(not (#{:unknown :any} (get-in % [:key-type :t]))) dynamic))
+                {:t :map-of :k (apply t/union (map :key-type dynamic))
+                 :v (apply t/union (map :value-type dynamic))})
+        result (cond
+                 (or (some #{t/never} types)
+                     (and (next known) (not (apply distinct? (map :key known))))) t/never
+                 (empty? dynamic) shape
+                 (and index (seq known)) (assoc shape :complete-keys? false :map-index index)
+                 index (length/with-bounds index (count entries) (count entries))
+                 :else (t/prim :map))]
+    (t/with-assumption result (some t/assumption types))))
+
 (defn- infer* [ctx node]
   (case (:op node)
     :str (t/lit (:val node))
@@ -9728,11 +9753,7 @@
                                (report! ctx k "TSP2304" (str "no spec for " kk (hint-suffix kk (keys (:specs (:env ctx)))))))
                              [kk (dissoc vty :fresh)]))
                               pairs static-keys))}
-             (let [types (mapv #(infer ctx %) children)
-                   value-types (take-nth 2 (rest types))]
-               (doseq [[[_ vnode] key value-type] (map vector pairs static-keys value-types)]
-                 (check-key-value! ctx key vnode value-type))
-               (t/prim :map))))
+             (computed-map-literal ctx pairs static-keys (mapv #(infer ctx %) children))))
     :quote (quoted-data-type ctx (first (:children node)))
     :fn-lit (infer-callback ctx node nil)
     :list (infer-list ctx node)

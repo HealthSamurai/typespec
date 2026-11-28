@@ -359,6 +359,43 @@
         (pr-str issues))
     (is (every? #(re-find #":domain/id" (:message %)) issues))))
 
+(deftest computed-map-literals-preserve-key-and-value-types
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::row (s/keys :req [::id]))
+(s/def ::index (s/map-of string? int? :count 1))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/fdef make-index :args (s/cat :key string? :value int?) :ret ::d/index)
+(defn make-index [key value] {key value})
+(s/fdef bad-index :args (s/cat :key string?) :ret ::d/index)
+(defn bad-index [key] {key \"bad\"})
+(s/fdef make-row :args (s/cat :id ::d/id) :ret ::d/row)
+(defn make-row [id] (let [key ::d/id] {key id}))
+(defn bad-row [] (let [key ::d/id] {key \"bad\"}))
+(defn loose [^String key] {key \"fixed\"})
+(s/fdef take-one :args (s/cat :index ::d/index) :ret int?)
+(defn take-one [index] (count index))
+(s/fdef make-mixed :args (s/cat :key string? :id ::d/id) :ret ::d/row)
+(defn make-mixed [key id] {::d/id id key \"extra\"})
+(defn duplicate [] (let [key :x] {key 1 :x 2}))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [domain :as d]))
+(a/take-one (a/make-index \"ok\" 42))
+(a/take-one (a/loose \"wrong-value\"))
+(a/take-one (let [key :wrong-key] {key 42}))
+(inc (first (vals (a/loose \"x\"))))
+(subs (get (a/loose \"x\") \"x\" \"\") 1)
+(inc (::d/id (a/make-row 42)))
+(a/make-row \"bad\")
+(inc (::d/id (a/make-mixed \"key\" 42)))")
+        result (check/check-files [client api domain] {})
+        issues (:diagnostics result)]
+    (is (= [["api.clj" 5 "TSP2322"] ["api.clj" 8 "TSP2322"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "t/never" (main/type-at result "api.clj" 14 20)))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

@@ -3456,55 +3456,58 @@
         shown (java/short-name cname)
         label (str shown "." mname)
         methods (when (and (not field-class) (seq ms)) (if tags (tagged-java-overload ctx tags label ms) ms))
-        arg-types (infer-java-arguments ctx arg-nodes methods)]
-    (cond
-      (not (java/has-class? cname)) t/unknown
-      field-class (java-field-type field-class)
-      (empty? ms) (do (report! ctx member-node "TSP2339"
-                               (str shown " has no " (when static? "static ") "method " mname
-                                    (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
-                      t/unknown)
-      :else
-      (let [candidates (when (seq methods)
-                         (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
-                                                 node label arg-nodes arg-types methods))
-            rets (distinct
-                  (for [method candidates
-                        :let [element (when (= "java.lang.Object" (:ret method))
-                                        (java-read-element ctx receiver cname mname (:params method)))]]
-                    (java-ret cname (cond-> method element (assoc :ret element)))))]
-        (if (= 1 (count rets))
-          (let [result (first rets)
-                [returned-element & others] (distinct (map #(or (:element-class %)
-                                                               (java-returned-element ctx receiver cname mname (:params %)))
-                                                            candidates))]
-            (cond-> result
-              (and (= :class (:t result)) returned-element (empty? others))
-              (assoc :java-element-class returned-element)))
-          t/unknown)))))
+        arg-types (infer-java-arguments ctx arg-nodes methods)
+        result
+        (cond
+          (not (java/has-class? cname)) t/unknown
+          field-class (java-field-type field-class)
+          (empty? ms) (do (report! ctx member-node "TSP2339"
+                                   (str shown " has no " (when static? "static ") "method " mname
+                                        (hint-suffix (symbol mname) (map symbol (java/method-names cname)))))
+                          t/unknown)
+          :else
+          (let [candidates (when (seq methods)
+                             (checked-java-overloads (cond-> ctx static? (assoc :java-direct? true))
+                                                     node label arg-nodes arg-types methods))
+                rets (distinct
+                      (for [method candidates
+                            :let [element (when (= "java.lang.Object" (:ret method))
+                                            (java-read-element ctx receiver cname mname (:params method)))]]
+                        (java-ret cname (cond-> method element (assoc :ret element)))))]
+            (if (= 1 (count rets))
+              (let [result (first rets)
+                    [returned-element & others] (distinct (map #(or (:element-class %)
+                                                                   (java-returned-element ctx receiver cname mname (:params %)))
+                                                                candidates))]
+                (cond-> result
+                  (and (= :class (:t result)) returned-element (empty? others))
+                  (assoc :java-element-class returned-element)))
+              t/unknown)))]
+    (if (some #(= :never (:t %)) (cons receiver arg-types)) t/never result)))
 
 (defn- constructor-call [ctx node cname arg-nodes]
   (let [^Class cls (when cname (t/load-class cname))
         constructors (when cls (java/constructors cls))
         abstract? (and cls (Modifier/isAbstract (.getModifiers cls)))
         arg-types (infer-java-arguments ctx arg-nodes (when-not abstract? constructors))]
-    (if cname
-      (do
-        (when (some? constructors)
-          (let [shown (java/short-name cname)]
-            (cond
-              (empty? constructors)
-              (report! ctx node "TSP2339" (str shown " has no public constructor"))
+    (when (some? constructors)
+      (let [shown (java/short-name cname)]
+        (cond
+          (empty? constructors)
+          (report! ctx node "TSP2339" (str shown " has no public constructor"))
 
-              abstract?
-              (report! ctx node "TSP2345" (str shown " is abstract and cannot be constructed"))
+          abstract?
+          (report! ctx node "TSP2345" (str shown " is abstract and cannot be constructed"))
 
-              :else
-              (checked-java-overloads (assoc ctx :java-direct? true)
-                                      node (str "the " shown " constructor") arg-nodes arg-types constructors))))
-        ;; Direct instantiation of Object produces a concrete value.
-        (if (= cname "java.lang.Object") {:t :class :name cname} (t/class-type cname)))
-      t/unknown)))
+          :else
+          (checked-java-overloads (assoc ctx :java-direct? true)
+                                  node (str "the " shown " constructor") arg-nodes arg-types constructors))))
+    (cond
+      (some #(= :never (:t %)) arg-types) t/never
+      ;; Direct instantiation of Object produces a concrete value.
+      (= cname "java.lang.Object") {:t :class :name cname}
+      cname (t/class-type cname)
+      :else t/unknown)))
 
 (defn- java-receiver-type [ctx target]
   (let [actual (infer ctx target)
@@ -3617,17 +3620,16 @@
         unclassified (when-not cname (t/resolve-t env tty))]
     (cond
       (nil? target) t/unknown
-      (= :nil (:t unclassified))
+      (#{:nil :never} (:t unclassified))
       (do (run! #(infer ctx %) arg-nodes)
           (check-nil-receiver! ctx target unclassified)
           t/never)
-      (#{:unknown :any} (:t unclassified))
-      (do (run! #(infer ctx %) arg-nodes)
-          (when-not (compiler-knows? ctx target)
-            (report! ctx node "TSP7020" (str "reflective call: the type of " (parse/unparse target) " is unknown")
-                     :severity :warning))
-          t/unknown)
-      (nil? cname) (do (run! #(infer ctx %) arg-nodes) t/unknown)
+      (nil? cname)
+      (let [arg-types (mapv #(infer ctx %) arg-nodes)]
+        (when (and (#{:unknown :any} (:t unclassified)) (not (compiler-knows? ctx target)))
+          (report! ctx node "TSP7020" (str "reflective call: the type of " (parse/unparse target) " is unknown")
+                   :severity :warning))
+        (if (some #(= :never (:t %)) arg-types) t/never t/unknown))
       :else
       (do
         (check-nil-receiver! ctx target tty)

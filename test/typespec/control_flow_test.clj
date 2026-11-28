@@ -80,6 +80,40 @@
     (is (= ["t/never" "t/never"] (mapv #(main/type-at result "api.clj" % 3) [6 9])))
     (is (= ["t/never" "t/never"] (mapv #(main/type-at result "client.clj" % 3) [4 12])))))
 
+(deftest java-calls-propagate-aborting-receivers-and-arguments
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s])
+  (:import [java.util.concurrent.atomic AtomicLong]))
+(s/fdef stop-method :args (s/cat) :ret int?)
+(defn stop-method []
+  (if (.charAt \"text\" (throw (Exception. \"method arg stopped\"))) :wrong 1))
+(s/fdef stop-static :args (s/cat) :ret int?)
+(defn stop-static []
+  (if (Integer/parseInt (throw (Exception. \"static arg stopped\"))) :wrong 1))
+(s/fdef stop-new :args (s/cat) :ret int?)
+(defn stop-new []
+  (if (AtomicLong. (throw (Exception. \"constructor arg stopped\"))) :wrong 1))
+(s/fdef stop-receiver :args (s/cat) :ret int?)
+(defn stop-receiver []
+  (if (.length (throw (Exception. \"receiver stopped\"))) :wrong 1))
+(s/fdef stop-qualified :args (s/cat) :ret int?)
+(defn stop-qualified []
+  (if (String/.length (throw (Exception. \"qualified receiver stopped\"))) :wrong 1))
+(defn size ^long [^String text] (.length text))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/stop-method))
+(inc (a/stop-static))
+(inc (a/stop-new))
+(inc (a/stop-receiver))
+(inc (a/stop-qualified))
+(inc (a/size \"ok\"))
+(a/size 42)")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= (repeat 5 "t/never")
+           (mapv #(main/type-at result "api.clj" % 3) [5 8 11 14 17])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

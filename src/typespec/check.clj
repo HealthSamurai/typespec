@@ -4088,19 +4088,19 @@
 (defmethod special 'loop [ctx node _]
   (let [[bindings & body] (args-of node)
         pairs (vec (partition 2 (:children bindings)))
+        scope (dissoc ctx ::binding-stop)
         ;; Initializers have let-like scope and are checked exactly once.
-        [_ seeds] (reduce (fn [[c ts] [p init]]
-                            (let [ty (widen (infer c init))]
-                              [(bind-pattern c p ty) (conj ts ty)]))
-                          [ctx []] pairs)
+        [initial seeds] (reduce (fn [[c ts] [p init]]
+                                  (let [ty (widen (infer c init))]
+                                    [(bind-pattern (note-binding-stop c ty) p ty) (conj ts ty)]))
+                                [scope []] pairs)
         bind-loop (fn [ts calls]
                     (reduce (fn [c [[p _] ty]] (bind-pattern c p ty))
-                            (assoc ctx :recur-types calls) (map vector pairs ts)))
-        stopped? (some #{t/never} seeds)
+                            (assoc scope :recur-types calls) (map vector pairs ts)))
+        stopped (::binding-stop initial)
         ;; Join back edges, not just initializers: recur can change a local's
         ;; type. Bound structural growth and keep trial diagnostics/caches local.
-        stable (if stopped?
-                 seeds
+        stable (when-not stopped
                  (binding [*types* nil *diags* (atom [])
                            *trust* (atom {:cast 0 :any 0 :ignore 0})
                            *ignores* (atom []) *rets* (atom @*rets*)]
@@ -4118,9 +4118,10 @@
                                      (vec (repeat (count ts) t/unknown)))]
                        (cond (= ts next-ts) ts
                              (>= n 7) (vec (repeat (count ts) t/unknown))
-                             :else (recur next-ts (inc n)))))))
-        result (infer-body (bind-loop stable nil) body)]
-    (if stopped? t/never result)))
+                             :else (recur next-ts (inc n)))))))]
+    (if stopped
+      (infer-bound-body initial body nil)
+      (infer-body (bind-loop stable nil) body))))
 
 (defmethod special 'recur [ctx node _]
   (let [inputs (mapv #(infer ctx %) (args-of node))

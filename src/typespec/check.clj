@@ -3545,10 +3545,9 @@
         (java-call (assoc ctx :java-direct? true) node member cname mname false arg-nodes nil
                    {:tags (java-parameter-tags member) :receiver actual})))))
 
-(defn- instance-field-owner [ctx target]
-  (let [ty (java-receiver-type ctx target)]
-    (check-nil-receiver! ctx target ty)
-    (if (class-symbol-name ctx target) "java.lang.Class" (class-of ctx ty))))
+(defn- instance-field-owner [ctx target ty]
+  (check-nil-receiver! ctx target ty)
+  (if (class-symbol-name ctx target) "java.lang.Class" (class-of ctx ty)))
 
 (defn- lookup-java-field [ctx node cname fname static?]
   (when (and cname (java/has-class? cname))
@@ -3562,13 +3561,19 @@
     (java-field-type (.getName field-type))
     t/unknown))
 
+(defn- instance-field-read [ctx target member-node fname]
+  (let [ty (java-receiver-type ctx target)]
+    (if (= :never (:t ty))
+      t/never
+      (java-field-read ctx member-node (instance-field-owner ctx target ty) fname false))))
+
 (defn- instance-field-call [ctx node fname]
   (let [[head target & more] (:children node)]
     (if (or (nil? target) (seq more))
       (do (run! #(infer ctx %) (args-of node))
           (report! ctx node "TSP2554" (str ".-" fname " expects one receiver"))
           t/unknown)
-      (java-field-read ctx head (instance-field-owner ctx target) fname false))))
+      (instance-field-read ctx target head fname))))
 
 (defn- dot-field-place [node]
   (when (= :list (:op node))
@@ -3592,7 +3597,7 @@
     (lookup-java-field ctx target cname (name (:val target)) true)
     (when-let [{:keys [receiver long-dot? forced? field-name]} (dot-field-place target)]
       (let [static-class (when long-dot? (dot-static-class ctx receiver))
-            cname (or static-class (instance-field-owner ctx receiver))
+            cname (or static-class (instance-field-owner ctx receiver (java-receiver-type ctx receiver)))
             static? (some? static-class)]
         (when static? (infer ctx receiver))
         (if (and cname (not forced?)
@@ -3753,8 +3758,10 @@
         (when static-class (record! ctx receiver (t/class-type "java.lang.Class")))
         (cond
           (and (not grouped?) (empty? arg-nodes) (str/starts-with? member-name "-"))
-          (java-field-read ctx member (or static-class (instance-field-owner ctx receiver))
-                           (munge (subs member-name 1)) (some? static-class))
+          (let [fname (munge (subs member-name 1))]
+            (if static-class
+              (java-field-read ctx member static-class fname true)
+              (instance-field-read ctx receiver member fname)))
 
           static-class
           (java-call ctx node member static-class (munge member-name) true arg-nodes field-fallback)

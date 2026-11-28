@@ -223,6 +223,27 @@
     (is (= (repeat 3 "t/never")
            (mapv #(main/type-at result "api.clj" % 3) [4 9 13])))))
 
+(deftest java-field-reads-propagate-aborting-receivers
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef halt-short :args (s/cat) :ret int?)
+(defn halt-short []
+  (if (.-x (throw (Exception. \"short receiver stopped\"))) :wrong 1))
+(s/fdef halt-long :args (s/cat) :ret int?)
+(defn halt-long []
+  (if (. (throw (Exception. \"long receiver stopped\")) -x) :wrong 1))
+(defn x ^long [^java.awt.Point point] (.-x point))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/halt-short))
+(inc (a/halt-long))
+(inc (a/x (java.awt.Point. 2 3)))
+(a/x \"bad\")")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 5 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= ["t/never" "t/never"]
+           (mapv #(main/type-at result "api.clj" % 3) [4 7])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

@@ -4350,13 +4350,23 @@
       (string? (:val member))
       (array-component member)))
 
+(defn- indexed-get-index [member value]
+  (when ((if (vector-member? member) integer? number?) value)
+    (lookup-index value)))
+
+(defn- indexed-get-position [[lower upper] index]
+  (cond
+    (or (nil? index) (neg? index) (and upper (>= index upper))) :absent
+    (< index lower) :present
+    :else :possible))
+
 (defn- read-indexed-get [ctx sources key-type not-found]
   (let [env (:env ctx)
         keys (t/members env key-type)]
     (apply t/union
            (for [member sources
                  :let [vector? (vector-member? member)
-                       [lower upper] (sequence-member-bounds member)
+                       [_ upper :as bounds] (sequence-member-bounds member)
                        element (if (array-component member) (array-read-type member) (member-element member))]
                  key keys]
              (cond
@@ -4364,13 +4374,11 @@
                (or (= :never (:t member)) (= :never (:t key))) t/never
 
                (= :lit (:t key))
-               (if ((if vector? integer? number?) (:val key))
-                 (let [index (lookup-index (:val key))]
-                   (cond
-                     (or (neg? index) (and upper (>= index upper))) not-found
-                     (< index lower) (if vector? (vector-element-at member index) element)
-                     :else (t/union element not-found)))
-                 not-found)
+               (let [index (indexed-get-index member (:val key))]
+                 (case (indexed-get-position bounds index)
+                   :absent not-found
+                   :present (if vector? (vector-element-at member index) element)
+                   :possible (t/union element not-found)))
 
                (or (= 0 upper)
                    (= "java.lang.Character" (:name key))
@@ -4411,54 +4419,45 @@
           :else
           (read-map-of ctx source key-type not-found))))))
 
-(defn- string-index-present? [value index]
-  (and (string? value) (<= 0 index (dec (count value)))))
-
-(defn- numeric-path-value [ctx ty key index]
+(defn- numeric-path-value [ctx members key]
   (let [env (:env ctx)
         vector-type (t/prim :vector)]
     (apply t/union
-           (for [member (t/members env ty)]
-             (case (:t member)
-               :coll (case (:kind member)
-                       :vector (vector-element-at member index)
-                       :set (:of member)
-                       ;; A kindless coll-of can be a map whose entries fit the
-                       ;; element spec. get returns the value of an entry there.
-                       nil (if (some #(or (t/sub? env % vector-type)
-                                         (not= :mismatch (:status (t/sub-result env vector-type %))))
-                                     (t/members env (:of member)))
-                             t/unknown (:of member))
-                       t/never)
-               :map (if-let [index-type (:map-index member)]
-                      (or (get (:req member) key) (get (:opt member) key)
-                          (t/map-of-entry env index-type key) t/never)
-                      (if (:complete-keys? member) t/never t/unknown))
-               :map-of (read-map-of ctx member (t/lit key) t/never)
-               :lit (if (string-index-present? (:val member) index)
-                      (t/class-type "java.lang.Character") t/never)
-               :prim (case (:name member)
-                       :string (if (neg? index) t/never (t/class-type "java.lang.Character"))
-                       (:map :vector :set :coll) t/unknown
-                       t/never)
-               :any t/any
-               (:class :unknown :var :rigid :ivar) t/unknown
-               t/never)))))
+           (for [member members]
+             (if (indexed-get-source? member)
+               (read-indexed-get ctx [member] (t/lit key) t/never)
+               (case (:t member)
+                 :coll (case (:kind member)
+                         :set (:of member)
+                         ;; A kindless coll-of can be a map whose entries fit the
+                         ;; element spec. get returns the value of an entry there.
+                         nil (if (some #(or (t/sub? env % vector-type)
+                                           (not= :mismatch (:status (t/sub-result env vector-type %))))
+                                       (t/members env (:of member)))
+                               t/unknown (:of member))
+                         t/never)
+                 :map (if-let [index-type (:map-index member)]
+                        (or (get (:req member) key) (get (:opt member) key)
+                            (t/map-of-entry env index-type key) t/never)
+                        (if (:complete-keys? member) t/never t/unknown))
+                 :map-of (read-map-of ctx member (t/lit key) t/never)
+                 :prim (if (#{:map :set :coll} (:name member)) t/unknown t/never)
+                 :any t/any
+                 (:class :unknown :var :rigid :ivar) t/unknown
+                 t/never))))))
 
 (defn- literal-path-key? [value]
-  (or (keyword? value) (string? value) (symbol? value) (integer? value)))
+  (or (keyword? value) (string? value) (symbol? value) (number? value)))
 
 (defn- literal-path-step [ctx source node value]
-  (if (integer? value)
-    (let [index (lookup-index value)]
-      {:type (numeric-path-value ctx source value index)
+  (if (number? value)
+    (let [members (t/members (:env ctx) source)]
+      {:type (numeric-path-value ctx members value)
        :optional? (not (every? (fn [member]
-                                 (case (:t member)
-                                   :coll (and (= :vector (:kind member))
-                                              (= :present (length/position member index)))
-                                   :lit (string-index-present? (:val member) index)
-                                   false))
-                               (t/members (:env ctx) source)))})
+                                 (and (indexed-get-source? member)
+                                      (= :present (indexed-get-position (sequence-member-bounds member)
+                                                                        (indexed-get-index member value)))))
+                               members))})
     (key-info ctx source value node true)))
 
 (defn- computed-path-step [ctx source node key-type]

@@ -419,6 +419,38 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest get-in-indexes-strings-and-arrays-through-typed-paths
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::values (partial instance? int/1))
+(s/def ::request (s/keys :req-un [::values]))
+(s/def ::path (s/tuple #{:values} #{0.9}))
+(s/fdef read-at :args (s/cat :req ::request :path ::path) :ret int?)
+(defn read-at [req path] (get-in req path 0))
+(s/fdef take-int :args (s/cat :n int?) :ret int?)
+(defn take-int [n] n)
+(s/fdef take-char :args (s/cat :ch char?) :ret char?)
+(defn take-char [ch] ch)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(a/read-at {:values (int-array [4])} [:values 0.9])
+(a/read-at {:values (int-array [4])} [:values 1])
+(a/take-int (get-in {:values (int-array [4])} [:values 4294967296]))
+(a/take-int (get-in {:values (int-array [4])} [:values -1] 0))
+(a/take-char (get-in {:text \"abc\"} [:text 0.9]))
+(a/take-char (get-in {:text \"abc\"} [:text 10]))
+(str/trim (get-in {:text \"abc\"} [:text 1.5] \"default\"))
+(a/take-int (get-in {:values [4]} [:values 0.9] 7))
+(str/trim (get-in {:values (into-array String [nil])} [:values 0] \"fallback\"))
+(a/take-int (get-in {:values (int-array [4])} [:values 1]))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 7 "TSP2531"] ["client.clj" 8 "TSP2345"]
+            ["client.clj" 10 "TSP2531"] ["client.clj" 11 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= 4 (get-in {:values (int-array [4])} [:values 4294967296])))
+  (is (= \b (get-in {:text "abc"} [:text 1.5] "default")))
+  (is (= 7 (get-in {:values [4]} [:values 0.9] 7)))
+  (is (nil? (get-in {:values (into-array String [nil])} [:values 0] "fallback"))))
+
 (deftest get-in-uses-jvm-index-conversion-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::value (s/nilable int?))

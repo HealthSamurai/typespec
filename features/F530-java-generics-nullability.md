@@ -37,6 +37,8 @@ Clojure-код постоянно пересекает границу JVM: чи�
 а `supportedFileAttributeViews()` — строки.
 Вызов `.iterator()` на таком `Iterable` переносит тип элемента в
 `.next()` и `iterator-seq`.
+Для `List<T>` известный тип элемента также используется как результат
+`.get(int)`, например у списка строк из `Files.readAllLines()`.
 
 - `java/methods-named` сохраняет стёртые параметры перегрузок и использует
   `getGenericReturnType` для подстановки результата. При совпадающих

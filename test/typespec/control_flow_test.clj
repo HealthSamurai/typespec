@@ -193,6 +193,36 @@
     (is (= (repeat 3 "t/never")
            (mapv #(main/type-at result "api.clj" % 3) [5 8 11])))))
 
+(deftest let-propagates-aborting-initializers-through-destructuring
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef stop-first :args (s/cat) :ret int?)
+(defn stop-first []
+  (let [x (throw (Exception. \"first initializer stopped\"))
+        y \"later\"]
+    :wrong))
+(s/fdef stop-destructuring :args (s/cat) :ret int?)
+(defn stop-destructuring []
+  (let [[x y] (throw (Exception. \"destructuring stopped\"))]
+    :wrong))
+(s/fdef stop-hinted :args (s/cat) :ret int?)
+(defn stop-hinted []
+  (let [^String x ^String (throw (Exception. \"hinted initializer stopped\"))]
+    :wrong))
+(s/fdef pair :args (s/cat :input (s/tuple int? string?)) :ret int?)
+(defn pair [input] (let [[n label] input] (+ n (count label))))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/stop-first))
+(inc (a/stop-destructuring))
+(inc (a/stop-hinted))
+(inc (a/pair [2 \"ok\"]))
+(a/pair [\"bad\" \"ok\"])")
+        result (check/check-files [client api] {})]
+    (is (= [["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= (repeat 3 "t/never")
+           (mapv #(main/type-at result "api.clj" % 3) [4 9 13])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

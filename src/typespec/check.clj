@@ -4011,12 +4011,17 @@
 (defmethod special 'let [ctx node _]
   (let [[bindings & body] (args-of node)
         pending (volatile! [])
-        c (bind-pairs (assoc ctx :pending-callbacks pending) bindings)
-        result (infer-body (dissoc c :pending-callbacks) body)]
+        stopped? (volatile! false)
+        c (bind-pairs (assoc ctx :pending-callbacks pending) bindings
+                      (fn [_ _ _ ty]
+                        (when (= :never (:t ty)) (vreset! stopped? true))))
+        analysis (cond-> (dissoc c :pending-callbacks)
+                   @stopped? (dissoc :recur-types))
+        result (infer-body analysis body)]
     ;; Later bindings may provide context for earlier callbacks.
     (doseq [callback (rseq @pending)]
       (finish-callback! ctx callback))
-    result))
+    (if @stopped? t/never result)))
 
 (defmethod special 'letfn [ctx node _]
   (let [[bindings & body] (args-of node)

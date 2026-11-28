@@ -4115,8 +4115,10 @@
     (if stopped? t/never result)))
 
 (defmethod special 'recur [ctx node _]
-  (let [ts (mapv #(infer ctx %) (args-of node))]
-    (when-let [calls (:recur-types ctx)] (swap! calls conj ts)))
+  (let [inputs (mapv #(infer ctx %) (args-of node))
+        calls (:recur-types ctx)]
+    (when (and calls (not-any? #{t/never} inputs))
+      (swap! calls conj inputs)))
   t/never)
 (defmethod special 'throw [ctx node _]
   (let [[exception :as args] (args-of node)]

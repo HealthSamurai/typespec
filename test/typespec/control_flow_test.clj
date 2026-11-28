@@ -456,6 +456,28 @@
     (is (false? (require-falsy false)))
     (is (thrown? IllegalArgumentException (require-some nil)))))
 
+(deftest aborting-recur-operands-do-not-widen-loop-locals
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef choose :args (s/cat :stop? boolean?) :ret string?)
+(defn choose [stop?]
+  (loop [label \"ready\" n 0]
+    (if stop?
+      (recur 42 (throw (Exception. \"recur stopped\")))
+      label)))
+(s/fdef normal :args (s/cat :input (s/tuple int? string?)) :ret string?)
+(defn normal [[n label]]
+  (loop [n n label label]
+    (if (pos? n) (recur (quot n 2) label) label)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(subs (a/choose false) 0)
+(subs (a/normal [4 \"ready\"]) 0)
+(a/choose \"bad\")")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "string?" (main/type-at result "api.clj" 4 3)))))
+
 (deftest dead-recur-does-not-widen-live-loop-locals
   (let [result (checked "(ns flow (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat :stop? boolean?) :ret string?)

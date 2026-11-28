@@ -2335,6 +2335,26 @@
       ;; RT.aclone has one Object[] overload for all reference arrays.
       (if (.isPrimitive component) class-name "[Ljava.lang.Object;"))))
 
+(defn- compiler-constant-form? [ctx node]
+  (if (seq (:meta node))
+    false
+    (case (:op node)
+      (:kw :str :num :bool :char :nil :regex :quote) true
+      (:vector :map :set)
+      (let [children (map #(compiler-constant-form? ctx %) (:children node))]
+        (cond (every? true? children) true
+              (some false? children) false))
+      :sym (when (plain-local ctx node) false)
+      :list (when (= 'quote (:val (first (:children node)))) true)
+      nil)))
+
+(defn- compiler-vector-class [ctx node]
+  (when (= :vector (:op node))
+    (case (compiler-constant-form? ctx node)
+      true "clojure.lang.APersistentVector"
+      false "clojure.lang.IPersistentVector"
+      nil)))
+
 (defn- compiler-value-class [ctx node]
   (if-let [tag (env/tag-node node)]
     (env/hint-class (:file ctx) tag)
@@ -2345,7 +2365,7 @@
       (let [head (builtin-head ctx node)]
         (if (and (= 'aclone head) (= 2 (count (:children node))))
           (clone-compiler-class (compiler-value-class ctx (second (:children node))))
-          (get array-constructors head))))))
+          (or (compiler-vector-class ctx node) (get array-constructors head)))))))
 
 (defn- local-callback [ctx node]
   {:ctx ctx :node node :bodies (fn-bodies node)
@@ -3497,9 +3517,14 @@
         inferred (class-of ctx tty)
         hinted (if-let [tag (env/tag-node target)]
                  (env/hint-class (:file ctx) tag)
-                 (when (= :sym (:op target))
-                   (or (get-in ctx [:compiler-local-classes (:val target)])
-                       (compiler-var-class ctx (:val target)))))
+                 (case (:op target)
+                   :sym (or (get-in ctx [:compiler-local-classes (:val target)])
+                            (compiler-var-class ctx (:val target)))
+                   :vector (compiler-vector-class ctx target)
+                   nil))
+        direct? (if (and (= "clojure.lang.PersistentVector" inferred) hinted)
+                  (boolean (seq (java/methods-named hinted mname false)))
+                  (compiler-knows? ctx target))
         cname (if (and hinted (not= hinted inferred) (not (t/primitives hinted))
                        (empty? (java/methods-named inferred mname false))
                        (seq (java/methods-named hinted mname false)))
@@ -3521,7 +3546,7 @@
       :else
       (do
         (check-nil-receiver! ctx target tty)
-        (when (and (java/has-class? cname) (not (compiler-knows? ctx target)) (seq (java/methods-named cname mname false)))
+        (when (and (java/has-class? cname) (not direct?) (seq (java/methods-named cname mname false)))
           (let [hint (java/short-name cname)]
             (report! ctx node "TSP7023"
                      (str "reflective call, but " (parse/unparse target) " is known to be " hint)
@@ -3530,7 +3555,7 @@
                               :edits [{:range {:start [(:row (:pos target)) (:col (:pos target))]
                                                :end [(:row (:pos target)) (:col (:pos target))]}
                                        :text (str "^" hint " ")}]}])))
-        (java-call (assoc ctx :java-direct? (compiler-knows? ctx target))
+        (java-call (assoc ctx :java-direct? direct?)
                    node member-node cname mname false arg-nodes field-fallback {:receiver tty})))))
 
 ;; ---- special forms ----
@@ -9900,7 +9925,8 @@
                          t/unknown)
                  :else (or (:type (read-var ctx s node :value)) t/unknown)))
     :vector (let [items (mapv #(dissoc (infer ctx %) :fresh) (:children node))]
-              (t/tuple items (literal-element-type ctx items)))
+              (cond-> (t/tuple items (literal-element-type ctx items))
+                (compiler-vector-class ctx node) (assoc :jvm-class "clojure.lang.PersistentVector")))
     :set (let [items (:children node)
                types (mapv #(infer ctx %) items)
                elements (if (every? finite-value? types)

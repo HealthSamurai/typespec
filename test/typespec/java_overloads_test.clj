@@ -4,6 +4,27 @@
             [typespec.main :as main]
             [typespec.parse :as parse]))
 
+(deftest vector-literals-distinguish-compiler-and-runtime-java-classes
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef length-of :args (s/cat :x int?) :ret int?)
+(defn length-of [x] (.length [x 1]))
+(defn inline-size [] (.size [1 2]))
+(defn local-size [x] (let [v [x]] (.size v)))
+(defn bad-method [] (.substring [1 2] 0))
+(defn bad-arity [] (.contains [1 2] 1 2))
+(defn bad-param [] (.get [1 2] \"x\"))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/length-of 1))
+(inc (a/inline-size))
+(inc (a/local-size 1))
+(subs (a/inline-size) 0)
+(a/length-of \"invalid\")")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 5 "TSP7023"] ["api.clj" 6 "TSP2339"] ["api.clj" 7 "TSP2554"]
+            ["api.clj" 8 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest known-collection-classes-drive-java-receiver-checks
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.io File] [java.util Iterator]))
 (defn files [^File root] (file-seq root))

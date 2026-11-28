@@ -1559,6 +1559,27 @@
             "(s/coll-of int? :kind vector? :min-count 2 :max-count 2)"]
            (mapv #(at r %) (range 2 8))))))
 
+(deftest zero-and-positive-count-predicates-prove-collection-bounds
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::rows (s/map-of keyword? int?))
+(s/def ::empty (s/map-of keyword? int? :count 0))
+(s/def ::nonempty (s/map-of keyword? int? :min-count 1))
+(s/fdef empty-label :args (s/cat :m ::empty) :ret string?)
+(defn empty-label [m] (str m))
+(s/fdef populated-label :args (s/cat :m ::nonempty) :ret string?)
+(defn populated-label [m] (str m))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef label :args (s/cat :m ::a/rows) :ret string?)
+(defn label [m] (if (zero? (count m)) (a/empty-label m) (a/populated-label m)))
+(s/fdef wrong :args (s/cat :m ::a/rows) :ret (s/nilable string?))
+(defn wrong [m] (when (pos? (count m)) (a/empty-label m)))
+(s/fdef first-label :args (s/cat :xs (s/nilable (s/coll-of string? :kind vector?))) :ret string?)
+(defn first-label [xs] (if (pos? (count xs)) (first xs) \"fallback\"))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP330-01" "expected collection length 0, got at least 1"]]
+           (mapv (juxt :file (comp :row :pos) :code :message) issues))
+        (pr-str issues))))
+
 (deftest count-guards-refine-homogeneous-maps
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::values (s/map-of keyword? string?))

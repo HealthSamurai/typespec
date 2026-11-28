@@ -1019,6 +1019,10 @@
 
       (and (= 'not h) (= 1 (count args))) (vec (reverse (narrow ctx a)))
       (#{'empty? 'seq 'not-empty} h) (or (emptiness-contexts ctx test false) [ctx ctx])
+      (and (#{'zero? 'pos?} h) (= 1 (count args)))
+      (if-let [branches (count-equality-contexts ctx a 0)]
+        (if (= 'zero? h) branches (vec (rseq branches)))
+        [ctx ctx])
       (= 'and h) (logical-contexts ctx args true)
       (= 'or h) (logical-contexts ctx args false)
 

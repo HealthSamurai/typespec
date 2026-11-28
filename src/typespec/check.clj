@@ -3658,6 +3658,11 @@
         inputs (infer-call-arguments ctx node args (matching-arities type (count args)))]
     [inputs (call-fn ctx node (str sym) type args inputs)]))
 
+(defmethod special 'file-seq [ctx node _]
+  (let [[_ result] (core-call-result ctx node)]
+    (cond-> result
+      (= :coll (:t result)) (assoc :jvm-class "clojure.lang.LazySeq"))))
+
 (defn- core-unary-result [ctx node refine]
   (let [[inputs fallback] (core-call-result ctx node)]
     (if (= 1 (count inputs))

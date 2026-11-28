@@ -2435,6 +2435,37 @@
         (pr-str (:diagnostics r)))
     (is (= "42" (main/type-at r "length.clj" 3 3)))))
 
+(deftest file-seq-types-the-root-and-descendants-as-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]) (:import [java.io File]))
+(s/fdef root-file :args (s/cat :root (partial instance? File)) :ret (partial instance? File))
+(defn root-file [root] (first (file-seq root)))
+(s/fdef filename :args (s/cat :input (partial instance? File)) :ret string?)
+(defn filename [^File input] (.getName input))
+(defn children [^File root] (file-seq root))
+(s/fdef counted :args (s/cat :input counted?) :ret int?)
+(defn counted [input] (count input))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]) (:import [java.io File]))
+(a/filename (a/root-file (File. \"missing\")))
+(a/filename (first (a/children (File. \"missing\"))))
+(mapv a/filename (file-seq (File. \"missing\")))
+(mapv (fn [input] (.getName input)) (file-seq (File. \"missing\")))
+(inc (first (file-seq (File. \"missing\"))))
+(first (file-seq \"incorrect\"))
+(first (file-seq nil))
+(file-seq)
+(a/counted (file-seq (File. \"missing\")))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[5 "TSP7023"] [6 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"]
+            [9 "TSP2554"] [10 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues)))
+  (let [root (java.io.File. "typespec-file-seq-fixture")
+        files (file-seq root)]
+    (is (= root (first files)))
+    (is (not (counted? files))))
+  (is (thrown? NullPointerException (first (file-seq nil)))))
+
 (deftest indexed-get-checks-strings-and-arrays-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef take-char :args (s/cat :ch char?) :ret char?)

@@ -2172,6 +2172,16 @@
     (= prefix (count params)) t/nil-t
     :else (assoc (t/tuple (subvec params prefix)) :kind :seq)))
 
+(defn- regex-initializer-type [ctx sym {:keys [file node]}]
+  (let [literal? (= :regex (:op node))
+        init-ctx {:env (:env ctx) :file file :opts (:opts ctx) :locals {} :load-time? true}]
+    (when (or literal? (= 're-pattern (builtin-head init-ctx node)))
+      (or (some-> *rets* deref (get sym))
+          (do (when *rets* (swap! *rets* assoc sym t/unknown))
+              (let [type (if literal? (regex-literal-type node) (quietly init-ctx node))]
+                (when *rets* (swap! *rets* assoc sym type))
+                type))))))
+
 (defn var-type
   "Type of a var. A function with no declared return type gets it inferred from its body, once."
   [ctx sym]
@@ -2228,7 +2238,7 @@
               (let [ty (quietly {:env (:env ctx) :file file :opts (:opts ctx) :locals {} :load-time? true} node)]
                 (swap! *rets* assoc sym ty)
                 ty)))
-      (let [{:keys [constant hint literal-regex]} (env/unique-var-initializer (:env ctx) sym)]
+      (let [{:keys [constant hint regex-initializer]} (env/unique-var-initializer (:env ctx) sym)]
         (or (:type constant)
             (when-let [node (:node constant)]
               (or (get @*rets* sym)
@@ -2238,12 +2248,9 @@
                     (swap! *rets* assoc sym type)
                     type)))
             (:type hint)
-            (when (and literal-regex (not (:guards-disabled? ctx))
+            (when (and regex-initializer (not (:guards-disabled? ctx))
                        (not (get-in ctx [:env :var-declarations sym :root-may-change?])))
-              (or (some-> *rets* deref (get sym))
-                  (let [type (regex-literal-type literal-regex)]
-                    (when *rets* (swap! *rets* assoc sym type))
-                    type))))))))
+              (regex-initializer-type ctx sym regex-initializer)))))))
 
 (defn- why-of [ctx init ty]
   (cond

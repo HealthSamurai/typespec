@@ -217,13 +217,14 @@
                              (or (seq factories) (#{'defn 'defn-} operator) data-initializer))
                   hint (when data-initializer (hint-type file target))
                   constant (when data-initializer (constant-initializer file target value))
-                  literal-regex? (and data-initializer (= :regex (:op value))
-                                      (not (dynamic-var? target)) (empty? (:directives value))
-                                      (not (tag-node value)))
+                  regex-initializer? (and data-initializer
+                                          (or (= :regex (:op value)) (= 're-pattern (head file value)))
+                                          (not (dynamic-var? target)) (empty? (:directives value))
+                                          (not (tag-node value)))
                   initializer (cond-> {:file (:file file) :pos (:pos form)}
                                 hint (assoc :hint {:type hint :class (hint-class file (tag-node target))})
                                 constant (assoc :constant constant)
-                                literal-regex? (assoc :literal-regex value))
+                                regex-initializer? (assoc :regex-initializer {:node value :file file}))
                   by-name (cond-> by-name later-write (assoc-in [later-write :root-may-change?] true))
                   by-name (reduce (fn [acc sym]
                                     (cond-> acc

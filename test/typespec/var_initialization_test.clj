@@ -145,6 +145,30 @@ p/calculated")
         (pr-str diagnostics))
     (is (= "java.util.regex.Pattern" (main/type-at result "consumer.clj" 2 10)))))
 
+(deftest compiled-regex-initializers-supply-stable-types-and-captures
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(def captured (re-pattern \"(a)?b\"))
+(defonce constructed (re-pattern (str \"b\" \"+\")))
+(def ^:dynamic *dynamic* (re-pattern \"b\"))
+(def rewritten (re-pattern \"b\"))
+(defn rewrite! [] (alter-var-root #'rewritten (constantly :wrong)))")
+        shadow (parse/parse-string "shadow.clj" "(ns shadow (:refer-clojure :exclude [re-pattern]))
+(defn re-pattern [_] :not-a-pattern)
+(def value (re-pattern \"b\"))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [shadow :as s] [clojure.string :as str]))
+(when-let [[whole optional] (re-find a/captured \"b\")] (str/trim whole))
+(.find (re-matcher a/constructed \"bb\"))
+(inc a/captured)
+(re-find a/*dynamic* \"b\")
+(re-find a/rewritten \"b\")
+(re-find s/value \"b\")
+(with-redefs [a/captured :wrong] (re-find a/captured \"b\"))")
+        issues (:diagnostics (check/check-files [client shadow api] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP210-01"]
+            ["client.clj" 6 "TSP210-01"] ["client.clj" 7 "TSP210-01"] ["client.clj" 8 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest follows-local-sequences-without-assuming-calls-to-initializers
   (let [result (checked "(declare root)
                          (def snapshot root)

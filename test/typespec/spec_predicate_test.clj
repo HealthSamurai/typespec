@@ -651,6 +651,37 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest spec-conjunction-reads-input-shapes-through-wrappers
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::name string?)
+(s/def ::request (s/keys :req-un [::id ::name]))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/def ::wrapped (s/and map? (s/spec ::d/request :gen #(s/gen ::d/request))))
+(s/def ::nonconforming (s/and map? (s/nonconforming ::d/request)))
+(s/def ::configured (s/and map? (s/with-gen ::d/request #(s/gen ::d/request))))
+(s/fdef display :args (s/cat :request ::wrapped) :ret string?)
+(defn display [{:keys [id name]}] (str name (inc id)))
+(s/fdef safe :args (s/cat :request ::nonconforming) :ret string?)
+(defn safe [{:keys [name]}] (subs name 1))
+(s/fdef configured-name :args (s/cat :request ::configured) :ret string?)
+(defn configured-name [{:keys [name]}] (subs name 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/display {:id 1 :name \"A\"})
+(a/display {:id \"1\" :name \"A\"})
+(a/display {:id 1})
+(a/safe {:id 1 :name \"A\"})
+(a/safe {})
+(a/configured-name {:id 1 :name \"A\"})
+(a/configured-name {:id true :name \"A\"})")
+        {:keys [diagnostics env]} (check/check-files [client api domain] {})]
+    (is (= [[3 "TSP2322"] [4 "TSP2741"] [6 "TSP2741"] [6 "TSP2741"] [8 "TSP2322"]]
+           (mapv (juxt (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (every? #(= "client.clj" (:file %)) diagnostics))
+    (is (= [:api/wrapped :domain/request]
+           (get (contracts/dependency-paths (:specs env) (t/ref-t :api/wrapped)) :domain/request)))))
+
 (deftest collection-specs-check-maps-as-entry-collections
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::entry (s/tuple keyword? int?))

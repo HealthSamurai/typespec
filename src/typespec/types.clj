@@ -1065,16 +1065,26 @@
     (when (map? (last options))
       (into (apply hash-map (butlast options)) (last options)))))
 
+(defn- wrapped-spec-form [op [_ spec & options]]
+  (when (case op
+          :s/spec (some? (spec-option-map options))
+          :s/nonconforming (empty? options)
+          :s/with-gen (= 1 (count options))
+          false)
+    spec))
+
 (defn- conjunction-input-shape [ctx form seen]
   (cond
     (qualified-keyword? form) (named-spec-input ctx form seen conjunction-input-shape)
     (seq? form)
-    (case (type-form-op ctx (first form))
-      (:s/keys :s/tuple :s/map-of) (parse-type ctx form)
-      :s/coll-of (let [{:keys [kind]} (spec-option-map (drop 2 form))]
-                   (when (or (nil? kind) (#{'map? 'vector? 'set? 'list? 'seq?} (core-name ctx kind)))
-                     (parse-type ctx form)))
-      nil)))
+    (let [op (type-form-op ctx (first form))]
+      (case op
+        (:s/keys :s/tuple :s/map-of) (parse-type ctx form)
+        :s/coll-of (let [{:keys [kind]} (spec-option-map (drop 2 form))]
+                     (when (or (nil? kind) (#{'map? 'vector? 'set? 'list? 'seq?} (core-name ctx kind)))
+                       (parse-type ctx form)))
+        (when-let [inner (wrapped-spec-form op form)]
+          (recur ctx inner seen))))))
 
 (defn- map-input-shape [type]
   (when (and type (every? #(= :map (:t %)) (members {} type))) type))
@@ -1368,13 +1378,11 @@
   (cond
     (qualified-keyword? form) (named-spec-input ctx form seen entry-tuple-contract)
     (seq? form)
-    (case (type-form-op ctx (first form))
-      :s/tuple (when (= 3 (count form)) (parse-type ctx form))
-      (:s/spec :s/nonconforming) (when (= 2 (count form))
-                                  (recur ctx (second form) seen))
-      :s/with-gen (when (= 3 (count form))
-                    (recur ctx (second form) seen))
-      nil)))
+    (let [op (type-form-op ctx (first form))]
+      (if (= :s/tuple op)
+        (when (= 3 (count form)) (parse-type ctx form))
+        (when-let [inner (wrapped-spec-form op form)]
+          (recur ctx inner seen))))))
 
 (defn- collection-type [ctx form inner {:keys [kind count distinct] :as opts}]
   (let [kinds '{coll? nil vector? :vector set? :set list? :seq seq? :seq}

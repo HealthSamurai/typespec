@@ -235,6 +235,27 @@
     (is (nil? (spit writer "text")))
     (is (= "text" (.toString writer)))))
 
+(deftest regex-matcher-carries-its-class-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef matcher :args (s/cat :source java.lang.CharSequence) :ret java.util.regex.Matcher)
+(defn matcher [source] (re-matcher #\"(x)\" source))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(.find ^java.util.regex.Matcher (a/matcher (StringBuilder. \"x\")))
+(.find (re-matcher #\"x\" \"x\"))
+(re-matcher \"x\" \"x\")
+(re-matcher #\"x\" 42)
+(re-matcher #\"x\" nil)
+(re-matcher #\"x\")
+(a/matcher 42)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 7 "TSP2554"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (.find (re-matcher #"x" (StringBuilder. "x"))))
+  (is (thrown? ClassCastException (re-matcher #"x" 42)))
+  (is (thrown? NullPointerException (re-matcher #"x" nil))))
+
 (deftest core-naming-contracts-accept-named-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef label :args (s/cat :x clojure.lang.Named) :ret string?)

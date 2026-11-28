@@ -31,6 +31,8 @@ origin: TypeScript
 
 `clojure.core/boolean` принимает одно значение, включая `nil`, и возвращает `boolean?`. Этот тип виден в проверке `s/fdef` и обычных вызовов.
 
+`clojure.core/re-matcher` проверяет `Pattern` и `CharSequence`, включая `StringBuilder`, и передаёт тип результата `Matcher` в Java interop и возвращаемые значения `s/fdef`.
+
 Контракты `clojure.string/starts-with?`, `ends-with?` и `includes?` принимают
 любой первый аргумент, кроме `nil`. Clojure вызывает на нём `.toString`.
 Второй аргумент имеет тип `string?` для первых двух функций и

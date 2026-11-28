@@ -34,6 +34,7 @@
  clojure.core/count      [any? :-> int?]
  clojure.core/list       [& any? :-> list?]
  clojure.core/subs       ([string? int? :-> string?] [string? int? int? :-> string?])
+ clojure.core/re-matcher [java.util.regex.Pattern java.lang.CharSequence :-> java.util.regex.Matcher]
  clojure.core/name       [(t/or string? clojure.lang.Named) :-> string?]
  clojure.core/namespace  [clojure.lang.Named :-> (s/nilable string?)]
  clojure.core/keyword    ([(t/or string? keyword? symbol?) :-> keyword?]

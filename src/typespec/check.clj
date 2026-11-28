@@ -3089,9 +3089,9 @@
     (when (and (= 1 (count ms)) (#{:map :map-of} (:t (first ms)))) (first ms))))
 
 (defn- check-key-value!
-  "Key = type: a value stored under a qualified key must fit the spec of that key."
+  "Check a qualified key's Spec and use its declared type after a diagnostic."
   [ctx k vnode vtype]
-  (when (and (qualified-keyword? k) (get-in (:env ctx) [:specs k]))
+  (if (and (qualified-keyword? k) (get-in (:env ctx) [:specs k]))
     (let [actual (eff ctx vtype) expected (t/ref-t k)
           result (t/sub-result (:env ctx) actual expected)]
       (case (:status result)
@@ -3100,7 +3100,9 @@
         :mismatch (if-let [[code msg details] (nested-platform-problem ctx "TSP2322" actual expected result)]
                     (apply report! ctx vnode code msg (mapcat identity details))
                     (report! ctx vnode "TSP2322" (str (t/show actual) " is not assignable to " (show-ref ctx expected))))
-        :proved nil))))
+        :proved nil)
+      (if (= :proved (:status result)) vtype expected))
+    vtype))
 
 (defn- key-type [ctx k vtype]
   (if (and (qualified-keyword? k) (get-in (:env ctx) [:specs k])) (t/ref-t k) (widen vtype)))
@@ -5256,14 +5258,25 @@
     (t/with-assumption (list-value-type ctx (mapv #(dissoc % :fresh) types))
                        (some t/assumption types))))
 
-(defn- constructed-map [ctx node head types]
+(defn- constructed-map [ctx node head types & [arg-nodes]]
   (cond
     (some #{t/never} types) t/never
     (odd? (count types))
     (do (report! ctx node "TSP2554" (str head " expects complete key/value pairs")) t/never)
     :else
     (let [pairs (mapv (fn [[k v]] [(t/resolve-t (:env ctx) (eff ctx k)) (dissoc v :fresh)])
-                      (partition 2 types))]
+                      (partition 2 types))
+          last-fields (into {} (keep-indexed (fn [index [key]]
+                                               (when (and (= :lit (:t key)) (qualified-keyword? (:val key)))
+                                                 [(:val key) index]))) pairs)
+          pairs (into []
+                      (keep-indexed (fn [index [key value :as pair]]
+                                      (if-some [last-index (get last-fields (:val key))]
+                                        (when (= index last-index)
+                                          [key (check-key-value! ctx (:val key)
+                                                                 (nth arg-nodes (inc (* 2 index)) node) value)])
+                                        pair)))
+                      pairs)]
       (t/with-assumption
        (if (every? #(literal-map-key-type? (first %)) pairs)
          (reduce (fn [shape [k v]] (assoc-map-key shape (:val k) v)) empty-map-shape pairs)
@@ -5275,7 +5288,8 @@
 
 (doseq [head '[hash-map array-map]]
   (defmethod special head [ctx node _]
-    (constructed-map ctx node head (mapv #(infer ctx %) (args-of node)))))
+    (let [args (vec (args-of node))]
+      (constructed-map ctx node head (mapv #(infer ctx %) args) args))))
 
 (defn- constructed-set [types]
   (if (some #{t/never} types)
@@ -9707,17 +9721,12 @@
               :req (into (array-map)
                          (map (fn [[k v] kk]
                            (let [_ (when (some literal-directive? (:directives k)) (infer ctx k))
-                                 vty (infer ctx v)]
-                             (check-key-value! ctx kk v vty)
+                                 vty (check-key-value! ctx kk v (infer ctx v))]
                              (when (and (qualified-keyword? kk) (not (get-in (:env ctx) [:specs kk]))
                                         (contains? (:key-nss (:env ctx)) (namespace kk))
                                         (or (:strict (:opts ctx)) (similar kk (keys (:specs (:env ctx))))))
                                (report! ctx k "TSP2304" (str "no spec for " kk (hint-suffix kk (keys (:specs (:env ctx)))))))
-                             ;; a wrong value is reported once; after that the key has the type of its spec
-                             [kk (if (and (qualified-keyword? kk) (get-in (:env ctx) [:specs kk])
-                                          (not (t/sub? (:env ctx) (eff ctx vty) (t/ref-t kk))))
-                                   (t/ref-t kk)
-                                   (dissoc vty :fresh))]))
+                             [kk (dissoc vty :fresh)]))
                               pairs static-keys))}
              (let [types (mapv #(infer ctx %) children)
                    value-types (take-nth 2 (rest types))]

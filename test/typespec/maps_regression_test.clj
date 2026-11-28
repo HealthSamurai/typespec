@@ -331,6 +331,34 @@
         (pr-str issues))
     (is (every? #(re-find #":domain/id" (:message %)) issues))))
 
+(deftest map-constructors-check-surviving-qualified-fields
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::row (s/keys :req [::id]))")
+        api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/fdef make-row :args (s/cat :id ::d/id) :ret ::d/row)
+(defn make-row [id] (hash-map ::d/id id))
+(s/fdef wrong-row :args (s/cat) :ret ::d/row)
+(defn wrong-row [] (array-map ::d/id \"bad\"))
+(defn overwritten [] (hash-map ::d/id \"unused\" ::d/id 42))
+(defn also-overwritten [] (array-map ::d/id \"unused\" ::d/id 42))
+(defn final-bad [] (hash-map ::d/id 42 ::d/id \"bad\"))
+(defn spread-bad [] (apply hash-map [::d/id \"bad\"]))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [domain :as d]))
+(a/make-row 42)
+(a/make-row \"bad\")
+(hash-map ::d/id \"bad\")
+(array-map ::d/id nil)
+(inc (::d/id (a/overwritten)))
+(inc (::d/id (a/also-overwritten)))
+(inc (::d/id (apply array-map [::d/id \"unused\" ::d/id 42])))")
+        issues (:diagnostics (check/check-files [client api domain] {}))]
+    (is (= [["api.clj" 5 38 "TSP2322"] ["api.clj" 8 47 "TSP2322"] ["api.clj" 9 21 "TSP2322"]
+            ["client.clj" 3 13 "TSP2345"] ["client.clj" 4 18 "TSP2322"] ["client.clj" 5 19 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) (comp :col :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(re-find #":domain/id" (:message %)) issues))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

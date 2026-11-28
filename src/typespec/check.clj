@@ -8424,6 +8424,31 @@
                  :any t/any
                  t/unknown))))))
 
+(defn- map-into-member [ctx node target source]
+  (cond
+    (= t/never source) t/never
+    (or (= t/nil-t source) (= (t/lit "") source) (= 0 (:max-count source))) target
+    (#{:map :map-of} (:t source)) (conj-map-value ctx node target source)
+    (and (#{:seq :vector} (:kind source)) (:items source))
+    (let [items (:items source)
+          nodes (if (and (= :vector (:op node)) (= (count items) (count (:children node))))
+                  (:children node)
+                  (repeat node))]
+      (conj-map-values ctx target nodes items))
+    (= :coll (:t source))
+    (let [result (conj-map-step ctx node (map-conj-domain target) [(:of source)])]
+      (if (and (= t/never result) (zero? (first (length/bounds source)))) target result))
+    (or (and (= :lit (:t source)) (string? (:val source)))
+        (unsupported-sequence-member ctx source))
+    (do (report! ctx node "TSP2345" (str "into cannot add entries from " (t/show source) " to a map")) t/never)
+    :else t/unknown))
+
+(defn- checked-map-into [ctx node target targets source]
+  (if-let [pairs (bounded-combinations [[targets (t/members (:env ctx) source)]])]
+    (t/with-assumption (apply t/union (map (fn [[to from]] (map-into-member ctx node to from)) pairs))
+                       (or (t/assumption target) (t/assumption source)))
+    t/unknown))
+
 (defmethod special 'into [ctx node _]
   (let [[to second-arg from :as args] (args-of node)]
     (case (count args)
@@ -8434,6 +8459,7 @@
               members (t/members (:env ctx) target)]
           (cond (some #{t/never} [target source]) t/never
                 (every? vector-member? members) (checked-vector-into ctx second-arg target members source)
+                (every? #(#{:map :map-of} (:t %)) members) (checked-map-into ctx second-arg target members source)
                 (and (= :vector (:op to)) (empty? (:children to))) (coll-of :vector (elem-type ctx source))
                 (and (= :set (:op to)) (empty? (:children to))) (coll-of :set (elem-type ctx source))
                 (some #(or (:items %) (length/constrained? %) (:map-index %)) members)

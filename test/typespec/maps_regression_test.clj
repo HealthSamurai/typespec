@@ -1275,6 +1275,35 @@
   (is (thrown? IllegalArgumentException (conj {} [:a 1 2])))
   (is (thrown? IllegalArgumentException (conj {} 42))))
 
+(deftest map-into-checks-ordered-entries-and-preserves-written-fields
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::name string?)
+(s/def ::count int?)
+(s/def ::row (s/keys :req [::name ::count]))
+(s/fdef render :args (s/cat :row ::row) :ret string?)
+(defn render [{::keys [name count]}] (str name count))
+(s/def ::tallies (s/map-of keyword? int?))
+(s/fdef tally :args (s/cat :entries (s/coll-of (s/tuple keyword? int?) :kind vector?)) :ret ::tallies)
+(defn tally [entries] (into {} entries))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render (into {::a/count 1} [[::a/name \"Ada\"]]))
+(a/render (into {::a/count 1} {::a/name \"Ada\"}))
+(a/render (into {::a/count 1 ::a/name \"Ada\"} nil))
+(a/render (into {::a/count 1 ::a/name \"Ada\"} [[::a/name 4]]))
+(a/render (into {} [[::a/name 4] [::a/name \"Ada\"] [::a/count 1]]))
+(into {} [[:a 1 2]])
+(into {} 42)
+(inc (get (a/tally [[:a 1]]) :a 0))
+(a/tally [[:a \"wrong\"]])")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= {:name "Ada" :count 1} (into {} [[:name 4] [:name "Ada"] [:count 1]])))
+  (is (thrown? IllegalArgumentException (into {} [[:a 1 2]])))
+  (is (thrown? IllegalArgumentException (into {} 42))))
+
 (deftest merge-required-left-optional-right
   (let [a (map-type {:x (t/prim :string)} {:z (t/prim :string)})
         b (map-type {} {:x (t/prim :int) :z t/nil-t})

@@ -622,7 +622,7 @@
   (accept-keys (dissoc all :amount))
   (inc (get (dissoc all :amount) :amount 0))
   (inc (get (into all [[:amount 4]]) :amount 0)))")]
-    (is (= [[15 "TSP2345"] [16 "TSP2345"] [20 "TSP210-01"]] (locations issues))
+    (is (= [[15 "TSP2345"] [16 "TSP2345"]] (locations issues))
         (pr-str issues))))
 
 (deftest contains-refines-map-of-tails-across-namespaces

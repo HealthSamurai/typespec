@@ -3755,6 +3755,16 @@
 (defmethod special 'identity [ctx node _]
   (core-unary-result ctx node identity))
 
+(defmethod special 'constantly [ctx node _]
+  (let [[inputs fallback] (core-call-result ctx node)]
+    (if (= 1 (count inputs))
+      (let [value (dissoc (first inputs) :fresh)]
+        (if (= t/never value)
+          value
+          (t/with-assumption {:t :fn :arities [{:params [] :rest t/any :ret value}]}
+                             (t/assumption value))))
+      fallback)))
+
 (doseq [head '[parse-long parse-double parse-boolean parse-uuid]]
   (defmethod special head [ctx node _]
     (core-unary-result ctx node (unary-callback-refiners head))))

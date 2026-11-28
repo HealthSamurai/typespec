@@ -11,6 +11,31 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest constantly-retains-a-captured-value-through-rest-calls
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::value (s/tuple string? int?))
+(s/fdef callback :args (s/cat :value ::value) :ret (s/fspec :args (s/cat :ignored (s/* any?)) :ret ::value))
+(defn callback [value] (constantly value))
+(defn ready-fn [] (constantly \"ready\"))
+(defn invalid [] (constantly 1 2))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(subs ((a/ready-fn)) 1)
+(subs ((a/ready-fn) nil 1 :other) 1)
+(inc ((a/ready-fn) :ignored))
+(mapv (a/ready-fn) [1 2])
+(mapv (fn [[label n]] (str label (inc n))) (mapv (a/callback [\"ready\" 1]) [1 2]))
+(a/callback [\"ready\" \"wrong\"])
+((constantly nil))
+(if ((constantly false)) (inc \"dead\") :ok)
+(constantly (throw (Exception.)))")
+        result (check/check-files [client api] {})
+        issues (:diagnostics result)]
+    (is (= [["api.clj" 6 "TSP2554"] ["client.clj" 4 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= ["nil?" ":ok" "t/never"]
+           (mapv #(main/type-at result "client.clj" % 1) [8 9 10])))))
+
 (deftest callable-collections-retain-mapped-positions
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef pick :args (s/cat :values (s/tuple int? int?)) :ret int?)

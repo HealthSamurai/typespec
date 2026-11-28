@@ -2435,6 +2435,41 @@
         (pr-str (:diagnostics r)))
     (is (= "42" (main/type-at r "length.clj" 3 3)))))
 
+(deftest indexed-get-checks-strings-and-arrays-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef take-char :args (s/cat :ch char?) :ret char?)
+(defn take-char [ch] ch)
+(s/fdef take-int :args (s/cat :n int?) :ret int?)
+(defn take-int [n] n)
+(s/fdef first-letter :args (s/cat :text string?) :ret char?)
+(defn first-letter [text] (get text 0 \\?))
+(defn first-int [^ints values] (get values 0 0))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(a/take-char (get \"abc\" 1))
+(a/take-char (get \"abc\" 0.9))
+(a/take-char (get \"abc\" 4294967296))
+(a/take-char (get (char-array \"abc\") 1))
+(a/take-int (get (int-array [1 2]) 0.9))
+(a/take-int (get (int-array [1 2]) 4294967296))
+(a/take-int (a/first-int (int-array [1])))
+(a/take-char (a/first-letter \"\"))
+(inc (get \"abc\" 0))
+(a/take-int (get (int-array [1 2]) 2))
+(a/take-int (get (int-array [1 2]) -1 0))
+(a/take-int (get [1 2] 0.9 7))
+(str/trim (get \"ab\" :bad \"default\"))
+(str/trim (get \"ab\" -1 \"default\"))
+(str/trim (get (into-array String [nil]) 0 \"default\"))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 10 "TSP2345"] ["client.clj" 11 "TSP2531"] ["client.clj" 16 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= \a (get "ab" 0.9) (get "ab" 4294967296)))
+  (is (= 1 (get (int-array [1 2]) 0.9) (get (int-array [1 2]) 4294967296)))
+  (is (= 7 (get [1 2] 0.9 7)))
+  (is (= "default" (get "ab" :bad "default") (get "ab" -1 "default")))
+  (is (nil? (get (into-array String [nil]) 0 "default"))))
+
 (deftest aset-uses-array-classes-from-another-namespace
   (let [files [(parse/parse-string "provider.clj"
                                   "(ns provider)

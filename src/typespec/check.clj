@@ -4344,41 +4344,55 @@
     (:items member) (nth (:items member) (int index))
     :else (or (:of member) t/unknown)))
 
-(defn- read-vector-index [ctx vectors key-type not-found]
+(defn- indexed-get-source? [member]
+  (or (vector-member? member)
+      (= :string (:name member))
+      (string? (:val member))
+      (array-component member)))
+
+(defn- read-indexed-get [ctx sources key-type not-found]
   (let [env (:env ctx)
         keys (t/members env key-type)]
     (apply t/union
-           (for [member vectors
+           (for [member sources
+                 :let [vector? (vector-member? member)
+                       [lower upper] (sequence-member-bounds member)
+                       element (if (array-component member) (array-read-type member) (member-element member))]
                  key keys]
              (cond
                (= :nil (:t member)) not-found
                (or (= :never (:t member)) (= :never (:t key))) t/never
 
                (= :lit (:t key))
-               (if (integer? (:val key))
-                 (let [index (lookup-index (:val key))
-                       element (vector-element-at member index)]
-                   (if (= :present (length/position member index)) element (t/union element not-found)))
+               (if ((if vector? integer? number?) (:val key))
+                 (let [index (lookup-index (:val key))]
+                   (cond
+                     (or (neg? index) (and upper (>= index upper))) not-found
+                     (< index lower) (if vector? (vector-element-at member index) element)
+                     :else (t/union element not-found)))
                  not-found)
 
-               (or (= :double (:name key))
-                   (disjoint-scalars? env key (t/prim :int))
-                   (= 0 (second (length/bounds member)))) not-found
+               (or (= 0 upper)
+                   (= "java.lang.Character" (:name key))
+                   (and vector? (= :double (:name key)))
+                   (disjoint-scalars? env key (t/prim :number))) not-found
 
-               :else (t/union (or (:of member) t/unknown) not-found))))))
+               :else (t/union element not-found))))))
 
 (defmethod special 'get [ctx node _]
   (let [[m k default] (args-of node)
-        mty (infer ctx m)]
-    (if (= :kw (:op k))
+        mty (infer ctx m)
+        source (eff ctx mty)
+        env (:env ctx)
+        members (t/members env source)
+        indexed? (and (some indexed-get-source? members)
+                      (every? #(or (indexed-get-source? %) (#{:nil :never} (:t %))) members))]
+    (if (and (= :kw (:op k)) (not indexed?))
       (if default
         (read-key ctx mty (:val k) k (infer ctx default) t/unknown)
         (read-key ctx mty (:val k) k))
-      (let [source (eff ctx mty)
-            key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
+      (let [key-type (quoted-map-key-type k (eff ctx (infer ctx k)))
             not-found (if default (infer ctx default) t/nil-t)
-            env (:env ctx)
-            members (t/members env source)
             keys (when (some #(= :map (:t %)) members)
                    (finite-map-keys env key-type))
             assumption (or (t/assumption source) (t/assumption key-type))]
@@ -4391,8 +4405,8 @@
            (apply t/union (map #(read-literal-map-key ctx source % not-found) keys))
            assumption)
 
-          (and (some vector-member? members) (every? #(or (vector-member? %) (#{:nil :never} (:t %))) members))
-          (t/with-assumption (read-vector-index ctx members key-type not-found) assumption)
+          indexed?
+          (t/with-assumption (read-indexed-get ctx members key-type not-found) assumption)
 
           :else
           (read-map-of ctx source key-type not-found))))))
@@ -5890,13 +5904,13 @@
             :nil 0
             :coll (let [[lo hi] (length/bounds member)] (when (= lo hi) lo))
             :class (:array-length member)
+            :lit (literal-string-size member)
             nil)]
     (when (and (integer? n) (<= 0 n Integer/MAX_VALUE)) n)))
 
 (defn- exact-count-type [member]
   (when-not (or (:platform member) (= :sequential (:kind member)))
     (let [size (or (exact-sequence-length member)
-                   (when (and (= :lit (:t member)) (string? (:val member))) (count (:val member)))
                    (when-let [bounds (t/map-length member)]
                      (let [[lo hi] (length/bounds bounds)]
                        (when (= lo hi) lo))))]

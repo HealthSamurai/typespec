@@ -607,13 +607,20 @@
              :opt (into (array-map) (for [[k req?] ks :when (not req?)] [k (ty k)]))})))
       t/unknown))
 
+(defn- positional-pattern-type [env file node preconditions?]
+  (let [type (pattern-type env file node)]
+    (if (and (not preconditions?) (= :map (:t type)) (:inferred type) (empty? (:req type)))
+      (t/union type t/nil-t)
+      type)))
+
 (defn- hints-sig [env file parts conflict!]
   {:t :fn
    :arities (vec (for [{:keys [params body]} (:arities parts)
                        :let [{:keys [fixed rest]} (split-params params)
-                             pre (pre-types env file params body conflict!)]]
+                             pre (pre-types env file params body conflict!)
+                             preconditions? (seq (pre-conditions body))]]
                    (cond-> {:params (mapv #(or (when (= :sym (:op %)) (get pre (:val %)))
-                                               (pattern-type env file %))
+                                               (positional-pattern-type env file % preconditions?))
                                           fixed)
                             :ret (or (:type (return-hint file (:name parts) params)) t/unknown)}
                      (= :map (:op rest)) (assoc :kwargs (pattern-type env file rest))

@@ -14,6 +14,34 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest inferred-optional-options-accept-nil-across-namespaces
+  (let [api (parse/parse-string
+             "api.clj"
+             "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/fdef strict-label :args (s/cat :opts (s/keys :opt [::label])) :ret string?)
+(defn strict-label [{:keys [::label] :or {label \"default\"}}] label)
+(defn label [{:keys [::label] :or {label \"default\"}}] label)
+(defn bounded
+  ([] (bounded nil))
+  ([{:keys [max] :or {max 10}}] max))
+(defn checked [{:keys [max] :as opts}]
+  {:pre [(map? opts)]}
+  max)")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [api :as a]))
+(subs (a/label nil) 0)
+(subs (a/label {}) 0)
+(a/label {::a/label 42})
+(a/strict-label nil)
+(a/checked nil)
+(a/bounded)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest java-map-string-destructuring-preserves-the-value-type
   (let [api (parse/parse-string "api.clj" "(ns api)
 (defn environment [] (System/getenv))")

@@ -3417,22 +3417,29 @@
                      nil)]
     (java-receiver-element ctx receiver cname owner)))
 
-(defn- java-iterator-element [ctx receiver cname mname params]
+(defn- java-returned-element [ctx receiver cname mname params]
   (case [mname params]
     ["iterator" []] (or (java-receiver-element ctx receiver cname "java.lang.Iterable")
                         (java-receiver-element ctx receiver cname "java.util.stream.Stream"))
     (["listIterator" []] ["listIterator" ["int"]])
     (java-receiver-element ctx receiver cname "java.util.List")
+    ["filter" ["java.util.function.Predicate"]]
+    (java-receiver-element ctx receiver cname "java.util.stream.Stream")
     nil))
 
+(defn- java-callback-element [ctx receiver cname mname params]
+  (when-let [owner (case [mname params]
+                     ["forEach" ["java.util.function.Consumer"]] "java.lang.Iterable"
+                     ["filter" ["java.util.function.Predicate"]] "java.util.stream.Stream"
+                     nil)]
+    (java-receiver-element ctx receiver cname owner)))
+
 (defn- java-call [ctx node member-node cname mname static? arg-nodes field-fallback & [{:keys [tags receiver]}]]
-  (let [consumer-element (when (= "forEach" mname)
-                           (java-receiver-element ctx receiver cname "java.lang.Iterable"))
-        ms (map (fn [method]
-                  (cond-> (assoc method :name mname)
-                    (and consumer-element (= ["java.util.function.Consumer"] (:params method)))
-                    (assoc :callback-input-types
-                           {0 [(t/platform (t/class-type consumer-element) (java/short-name consumer-element))]})))
+  (let [ms (map (fn [method]
+                  (let [element (java-callback-element ctx receiver cname mname (:params method))]
+                    (cond-> (assoc method :name mname)
+                      element (assoc :callback-input-types
+                                     {0 [(t/platform (t/class-type element) (java/short-name element))]}))))
                 (java/methods-named cname mname static?))
         field-class (when (and (empty? arg-nodes)
                                (case field-fallback
@@ -3463,7 +3470,7 @@
         (if (= 1 (count rets))
           (let [result (first rets)
                 [returned-element & others] (distinct (map #(or (:element-class %)
-                                                               (java-iterator-element ctx receiver cname mname (:params %)))
+                                                               (java-returned-element ctx receiver cname mname (:params %)))
                                                             candidates))]
             (cond-> result
               (and (= :class (:t result)) returned-element (empty? others))

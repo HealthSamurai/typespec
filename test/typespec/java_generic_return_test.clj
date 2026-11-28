@@ -62,6 +62,31 @@
         (pr-str issues))
     (is (re-find #"may return nil" (:message (second issues))))))
 
+(deftest java-map-remove-returns-the-nullable-value-type
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn traces [] (Thread/getAllStackTraces))
+(s/fdef stack-size :args (s/cat :trace #(instance? StackTraceElement/1 %)) :ret int?)
+(defn stack-size [^StackTraceElement/1 trace] (alength trace))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Map]))
+(s/fdef stack-size :args (s/cat :thread #(instance? Thread %)) :ret (s/nilable int?))
+(defn stack-size [thread]
+  (when-let [stack (.remove ^Map (a/traces) thread)]
+    (a/stack-size stack)))
+(s/fdef wrong :args (s/cat :thread #(instance? Thread %)) :ret (s/nilable string?))
+(defn wrong [thread]
+  (when-let [stack (.remove ^Map (a/traces) thread)]
+    (subs stack 0)))
+(s/fdef unchecked :args (s/cat :thread #(instance? Thread %)) :ret #(instance? StackTraceElement/1 %))
+(defn unchecked [thread] (.remove ^Map (a/traces) thread))
+(stack-size (Thread/currentThread))
+(stack-size \"bad\")")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 10 "TSP2345"] ["client.clj" 12 "TSP2322"] ["client.clj" 14 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"may return nil" (:message (second issues))))))
+
 (deftest java-map-values-preserve-value-types-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (defn traces [] (Thread/getAllStackTraces))

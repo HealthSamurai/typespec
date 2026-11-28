@@ -3423,6 +3423,7 @@
     ["previous" []] (java-receiver-element ctx receiver cname "java.util.ListIterator")
     ["get" ["int"]] (java-receiver-element ctx receiver cname "java.util.List")
     (["get" ["java.lang.Object"]]
+     ["remove" ["java.lang.Object"]]
      ["getOrDefault" ["java.lang.Object" "java.lang.Object"]])
     (second (java-receiver-fact ctx receiver cname "java.util.Map" :java-map-classes))
     nil))

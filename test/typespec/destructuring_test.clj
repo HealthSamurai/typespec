@@ -13,6 +13,26 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest empty-comprehension-inputs-keep-bottom-through-destructuring
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::empty (s/map-of string? int? :count 0))
+(s/fdef empty-index :args (s/cat) :ret ::empty)
+(defn empty-index [] {})
+(s/fdef numbers :args (s/cat) :ret (s/map-of string? int? :min-count 1))
+(defn numbers [] {\"x\" 42})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(for [[_ n] (a/empty-index)] (subs n 0))
+(for [[_ n] {}] (subs n 0))
+(for [{:keys [n]} []] (subs n 0))
+(doseq [[_ n] []] (inc n))
+(doseq [{:keys [n]} []] (inc n))
+(for [c \"\"] (subs c 0))
+(doseq [[_ n] (a/numbers)] (subs n 0))
+(for [[_ n] {\"x\" 42}] (inc n))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[8 "TSP2345"]] (locations issues)) (pr-str issues))
+    (is (= "client.clj" (:file (first issues))))))
+
 (deftest map-comprehensions-destructure-typed-entries
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::counts (s/map-of string? int? :min-count 1))

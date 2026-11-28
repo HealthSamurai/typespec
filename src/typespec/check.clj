@@ -1426,7 +1426,7 @@
 (defn- member-element [member]
   (case (:t member)
     :coll (:of member)
-    :nil t/never
+    (:nil :never) t/never
     :map-of (t/prim :vector)
     :map (if (:map-index member) (t/prim :vector) t/unknown)
     :class (if (str/starts-with? (:name member) "[") (array-sequence-element member) t/unknown)
@@ -2391,9 +2391,9 @@
                 ctx)
               (let [source (infer ctx init)
                     elements (for [member (t/members (:env ctx) source)
-                                   :let [entries (map-entry-sequence member)]
-                                   :when (not= 0 (:max-count entries))]
-                               (member-element (or entries member)))]
+                                   :let [member (or (map-entry-sequence member) member)]
+                                   :when (not= 0 (second (sequence-member-bounds member)))]
+                               (member-element member))]
                 (bind-pattern ctx p (t/with-assumption (apply t/union elements) (t/assumption source))))))
           ctx (partition 2 (:children bindings))))
 

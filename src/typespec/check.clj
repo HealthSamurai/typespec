@@ -2890,27 +2890,27 @@
              (every? literal-node? (:children node)))
     (mapv :val (:children node))))
 
-(defn- set-call-result [ctx values input]
+(defn- set-call-result [ctx values input & [not-found]]
   (let [env (:env ctx)
+        not-found (or not-found t/nil-t)
         by-value (zipmap values (map literal-type values))]
     (t/with-assumption
      (apply t/union
-            (for [member (t/members env (eff ctx input))]
+            (for [member (mapcat expand-boolean (t/members env (eff ctx input)))]
               (case (:t member)
                 :never t/never
-                :nil t/nil-t
-                :lit (get by-value (:val member) t/nil-t)
-                (apply t/union t/nil-t
+                (:nil :lit) (get by-value (:val member) not-found)
+                (apply t/union not-found
                        (remove #(disjoint-scalars? env member %) (vals by-value))))))
      (t/assumption input))))
 
-(defn- typed-set-call-result [ctx ty input]
+(defn- typed-set-call-result [ctx ty input & [not-found]]
   (if (= t/never input)
     t/never
     (let [env (:env ctx)
           inputs (t/members env (eff ctx input))]
       (t/with-assumption
-       (apply t/union t/nil-t
+       (apply t/union (or not-found t/nil-t)
               (remove (fn [stored] (every? #(disjoint-scalars? env % stored) inputs))
                       (t/members env (or (:of ty) t/unknown))))
        (or (t/assumption ty) (t/assumption input))))))
@@ -4492,6 +4492,31 @@
 
                :else (t/union element not-found))))))
 
+(defn- set-type? [member]
+  (or (= :set (:kind member)) (= (t/prim :set) (t/strip member))))
+
+(defn- fixed-set-values [env member]
+  (let [[lower upper] (length/bounds member)]
+    (when (= lower upper)
+      (if (zero? upper)
+        []
+        (let [elements (mapcat expand-boolean (t/members env (:of member)))
+              values (mapv :val elements)]
+          (when (and (every? #(and (finite-value? %) (not (:ambiguous-number-box? %))) elements)
+                     (not-any? #(and (number? %) (Double/isNaN (double %))) values)
+                     (= lower (count (distinct values))))
+            values))))))
+
+(defn- read-set-get [ctx members key-type not-found]
+  (apply t/union
+         (for [member members]
+           (case (:t member)
+             :never t/never
+             :nil not-found
+             (if-let [values (fixed-set-values (:env ctx) member)]
+               (set-call-result ctx values key-type not-found)
+               (typed-set-call-result ctx member key-type not-found))))))
+
 (defmethod special 'get [ctx node _]
   (let [[m k default] (args-of node)
         mty (infer ctx m)
@@ -4499,8 +4524,10 @@
         env (:env ctx)
         members (t/members env source)
         indexed? (and (some indexed-get-source? members)
-                      (every? #(or (indexed-get-source? %) (#{:nil :never} (:t %))) members))]
-    (if (and (= :kw (:op k)) (not indexed?))
+                      (every? #(or (indexed-get-source? %) (#{:nil :never} (:t %))) members))
+        sets? (and (some set-type? members)
+                   (every? #(or (set-type? %) (#{:nil :never} (:t %))) members))]
+    (if (and (= :kw (:op k)) (not indexed?) (not sets?))
       (if default
         (read-key ctx mty (:val k) k (infer ctx default) t/unknown)
         (read-key ctx mty (:val k) k))
@@ -4520,6 +4547,9 @@
 
           indexed?
           (t/with-assumption (read-indexed-get ctx members key-type not-found) assumption)
+
+          sets?
+          (t/with-assumption (read-set-get ctx members key-type not-found) assumption)
 
           :else
           (read-map-of ctx source key-type not-found))))))
@@ -5210,8 +5240,7 @@
        (or (t/assumption source) (some t/assumption args))))))
 
 (defn- spread-set-target? [members]
-  (every? #(or (= :set (:kind %)) (= (t/prim :set) (t/strip %)))
-          members))
+  (every? set-type? members))
 
 (defn- apply-set-lookup [ctx node f label source args]
   (if (not= 1 (count args))

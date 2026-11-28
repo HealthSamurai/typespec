@@ -396,6 +396,38 @@
         (pr-str issues))
     (is (= "t/never" (main/type-at result "api.clj" 14 20)))))
 
+(deftest get-on-sets-distinguishes-present-values-from-the-default
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::states (s/coll-of #{:ready :blocked} :kind set? :count 2))
+(s/fdef states :args (s/cat) :ret ::states)
+(defn states [] #{:ready :blocked})
+(s/fdef want-ready :args (s/cat :state #{:ready}) :ret keyword?)
+(defn want-ready [state] state)
+(s/fdef want-false :args (s/cat :flag false?) :ret boolean?)
+(defn want-false [flag] flag)
+(s/fdef want-nil :args (s/cat :value nil?) :ret nil?)
+(defn want-nil [value] value)
+(s/fdef maybe-state :args (s/cat :states (s/nilable ::states)) :ret #{:ready :missing})
+(defn maybe-state [states] (get states :ready :missing))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/want-ready (get #{:ready :blocked} :ready))
+(a/want-ready (get (a/states) :ready :missing))
+(a/want-ready (get (a/states) :blocked))
+(a/want-ready (get #{:ready} :absent :blocked))
+(a/want-false (get #{false nil} false :missing))
+(a/want-nil (get #{false nil} nil :missing))
+(inc (get #{} :absent 1))
+(inc (get #{nil false} nil 1))
+(get #{:ready} :absent)
+(get #{1N} 1 0)
+(a/maybe-state nil)")
+        result (check/check-files [client api] {})
+        issues (:diagnostics result)]
+    (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 9 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= ["nil?" "1N"] (mapv #(main/type-at result "client.clj" % 1) [10 11])))))
+
 (deftest get-reads-vector-indices-with-clojure-presence-semantics
   (doseq [index [0 -1 2 4294967296 4294967297 1.0 1N]]
     (let [expected (get [nil :one] index :missing)

@@ -3436,7 +3436,7 @@
       text
       (t/tuple (into [text] (repeat groups (t/union text t/nil-t)))))))
 
-(defmethod special 're-find [ctx node _]
+(defn- checked-regex-match [ctx node]
   (let [head (first (:children node))
         args (args-of node)
         {:keys [type]} (read-var ctx (:val head) head :call)
@@ -3449,6 +3449,10 @@
                                arities)))
                type)]
     (call-fn ctx node (str (:val head)) type args)))
+
+(doseq [head '[re-find re-matches]]
+  (defmethod special head [ctx node _]
+    (checked-regex-match ctx node)))
 
 (defmethod special '. [ctx node _]
   (let [[receiver raw-member & trailing :as args] (args-of node)

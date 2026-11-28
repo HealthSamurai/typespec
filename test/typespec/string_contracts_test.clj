@@ -263,6 +263,31 @@
   (is (nil? (re-find #"x" "empty")))
   (is (thrown? ClassCastException (re-find #"x" 42))))
 
+(deftest regex-matches-types-the-full-match-and-its-captures
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef whole :args (s/cat :source java.lang.CharSequence) :ret (s/nilable string?))
+(defn whole [source] (re-matches #\"[a-z]+\" source))
+(s/fdef groups :args (s/cat :source java.lang.CharSequence) :ret (s/nilable (s/tuple string? (s/nilable string?) (s/nilable string?))))
+(defn groups [source] (re-matches #\"(a)?(b)\" source))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(when-some [word (a/whole (StringBuilder. \"ok\"))] (str/trim word))
+(when-let [[whole optional more] (re-matches #\"(a)?(b)\" \"b\")] (str/trim whole))
+(when-let [[whole optional more] (re-matches #\"(a)?(b)\" \"b\")] (str/trim optional))
+(str/trim (re-matches #\"[a-z]+\" \"wrong 7\"))
+(re-matches \"x\" \"x\")
+(re-matches #\"x\" 42)
+(re-matches #\"x\")
+(when-let [[whole optional more] (a/groups \"b\")] (str/trim whole))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2531"] ["client.clj" 5 "TSP2531"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= "ok" (re-matches #"[a-z]+" (StringBuilder. "ok"))))
+  (is (= ["b" nil "b"] (re-matches #"(a)?(b)" "b")))
+  (is (nil? (re-matches #"[a-z]+" "wrong 7")))
+  (is (thrown? ClassCastException (re-matches #"x" 42))))
+
 (deftest regex-matcher-carries-its-class-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef matcher :args (s/cat :source java.lang.CharSequence) :ret java.util.regex.Matcher)

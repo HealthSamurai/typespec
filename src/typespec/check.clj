@@ -2397,7 +2397,7 @@
             (if (= :kw (:op p))
               (case (:val p)
                 :let (bind-pairs ctx init)
-                (:when :while) (or (first (condition-contexts ctx init)) ctx)
+                (:when :while) (or (first (condition-contexts ctx init)) (reduced nil))
                 ctx)
               (let [source (infer ctx init)
                     {compatible false incompatible true} (group-by #(boolean (non-seqable-input? %))
@@ -4252,12 +4252,15 @@
 
 (defmethod special 'doseq [ctx node _]
   (let [[bindings & body] (args-of node)]
-    (infer-body (bind-seq-pairs ctx 'doseq bindings) body)
+    (when-let [body-ctx (bind-seq-pairs ctx 'doseq bindings)]
+      (infer-body body-ctx body))
     t/nil-t))
 
 (defmethod special 'for [ctx node _]
   (let [[bindings & body] (args-of node)]
-    {:t :coll :kind :seq :of (widen (dissoc (infer-body (bind-seq-pairs ctx 'for bindings) body) :fresh))}))
+    (if-let [body-ctx (bind-seq-pairs ctx 'for bindings)]
+      {:t :coll :kind :seq :of (widen (dissoc (infer-body body-ctx body) :fresh))}
+      (length/with-bounds {:t :coll :kind :seq :of t/never} 0 0))))
 
 (defmethod special 'dotimes [ctx node _]
   (let [[bindings & body] (args-of node)

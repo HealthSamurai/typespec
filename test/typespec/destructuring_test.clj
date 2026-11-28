@@ -13,6 +13,29 @@
 (defn- locations [issues]
   (mapv (juxt (comp :row :pos) :code) issues))
 
+(deftest comprehension-guards-can-prove-the-body-unreachable
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::items (s/coll-of int? :kind vector? :min-count 1))
+(s/def ::empty (s/coll-of int? :kind seq? :count 0))
+(s/fdef disabled :args (s/cat :xs ::items) :ret ::empty)
+(defn disabled [xs] (for [n xs :when false] (subs n 0)))
+(s/fdef stopped :args (s/cat :xs ::items) :ret ::empty)
+(defn stopped [xs] (for [n xs :while (nil? n)] (subs n 0)))
+(s/fdef select :args (s/cat :enabled? boolean? :xs ::items) :ret seq?)
+(defn select [enabled? xs] (for [n xs :when enabled?] (subs n 0)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(doseq [n [1] :while nil x 42] (subs n 0))
+(doseq [n [1] :when true] (subs n 0))
+(a/disabled [1])
+(a/stopped [1])
+(a/disabled [\"bad\"])
+(inc (first (for [x [1] :when false] x)))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 9 "TSP2345"] ["client.clj" 3 "TSP2345"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2531"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest comprehensions-reject-proven-non-seqable-sources
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef source :args (s/cat :text? boolean?) :ret (s/or :values (s/coll-of string? :kind vector?) :invalid boolean?))

@@ -58,6 +58,17 @@
                                    (apply t/union (map #(-> % (update :req fields) (update :opt fields)) shapes))
                                    assoc ::structured true)
                                   t/unknown))
+                      :s/map-of
+                      (let [[key value & options] args
+                            {:keys [conform-keys into]} (when (even? (count options)) (apply hash-map options))
+                            input (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)]
+                        (if (and (= :map-of (:t input)) (or (nil? into) (= {} into))
+                                 (contains? #{nil false true} conform-keys))
+                          (vary-meta (cond-> (assoc input :v (child value))
+                                       conform-keys (assoc :k (child key))
+                                       (or conform-keys into) (dissoc :min-count))
+                                     assoc ::structured true)
+                          t/unknown))
                       t/unknown))
                   :else t/unknown)))]
       (let [result (output context form #{})]

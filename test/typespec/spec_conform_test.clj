@@ -15,6 +15,51 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-preserves-dictionary-value-and-key-types-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/or :text string? :amount int?))
+(s/def ::index (s/map-of string? ::payload))
+(s/def ::key (s/or :text string? :amount int?))
+(s/def ::tagged-keys (s/map-of ::key int? :conform-keys true))
+(s/def ::raw-keys (s/map-of ::key int?))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef render :args (s/cat :raw any?) :ret string?)
+(defn render [raw]
+  (let [result (s/conform ::a/index raw)]
+    (if (s/invalid? result) \"invalid\"
+      (if-let [[tag x] (get result \"main\")]
+        (case tag :text (subs x 0) :amount (str (a/accept x)))
+        \"missing\"))))
+(s/fdef tags :args (s/cat :raw any?) :ret (s/coll-of string? :kind vector?))
+(defn tags [raw]
+  (let [result (s/conform ::a/tagged-keys raw)]
+    (if (s/invalid? result) []
+      (mapv (fn [[tag x]] (case tag :text (subs x 0) :amount (str (inc x)))) (keys result)))))
+(s/fdef read-raw :args (s/cat :raw any?) :ret int?)
+(defn read-raw [raw]
+  (let [result (s/conform ::a/raw-keys raw)]
+    (if (s/invalid? result) 0 (inc (get result \"main\" 0)))))
+(s/fdef wrong :args (s/cat :raw any?) :ret int?)
+(defn wrong [raw]
+  (let [result (s/conform ::a/index raw)]
+    (if (s/invalid? result) 0
+      (if-let [[tag x] (get result \"main\")]
+        (case tag :text (a/accept x) :amount x)
+        0))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 23 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (let [combined (s/map-of (s/conformer (constantly :same)) int? :conform-keys true :count 2)
+        result (conform/value-result {} {:aliases {'s 'clojure.spec.alpha}}
+                                     '(s/map-of (s/conformer (constantly :same)) int?
+                                                :conform-keys true :count 2))
+        dictionary (first (filter #(= :map-of (:t %)) (t/members {} result)))]
+    (is (= {:same 2} (s/conform combined (array-map "a" 1 "b" 2))))
+    (is (= [nil 2] ((juxt :min-count :max-count) dictionary)))))
+
 (deftest conform-preserves-outer-map-and-tuple-shapes-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::payload (s/or :text string? :amount int?))

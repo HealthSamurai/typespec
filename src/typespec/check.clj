@@ -3720,7 +3720,10 @@
       (let [form (when (or (and (= :kw (:op spec)) (literal-node? spec))
                            (#{'clojure.spec.alpha/or 'clojure.spec.alpha/spec
                               'clojure.spec.alpha/and 'clojure.spec.alpha/with-gen
-                              'clojure.spec.alpha/nonconforming}
+                              'clojure.spec.alpha/nonconforming 'clojure.spec.alpha/nilable
+                              'clojure.spec.alpha/keys 'clojure.spec.alpha/tuple
+                              'clojure.spec.alpha/merge 'clojure.spec.alpha/map-of
+                              'clojure.spec.alpha/coll-of}
                             (builtin-head ctx spec)))
                    (parse/node->data spec))
             result (when form

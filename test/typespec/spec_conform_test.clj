@@ -15,6 +15,32 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-recognizes-inline-structural-specs-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::payload (s/or :text string? :count int?))
+(s/def ::n int?)
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef packet :args (s/cat :raw any?) :ret string?)
+(defn packet [raw]
+  (let [out (s/conform (s/keys :req-un [::a/payload]) raw)]
+    (if (s/invalid? out) \"invalid\"
+      (let [[tag x] (:payload out)]
+        (case tag :text (subs x 0) :count (str (a/accept x)))))))
+(s/fdef pair :args (s/cat :raw any?) :ret int?)
+(defn pair [raw]
+  (let [out (s/conform (s/tuple string? ::a/n) raw)]
+    (if (s/invalid? out) 0 (a/accept (second out)))))
+(s/fdef wrong :args (s/cat :raw any?) :ret int?)
+(defn wrong [raw]
+  (let [out (s/conform (s/map-of string? int?) raw)]
+    (if (s/invalid? out) 0 (a/accept (first (keys out))))))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 15 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest conform-predicates-can-exclude-nil-without-losing-transformation
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::choice (s/or :text string? :count int?))

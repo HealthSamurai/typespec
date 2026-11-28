@@ -41,6 +41,27 @@
           typed (assoc raw :java-map-classes ["java.lang.String" "java.lang.String"])]
       (is (= raw (t/union typed raw))))))
 
+(deftest java-map-get-or-default-combines-value-and-fallback-types
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn environment [] (System/getenv))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Map]))
+(s/fdef prefix :args (s/cat :key string?) :ret string?)
+(defn prefix [key] (subs (.getOrDefault ^Map (a/environment) key \"\") 0))
+(s/fdef option :args (s/cat :key string?) :ret (s/or :str string? :missing #{:unset}))
+(defn option [key] (.getOrDefault ^Map (a/environment) key :unset))
+(s/fdef wrong :args (s/cat :key string?) :ret number?)
+(defn wrong [key] (inc (.getOrDefault ^Map (a/environment) key 0)))
+(s/fdef possibly-null :args (s/cat :key string?) :ret string?)
+(defn possibly-null [key] (.getOrDefault ^Map (a/environment) key nil))
+(prefix \"PATH\")
+(prefix 42)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 8 "TSP2345"] ["client.clj" 10 "TSP2322"] ["client.clj" 12 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"may return nil" (:message (second issues))))))
+
 (deftest java-map-values-preserve-value-types-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (defn traces [] (Thread/getAllStackTraces))

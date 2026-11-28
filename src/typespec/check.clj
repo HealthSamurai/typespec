@@ -3422,7 +3422,8 @@
     ["nextElement" []] (java-receiver-element ctx receiver cname "java.util.Enumeration")
     ["previous" []] (java-receiver-element ctx receiver cname "java.util.ListIterator")
     ["get" ["int"]] (java-receiver-element ctx receiver cname "java.util.List")
-    ["get" ["java.lang.Object"]]
+    (["get" ["java.lang.Object"]]
+     ["getOrDefault" ["java.lang.Object" "java.lang.Object"]])
     (second (java-receiver-fact ctx receiver cname "java.util.Map" :java-map-classes))
     nil))
 
@@ -3489,8 +3490,11 @@
                 rets (distinct
                       (for [method candidates
                             :let [element (when (= "java.lang.Object" (:ret method))
-                                            (java-read-element ctx receiver cname mname (:params method)))]]
-                        (java-ret cname (cond-> method element (assoc :ret element)))))]
+                                            (java-read-element ctx receiver cname mname (:params method)))
+                                  result (java-ret cname (cond-> method element (assoc :ret element)))]]
+                        (if (and element (= "getOrDefault" mname))
+                          (t/union result (second arg-types))
+                          result)))]
             (if (= 1 (count rets))
               (let [result (first rets)
                     [returned-element & others] (distinct (map #(or (:element-class %)

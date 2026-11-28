@@ -10208,9 +10208,14 @@
             local-sym (symbol (str (:ns file)) (name head))
             contract-sym (cond (namespace resolved) resolved
                                (contains? (:macros (:env ctx)) local-sym) local-sym)
-            contract (when contract-sym (get-in ctx [:env :macro-contracts contract-sym]))
+            origin (when contract-sym (get-in ctx [:env :var-imports contract-sym]))
+            contract (or (get-in ctx [:env :macro-contracts contract-sym])
+                         (when origin
+                           (let [original (get-in ctx [:env :macro-contracts origin])]
+                             (when (= :binding-body (:shape original)) original))))
             spec-contract (when-not (:guards-disabled? ctx)
-                            (get-in ctx [:env :spec-macro-contracts contract-sym]))
+                            (or (get-in ctx [:env :spec-macro-contracts contract-sym])
+                                (when origin (get-in ctx [:env :spec-macro-contracts origin]))))
             import-forwarder? (contains? (get-in ctx [:env :import-vars-forwarders]) contract-sym)
             r (cond (= :malli-defn (:shape contract))
                     (do (report! ctx h "TSP7031"

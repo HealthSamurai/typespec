@@ -343,6 +343,45 @@ api/delayed")
        (throw (ex-info \"Invalid request\" (s/explain-data ~::request ~request)))
        (accept ~ctx ~request))))")
 
+(deftest macro-reexports-preserve-source-spec-checks
+  (let [provider (parse/parse-string "provider.clj" spec-guard-provider)
+        bridge (parse/parse-string "bridge.clj"
+                                   "(ns fixture.bridge (:require [fixture.guard-api :as g]
+                                                                  [potemkin :refer [import-macro]]))
+(import-macro g/install activate)")
+        facade (parse/parse-string "facade.clj"
+                                   "(ns fixture.facade (:require [fixture.bridge :as b]
+                                                                  [potemkin :as p]))
+(p/import-vars [b activate])")
+        client (parse/parse-string "client.clj"
+                                   "(ns client (:require [fixture.facade :as f :refer [activate]]))
+(activate {} {:method :get})
+(f/activate {} {:method :trace})
+(f/activate {})")
+        ds (:diagnostics (check/check-files [client facade bridge provider] {}))]
+    (is (= [["client.clj" 3 "TSP2322"] ["client.clj" 4 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
+(deftest explicit-macro-contracts-on-the-reexport-take-precedence
+  (let [provider (parse/parse-string "provider.clj" "(ns provider)
+(defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")
+        facade (parse/parse-string "facade.clj" "(ns facade (:require [provider :as p]
+                                                                 [potemkin :refer [import-macro]]))
+(import-macro p/run inherited)
+(import-macro p/run override)")
+        client (parse/parse-string "client.clj" "(ns client (:require [facade :as f]))
+(f/inherited [text] (subs text 0))
+(f/inherited [text] (inc text))
+(f/override [text] (subs text 0))
+(f/override [text] (count text))")
+        opts '{:macro-contracts {provider/run {:shape :binding-body :bindings [string?] :ret any?}
+                                facade/override {:shape :binding-body :bindings [string?] :ret string?}}}
+        ds (:diagnostics (check/check-files [client facade provider] opts))]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest static-spec-macro-argument-checks-work-across-namespaces
   (let [provider (parse/parse-string "provider.clj" spec-guard-provider)
         client (parse/parse-string "client.clj"

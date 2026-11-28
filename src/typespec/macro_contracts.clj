@@ -129,7 +129,8 @@
                    (= #{:shape :bindings :ret} (set (keys contract)))
                    (= :binding-body (:shape contract))
                    (vector? (:bindings contract)))
-              (assoc acc sym {:bindings (mapv parse (:bindings contract))
+              (assoc acc sym {:shape :binding-body
+                              :bindings (mapv parse (:bindings contract))
                               :ret (parse (:ret contract))})
               :else
               (throw (ex-info (str "expected {:shape :binding-body :bindings [types...] :ret type}"

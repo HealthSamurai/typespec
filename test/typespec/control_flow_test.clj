@@ -50,6 +50,28 @@
         (pr-str (:diagnostics result)))
     (is (= ["t/never" "t/never"] (mapv #(main/type-at result "client.clj" % 3) [4 7])))))
 
+(deftest local-callback-calls-propagate-aborting-arguments
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef answer :args (s/cat :input int?) :ret string?)
+(defn answer [input] (str input))
+(s/fdef halt :args (s/cat) :ret int?)
+(defn halt []
+  (let [f (fn [x] \"return\")]
+    (if (f (throw (Exception. \"arg stopped\"))) :wrong 1)))
+(s/fdef worked :args (s/cat :input int?) :ret string?)
+(defn worked [input]
+  (let [f (fn [x] (answer x))]
+    (f input)))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/halt))
+(subs (a/worked 1) 0)
+(a/worked \"bad\")")
+        result (check/check-files [api client] {})]
+    (is (= [["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) (:diagnostics result)))
+        (pr-str (:diagnostics result)))
+    (is (= "t/never" (main/type-at result "api.clj" 6 3)))))
+
 (deftest ordinary-calls-propagate-failure-to-evaluate-eager-forms
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef accept :args (s/cat :value int?) :ret int?)

@@ -10096,9 +10096,11 @@
         (call-typed-value ctx node h ft args types))
       (contains? (:locals ctx) (:val h))
       (if-let [callback (deferred-callback ctx h)]
-        (let [types (mapv #(infer ctx %) args)
-              ft (force-callback ctx callback (direct-callback-context types))]
-          (apply-type ctx ft types node (str (:val h))))
+        (let [types (mapv #(infer ctx %) args)]
+          (if (some #{t/never} types)
+            t/never
+            (let [ft (force-callback ctx callback (direct-callback-context types))]
+              (apply-type ctx ft types node (str (:val h))))))
         (call-typed-value ctx node h (get-in ctx [:locals (:val h)]) args nil))
       :else
       (let [sym (:val h) n (name sym) head (env/head file node)

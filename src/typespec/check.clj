@@ -3451,7 +3451,7 @@
     (cond-> (t/class-type "java.util.regex.Pattern")
       (some? groups) (assoc :regex-groups groups))))
 
-(defn- checked-regex-match [ctx node]
+(defn- checked-regex-match [ctx node result-type]
   (let [head (first (:children node))
         args (args-of node)
         {:keys [type]} (read-var ctx (:val head) head :call)
@@ -3461,14 +3461,17 @@
                (update type :arities
                        (fn [arities]
                          (mapv #(if (= 2 (t/arity-minimum %))
-                                  (assoc % :ret (t/union t/nil-t (regex-match-type groups))) %)
+                                  (assoc % :ret (t/union t/nil-t (result-type (regex-match-type groups)))) %)
                                arities)))
                type)]
     (call-fn ctx node (str (:val head)) type args arg-types)))
 
 (doseq [head '[re-find re-matches]]
   (defmethod special head [ctx node _]
-    (checked-regex-match ctx node)))
+    (checked-regex-match ctx node identity)))
+
+(defmethod special 're-seq [ctx node _]
+  (checked-regex-match ctx node #(length/with-bounds {:t :coll :kind :seq :of %} 1 nil)))
 
 (defmethod special '. [ctx node _]
   (let [[receiver raw-member & trailing :as args] (args-of node)

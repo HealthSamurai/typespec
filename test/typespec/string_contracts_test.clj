@@ -310,6 +310,30 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest regex-seq-carries-the-match-type-and-nonempty-branch
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(def pattern #\"(a)?b\")
+(s/def ::match (s/tuple string? (s/nilable string?)))
+(s/fdef hits :args (s/cat :text java.lang.CharSequence) :ret (s/nilable (s/coll-of ::match :kind seq? :min-count 1)))
+(defn hits [text] (re-seq pattern text))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(when-let [ms (a/hits (StringBuilder. \"ab b\"))] (str/trim (first (first ms))))
+(when-let [ms (re-seq #\"x+\" \"xxx xx\")] (str/trim (first ms)))
+(when-let [ms (re-seq #\"(a)?b\" \"b\")] (str/trim (second (first ms))))
+(str/trim (first (re-seq #\"x\" \"empty\")))
+(re-seq \"x\" \"x\")
+(re-seq #\"x\" 42)
+(re-seq #\"x\")")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 4 "TSP2531"] ["client.clj" 5 "TSP2531"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 8 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= [["ab" "a"] ["b" nil]] (vec (re-seq #"(a)?b" (StringBuilder. "ab b")))))
+  (is (= ["xxx" "xx"] (vec (re-seq #"x+" "xxx xx"))))
+  (is (nil? (re-seq #"x" "empty")))
+  (is (thrown? ClassCastException (re-seq #"x" 42))))
+
 (deftest regex-pattern-accepts-strings-and-compiled-patterns
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef as-pattern :args (s/cat :pattern (s/or :text string? :regex java.util.regex.Pattern)) :ret java.util.regex.Pattern)

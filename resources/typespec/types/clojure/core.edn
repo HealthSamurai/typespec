@@ -42,6 +42,9 @@
                           :-> (s/nilable (t/or string? (s/coll-of (s/nilable string?) :kind vector? :min-count 2)))])
  clojure.core/re-matches [java.util.regex.Pattern java.lang.CharSequence
                           :-> (s/nilable (t/or string? (s/coll-of (s/nilable string?) :kind vector? :min-count 2)))]
+ clojure.core/re-seq     [java.util.regex.Pattern java.lang.CharSequence
+                          :-> (s/nilable (s/coll-of (t/or string? (s/coll-of (s/nilable string?) :kind vector? :min-count 2))
+                                                    :kind seq? :min-count 1))]
  clojure.core/name       [(t/or string? clojure.lang.Named) :-> string?]
  clojure.core/namespace  [clojure.lang.Named :-> (s/nilable string?)]
  clojure.core/keyword    ([(t/or string? keyword? symbol?) :-> keyword?]

@@ -3,9 +3,10 @@
 ;; evaluated or required. One map: qualified var symbol -> signature, in the same
 ;; format as project extern files. Every key must belong to clojure.string.
 
-{clojure.string/upper-case  [java.lang.CharSequence :-> string?]
- clojure.string/lower-case  [java.lang.CharSequence :-> string?]
- clojure.string/capitalize  [java.lang.CharSequence :-> string?]
+{;; These functions call Object.toString before converting the resulting string.
+ clojure.string/upper-case  [some? :-> string?]
+ clojure.string/lower-case  [some? :-> string?]
+ clojure.string/capitalize  [some? :-> string?]
  clojure.string/trim        [java.lang.CharSequence :-> string?]
  clojure.string/reverse     [java.lang.CharSequence :-> string?]
  clojure.string/blank?      [(s/nilable java.lang.CharSequence) :-> boolean?]

@@ -240,7 +240,7 @@
       (spit (io/file project "src/app.clj")
             (str "(ns app (:require [clojure.string :as str]))\n"
                  "(defn ok [s] (str/upper-case (str/trim s)))\n"
-                 "(str/upper-case 42)\n"
+                 "(str/trim 42)\n"
                  "(inc \"a\")\n"))
       (testing "the paths published by deps.edn carry code and declarations"
         (is (= ["src" "resources"] paths))

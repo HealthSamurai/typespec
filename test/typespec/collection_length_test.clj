@@ -1148,7 +1148,7 @@
 (first (keep-indexed :lookup [\"word\"]))
 (first (keep-indexed (fn [_ _] (throw (Exception.))) [1]))
 (keep-indexed inc [1])
-(keep-indexed (fn [i _] (str/upper-case i)) [1])
+(keep-indexed (fn [i _] (str/trim i)) [1])
 (keep-indexed (fn [_ x] (inc x)) [\"wrong\"])
 (keep-indexed identity 42)
 (keep-indexed)")]
@@ -1308,7 +1308,7 @@
 (second (drop-while string? [\"skip\" 2 \"keep\"]))
 (first (drop-while string? [\"all\"]))
 (first (drop-while (fn [_] false) [\"first\"]))
-(str/upper-case (first (drop-while string? [\"skip\" 2 \"keep\"])))
+(str/trim (first (drop-while string? [\"skip\" 2 \"keep\"])))
 (drop-while number? 42)
 (drop-while string? [] :extra)
 (drop-while (fn [_ _] true) [])")]

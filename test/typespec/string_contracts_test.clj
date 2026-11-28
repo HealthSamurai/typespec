@@ -42,7 +42,7 @@
       (is (empty? ds) (str form " => " (pr-str ds))))))
 
 (deftest rejected-contracts
-  (doseq [form ["(s/upper-case nil)" "(s/lower-case 42)" "(s/capitalize false)"
+  (doseq [form ["(s/upper-case nil)" "(s/lower-case nil)" "(s/capitalize nil)"
                 "(s/trim nil)" "(s/reverse 42)" "(blank? false)"
                 "(join 42)" "(join false)" "(join (Object.))" "(join (new Object))"
                 "(join (java.lang.Object.))" "(join (new java.lang.Object))"
@@ -89,6 +89,26 @@
   (is (thrown? NullPointerException (str/starts-with? nil "")))
   (is (thrown? ClassCastException (str/ends-with? "abc" (StringBuilder. "c"))))
   (is (thrown? ClassCastException (str/includes? "abc" :a))))
+
+(deftest case-conversions-stringify-nonnil-values
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef display-flag :args (s/cat) :ret boolean?)
+(defn display-flag [] false)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as s]))
+(s/upper-case :label)
+(s/upper-case (a/display-flag))
+(s/lower-case 42)
+(s/capitalize :HELLO)
+(s/lower-case nil)
+(s/reverse 42)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= [":LABEL" "FALSE" "42" ":hello"]
+         [(str/upper-case :label) (str/upper-case false) (str/lower-case 42) (str/capitalize :HELLO)]))
+  (is (thrown? NullPointerException (str/lower-case nil)))
+  (is (thrown? ClassCastException (str/reverse 42))))
 
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
@@ -542,7 +562,7 @@
 (deftest honest-incomplete-boundaries
   ;; Regex groups reach the callback as a string or a vector.
   (is (some #(= "TSP210-01" (:code %))
-            (diagnostics "(replace \"abc\" #\"(a)\" (fn [x] (s/upper-case x)))"))))
+            (diagnostics "(replace \"abc\" #\"(a)\" (fn [x] (s/trim x)))"))))
 
 (deftest replace-reports-arguments-from-the-closest-overload
   (is (= [["TSP2345" "\"_\" is not assignable to java.lang.Character"]]

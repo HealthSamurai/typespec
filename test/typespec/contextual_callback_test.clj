@@ -543,7 +543,7 @@
            (mapv #(main/type-at result "callbacks.clj" % 1) (range start (+ start (count forms))))))))
 
 (deftest into-reports-failing-transducer-links-and-opaque-stages
-  (let [forms ["(into [] (comp (map str/upper-case) (map str)) [1])"
+  (let [forms ["(into [] (comp (map str/trim) (map str)) [1])"
                "(into [] (comp (map str) (map inc)) [1])"
                "(into [] (comp (map inc) identity (filter (fn [_] false))) [\"bad\"])"
                "(into [] (comp (filter (fn [_] false)) identity) [])"

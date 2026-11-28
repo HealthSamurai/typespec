@@ -20,7 +20,7 @@
                     "(s/def ::account " map-spec ")"))
         client "(ns view.page (:require [catalog.api :as c :refer [account] :rename {account build}]
                                 [clojure.string :as str]))
-(str/upper-case (:id (c/account \"raw\")))
+(str/trim (:id (c/account \"raw\")))
 (build \"direct\")
 (map build [\"row\"])
 (partial c/account)

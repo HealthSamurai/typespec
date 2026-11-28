@@ -43,7 +43,7 @@
 (s/fdef account :args (s/cat) :ret ::schema/account)
 (defn account [] " value ")"))
         client "(ns view.page (:require [catalog.api :as api] [clojure.string :as str]))
-(str/upper-case (:id (api/account)))"
+(str/trim (:id (api/account)))"
         revision (fn [type shape value]
                    {"catalog/schema.clj" (schema type shape)
                     "catalog/api.clj" (api value)

@@ -122,7 +122,7 @@
         (case tag
           :text (inc value)
           :amount (let [value \"independent\"] (inc value)))
-        (str/upper-case value)))))")]
+        (str/trim value)))))")]
     (is (= [["TSP2345" 9] ["TSP2345" 10] ["TSP2345" 11]]
            (mapv (juxt :code (comp :row :pos)) (:diagnostics r)))
         (pr-str (:diagnostics r)))))
@@ -175,7 +175,7 @@
       \"invalid\"
       (let [[tag value] entry]
         (case tag
-          :text (let [{:keys [label]} value] (str/upper-case label))
+          :text (let [{:keys [label]} value] (str/trim label))
           :count (str (inc value)))))))")
         run #(check/check-files [client api (schema %1 %2)] {})
         signature (fn [r]

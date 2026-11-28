@@ -57,7 +57,7 @@
   (let [ds (diagnostics "(defn render [event]
                             (case (:kind event)
                               :text (str (inc (:payload event)))
-                              :wrong (str/upper-case 1)
+                              :wrong (str/trim 1)
                               :count (str (inc (:payload event)))))")]
     (is (= ["TSP8001" "TSP2345" "TSP2678"] (mapv :code ds)) (pr-str ds))
     (is (str/includes? (:message (first ds)) ":markdown"))
@@ -70,8 +70,8 @@
              (s/def ::event (s/or :string ::text :number ::number-text))
              (defn render [event]
                (case (:kind event)
-                 :text (str/upper-case (:payload event))
-                 (str/upper-case (:payload event))))")]
+                 :text (str/trim (:payload event))
+                 (str/trim (:payload event))))")]
     (is (= ["TSP2345"] (mapv :code ds)) (pr-str ds))))
 
 (deftest case-narrows-tag-values-and-leaves-other-scopes-alone
@@ -90,13 +90,13 @@
     (let [ds (diagnostics "(defn render [{:keys [kind payload] :as event}]
                               (let [payload 1 event {:payload 1}]
                                 (case kind
-                                  (:text :markdown) (str/upper-case payload)
-                                  (str/upper-case (:payload event)))))")]
+                                  (:text :markdown) (str/trim payload)
+                                  (str/trim (:payload event)))))")]
       (is (= ["TSP2345" "TSP2345"] (mapv :code ds)) (pr-str ds))))
   (testing "narrowing is local to the case branch"
     (let [ds (diagnostics "(defn render [{:keys [kind payload]}]
-                              (case kind (:text :markdown) (str/upper-case payload) (str (inc payload)))
-                              (str/upper-case payload))")]
+                              (case kind (:text :markdown) (str/trim payload) (str (inc payload)))
+                              (str/trim payload))")]
       (is (= ["TSP2345"] (mapv :code ds)) (pr-str ds)))))
 
 (deftest case-only-correlates-required-finite-tags
@@ -104,7 +104,7 @@
                  "(s/or :string ::text :number (s/keys :req-un [:open/kind :count/payload]))"
                  "(s/nilable ::text)"]]
     (let [ds (diagnostics (str "(s/def :open/kind keyword?) (s/def ::event " event ")
-                               (defn render [event] (case (:kind event) :text (str/upper-case (:payload event)) \"other\"))"))]
+                               (defn render [event] (case (:kind event) :text (str/trim (:payload event)) \"other\"))"))]
       (is (= [(if (= "(s/nilable ::text)" event) "TSP2531" "TSP2345")] (mapv :code ds)) (pr-str ds)))))
 
 (deftest case-supports-nil-and-integer-tag-domains
@@ -121,7 +121,7 @@
   (testing "hash case can miss a numerically equal value, so the default can still run"
     (let [ds (diagnostics "(s/def :text/kind #{1.0M}) (s/def ::event ::text)
                             (defn render [event]
-                              (case (:kind event) 1.0M \"matched\" (str/upper-case 42)))")]
+                              (case (:kind event) 1.0M \"matched\" (str/trim 42)))")]
       (is (= ["TSP2345"] (mapv :code ds)) (pr-str ds)))))
 
 (deftest case-reports-impossible-tags-including-non-text-domains
@@ -253,7 +253,7 @@
                               (if (string? event) (str/upper-case event) (str (inc event))))")))
   (let [ds (diagnostics "(s/def ::event #{1})
                         (defn render [event]
-                          (if (instance? Long event) \"long\" (str/upper-case 1)))")]
+                          (if (instance? Long event) \"long\" (str/trim 1)))")]
     (is (= ["TSP2345"] (mapv :code ds)) (pr-str ds)))
   (let [ds (diagnostics "(s/def ::event t/unknown)
                         (defn render [event]

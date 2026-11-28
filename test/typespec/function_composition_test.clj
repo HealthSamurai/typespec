@@ -141,7 +141,7 @@
 (defn value [] 42)
 (mapv (comp g/wrap inc) [1 2])
 ((comp first (partial g/with-prefix \"prefix\") value))
-(str/upper-case ((comp first g/wrap value)))
+(str/trim ((comp first g/wrap value)))
 (comp inc g/bounded str)
 (comp g/with-prefix value)")
         r (check/check-files [api client] {})]

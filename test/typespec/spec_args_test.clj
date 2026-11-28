@@ -644,7 +644,7 @@
 (defn rest-only ([message] 42) ([message & xs] (str (first xs))))")
         client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
 (inc (a/first-count 2 3))
-(str/upper-case (a/first-count 2 3))
+(str/trim (a/first-count 2 3))
 (inc (a/first-or-zero \"ready\"))
 (inc (a/maybe-count))
 (a/first-count)
@@ -668,9 +668,9 @@
 (str/upper-case (a/choose \"valid\"))
 (inc (a/choose \"valid\" 2))
 (inc (a/choose \"invalid\"))
-(str/upper-case (a/choose \"invalid\" 2))
+(str/trim (a/choose \"invalid\" 2))
 (inc (a/override \"valid\"))
-(str/upper-case (a/override \"invalid\"))")
+(str/trim (a/override \"invalid\"))")
         r (check/check-files [api client] {})]
     (is (= [["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
@@ -690,7 +690,7 @@
 (defn total [base & {:keys [limit]}] (+ base limit))")
         client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
 (inc (a/limit-of :limit 2))
-(str/upper-case (a/limit-of :limit 2))
+(str/trim (a/limit-of :limit 2))
 (when-some [label (a/label-of :label \"x\")] (str/upper-case label))
 (str/upper-case (a/label-of))
 (.size ^java.util.Map (a/options))
@@ -733,7 +733,7 @@
         client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
 (str/upper-case (a/available 1 2 \"ok\"))
 (inc (a/external 1 2 \"ok\"))
-(str/upper-case (a/external \"ok\"))")
+(str/trim (a/external \"ok\"))")
         r (check/check-files [api client] {})]
     (is (= [["api.clj" 2 "TSP9002"] ["api.clj" 4 "TSP9002"] ["api.clj" 5 "TSP2322"]
             ["api.clj" 6 "TSP9002"] ["client.clj" 4 "TSP2345"]]

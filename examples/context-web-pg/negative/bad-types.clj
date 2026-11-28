@@ -17,9 +17,9 @@
 (defn wrong-list-callback
   {:t/sig '[:context/context :-> string?]}
   [ctx]
-  (handler/with-result (repo/list-todos ctx) (fn [rows] (str/upper-case rows))))
+  (handler/with-result (repo/list-todos ctx) (fn [rows] (str/trim rows))))
 
 (defn wrong-create-wrapper
   {:t/sig '[:context/context :-> any?]}
   [ctx]
-  (comp str/upper-case (partial repo/create-todo ctx)))
+  (comp str/trim (partial repo/create-todo ctx)))

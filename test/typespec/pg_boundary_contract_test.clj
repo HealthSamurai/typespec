@@ -47,4 +47,4 @@
         codes (fn [callback] (mapv :code (:diagnostics (checked (str prefix callback ")")))))]
     (is (empty? (codes "(fn [value index] (when (some? value) (str/upper-case value) (inc index)))")))
     (is (= ["TSP2531"] (codes "(fn [value index] (str/upper-case value))")))
-    (is (= ["TSP2345"] (codes "(fn [value index] (str/upper-case index))")))))
+    (is (= ["TSP2345"] (codes "(fn [value index] (str/trim index))")))))

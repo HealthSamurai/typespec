@@ -15,6 +15,30 @@
 (def ^:private builder (str owner "$Builder"))
 (def ^:private product (str owner "$Product"))
 
+(deftest java-require-non-null-preserves-its-argument-type
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s])
+  (:import [java.util Objects]))
+(s/fdef required :args (s/cat :value (s/nilable string?)))
+(defn required [value] (Objects/requireNonNull value))
+(s/fdef required-msg :args (s/cat :value (s/nilable string?)))
+(defn required-msg [value] (Objects/requireNonNull value \"missing\"))
+(s/fdef stop :args (s/cat) :ret int?)
+(defn stop [] (if (Objects/requireNonNull nil) :wrong 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef size :args (s/cat :value (s/nilable string?)) :ret int?)
+(defn size [value] (.length ^String (a/required value)))
+(s/fdef wrong :args (s/cat :value (s/nilable string?)) :ret number?)
+(defn wrong [value] (inc (a/required-msg value)))
+(inc (a/stop))
+(size \"ok\")
+(size 42)")
+        result (check/check-files [api client] {})
+        issues (:diagnostics result)]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= "t/never" (main/type-at result "api.clj" 8 15)))))
+
 (deftest java-map-get-preserves-its-nullable-value-type-across-files
   (let [api (parse/parse-string "api.clj" "(ns api)
 (defn environment [] (System/getenv))")

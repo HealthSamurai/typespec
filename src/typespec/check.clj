@@ -3279,6 +3279,12 @@
           (and (num? (t/remove-nil env a)) (num? p))
           (and (= "char" pclass) (= :class (:t a)))))))
 
+(defn- java-required-value [ctx value]
+  (let [env (assoc (:env ctx) :strict-nil true)
+        members (t/members env value)
+        present (map #(if (= :any (:t %)) t/some-t (t/non-nil-leaf %)) members)]
+    (t/with-assumption (t/non-nil-leaf (apply t/union present)) (t/assumption value))))
+
 (defn- java-ret [ctx cname m arg-types]
   (let [base (t/class-type (:ret m))
         shown (java/short-name (:ret m))
@@ -3290,6 +3296,9 @@
                     (some t/may-be-nil-leaf? (t/members (:env ctx) fallback))
                     (java/nullable-return? cname (:name m) (:params m)))]
     (cond
+      (and (= "java.util.Objects" (:declaring m)) (= "requireNonNull" (:name m)))
+      (java-required-value ctx (first arg-types))
+
       nullable?
       (with-meta (t/union base t/nil-t) {:null-return (str (java/short-name (:declaring m)) "." (:name m) " may return null")})
       property-default? (t/with-assumption base (t/assumption fallback))

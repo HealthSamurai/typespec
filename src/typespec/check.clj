@@ -4557,26 +4557,6 @@
                     (find-map-entry ctx member key))))
          (or (t/assumption source) (t/assumption key-type)))))))
 
-(defmethod special 'contains? [ctx node _]
-  (let [[target :as args] (args-of node)
-        [source :as types] (mapv #(eff ctx (infer ctx %)) args)]
-    (cond
-      (not= 2 (count args))
-      (do (report! ctx node "TSP2554" "contains? expects two arguments") t/unknown)
-
-      (some #{t/never} types) t/never
-
-      :else
-      (let [unsupported? (constructed-list-node? ctx target)
-            {supported false unsupported true}
-            (group-by #(boolean (or unsupported?
-                                    (and (not (indexed-get-source? %))
-                                         (unsupported-lookup-member? % membership-lookup-classes))))
-                      (t/members (:env ctx) source))]
-        (when-let [bad (first unsupported)]
-          (report! ctx target "TSP2345" (str "contains? cannot test membership in " (t/show bad))))
-        (if (seq supported) (t/prim :boolean) t/never)))))
-
 (defn- set-type? [member]
   (or (= :set (:kind member)) (= (t/prim :set) (t/strip member))))
 
@@ -4591,6 +4571,56 @@
                      (not-any? #(and (number? %) (Double/isNaN (double %))) values)
                      (= lower (count (distinct values))))
             values))))))
+
+(defn- contains-known-value [env source key-type]
+  (cond
+    (= :nil (:t source)) false
+    (not (finite-value? key-type)) nil
+    (indexed-get-source? source)
+    (case (indexed-get-position (sequence-member-bounds source)
+                                (indexed-get-index source (:val key-type)))
+      :absent false
+      :present true
+      :possible nil)
+    (set-type? source)
+    (when-let [values (fixed-set-values env source)]
+      (contains? (set values) (:val key-type)))
+    (= :map (:t source))
+    (let [key (:val key-type)]
+      (cond
+        (contains? (:req source) key) true
+        (= t/never (get (:opt source) key)) false
+        (and (:complete-keys? source) (not (contains? (:opt source) key))) false))
+    (and (= :map-of (:t source)) (= 0 (:max-count source))) false))
+
+(defmethod special 'contains? [ctx node _]
+  (let [[target key-node :as args] (args-of node)
+        [source key-type :as types] (mapv #(eff ctx (infer ctx %)) args)]
+    (cond
+      (not= 2 (count args))
+      (do (report! ctx node "TSP2554" "contains? expects two arguments") t/unknown)
+
+      (some #{t/never} types) t/never
+
+      :else
+      (let [env (:env ctx)
+            key-type (quoted-map-key-type key-node key-type)
+            unsupported? (constructed-list-node? ctx target)
+            {supported false unsupported true}
+            (group-by #(boolean (or unsupported?
+                                    (and (not (indexed-get-source? %))
+                                         (unsupported-lookup-member? % membership-lookup-classes))))
+                      (t/members env source))]
+        (when-let [bad (first unsupported)]
+          (report! ctx target "TSP2345" (str "contains? cannot test membership in " (t/show bad))))
+        (t/with-assumption
+         (apply t/union
+                (for [member supported
+                      key (mapcat expand-boolean (t/members env key-type))]
+                  (if-some [present? (contains-known-value env member key)]
+                    (t/lit present?)
+                    (t/prim :boolean))))
+         (or (t/assumption source) (t/assumption key-type)))))))
 
 (defn- read-set-get [ctx members key-type not-found]
   (apply t/union

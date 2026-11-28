@@ -1237,6 +1237,37 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest contains-preserves-known-membership-across-namespaces
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef map-hit :args (s/cat) :ret true?)
+(defn map-hit [] (contains? {:value nil} :value))
+(s/fdef set-hit :args (s/cat) :ret true?)
+(defn set-hit [] (contains? #{false nil} false))
+(s/fdef text-hit :args (s/cat) :ret true?)
+(defn text-hit [] (contains? \"x\" 0.9))
+(s/fdef vector-miss :args (s/cat) :ret false?)
+(defn vector-miss [] (contains? [42] 0.9))
+(s/fdef nil-miss :args (s/cat) :ret false?)
+(defn nil-miss [] (contains? nil :value))
+(s/fdef bad :args (s/cat) :ret false?)
+(defn bad [] (contains? (int-array [42]) 4294967296))
+(defn values [] {false nil})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef require-present :args (s/cat :hit true?) :ret boolean?)
+(defn require-present [hit] hit)
+(require-present (contains? (a/values) false))
+(require-present (contains? (a/values) true))
+(require-present (contains? #{false nil} nil))
+(if (contains? [42] 1) (subs 42 0) 0)
+(if (contains? [\"wrong\"] 4294967296) (inc \"wrong\") 0)
+(require-present (a/map-hit))
+(require-present (a/vector-miss))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["api.clj" 13 "TSP2322"] ["client.clj" 5 "TSP2345"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest contains-reports-unsupported-containers-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::some-index (s/or :array #(instance? int/1 %) :text string? :invalid keyword?))

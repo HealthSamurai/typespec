@@ -85,6 +85,9 @@
                                 t/unknown))
                       :s/spec (child (first args))
                       :s/with-gen (if (= 2 (count args)) (child (first args)) t/unknown)
+                      :s/int-in (let [result (t/parse-type (assoc context :fail (constantly nil) :spec? true) form)]
+                                  (cond-> result
+                                    (not= t/unknown result) (vary-meta assoc ::original-value true)))
                       :s/and (let [stages (mapv child args)
                                    result (reduce #(retain-through-predicate env %1 %2) t/unknown stages)]
                                (cond-> (vary-meta result dissoc ::keys-output)

@@ -15,6 +15,41 @@
                                                       [clojure.string :as str]))\n" source))]
                      {:strict-nil true}))
 
+(deftest conform-integer-ranges-preserve-the-validated-value
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::limit (s/int-in 1 5))
+(s/def ::row (s/tuple ::limit string?))
+(s/fdef ranged :args (s/cat :value any?))
+(defn ranged [value] (s/conform ::limit value))
+(s/fdef ranged-row :args (s/cat :value any?))
+(defn ranged-row [value] (s/conform ::row value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef as-number :args (s/cat :value any?) :ret (s/nilable number?))
+(defn as-number [value]
+  (let [n (s/conform ::a/limit value)]
+    (when-not (s/invalid? n) (inc n))))
+(defn wrong-number [value]
+  (let [n (s/conform ::a/limit value)]
+    (when-not (s/invalid? n) (subs n 0))))
+(s/fdef as-row :args (s/cat :value any?) :ret (s/nilable number?))
+(defn as-row [value]
+  (let [row (s/conform ::a/row value)]
+    (when-not (s/invalid? row) (inc (first row)))))
+(defn wrong-row [value]
+  (let [row (s/conform ::a/row value)]
+    (when-not (s/invalid? row) (subs (first row) 0))))
+(as-number 2)
+(as-number 5)
+(as-row [2 \"ready\"])")
+        issues (:diagnostics (check/check-files [api client] {}))
+        range-spec (s/int-in 1 5)]
+    (is (= [["client.clj" 8 "TSP2345"] ["client.clj" 15 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [2 ::s/invalid ::s/invalid]
+           (mapv #(s/conform range-spec %) [2 5 2N])))
+    (is (= [2 "ready"] (s/conform (s/tuple range-spec string?) [2 "ready"])))))
+
 (deftest conform-propagates-failure-to-evaluate-the-spec
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::payload (s/or :text string? :num int?))

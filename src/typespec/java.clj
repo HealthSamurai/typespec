@@ -217,7 +217,8 @@
 (def ^:private nullable-returns
   #{["java.util.Map" "get"] ["java.util.Map" "remove" ["java.lang.Object"]]
     ["java.util.Queue" "poll"] ["java.util.Queue" "peek"]
-    ["java.lang.System" "getenv" ["java.lang.String"]] ["java.lang.System" "getProperty"]
+    ["java.lang.System" "getenv" ["java.lang.String"]]
+    ["java.lang.System" "getProperty" ["java.lang.String"]]
     ["java.util.Properties" "getProperty" ["java.lang.String"]]
     ["java.lang.Class" "getResource"]
     ["java.util.regex.Matcher" "group"]})

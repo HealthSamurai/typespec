@@ -3279,12 +3279,20 @@
           (and (num? (t/remove-nil env a)) (num? p))
           (and (= "char" pclass) (= :class (:t a)))))))
 
-(defn- java-ret [cname m]
+(defn- java-ret [ctx cname m arg-types]
   (let [base (t/class-type (:ret m))
-        shown (java/short-name (:ret m))]
+        shown (java/short-name (:ret m))
+        property-default? (and (#{"java.lang.System" "java.util.Properties"} (:declaring m))
+                               (= "getProperty" (:name m))
+                               (= ["java.lang.String" "java.lang.String"] (:params m)))
+        fallback (when property-default? (eff ctx (second arg-types)))
+        nullable? (if property-default?
+                    (some t/may-be-nil-leaf? (t/members (:env ctx) fallback))
+                    (java/nullable-return? cname (:name m) (:params m)))]
     (cond
-      (java/nullable-return? cname (:name m) (:params m))
+      nullable?
       (with-meta (t/union base t/nil-t) {:null-return (str (java/short-name (:declaring m)) "." (:name m) " may return null")})
+      property-default? (t/with-assumption base (t/assumption fallback))
       (#{:nil :any} (:t base)) base
       :else (t/platform base shown))))
 
@@ -3506,7 +3514,7 @@
                       (for [method candidates
                             :let [element (when (= "java.lang.Object" (:ret method))
                                             (java-read-element ctx receiver cname mname (:params method)))
-                                  result (java-ret cname (cond-> method element (assoc :ret element)))]]
+                                  result (java-ret ctx cname (cond-> method element (assoc :ret element)) arg-types)]]
                         (if (and element (= "getOrDefault" mname))
                           (t/union result (second arg-types))
                           result)))]

@@ -28,6 +28,30 @@
 (defn- issue [diagnostic]
   ((juxt :file (comp :row :pos) :code :type-path) diagnostic))
 
+(deftest get-property-with-default-follows-fallback-nullability
+  (let [api (parse/parse-string "api.clj" "(ns api (:import [java.util Properties]))
+(defn system-text [^String key] (System/getProperty key \"fallback\"))
+(defn system-maybe [^String key] (System/getProperty key nil))
+(defn properties-text [^Properties props ^String key] (.getProperty props key \"fallback\"))
+(defn properties-maybe [^Properties props ^String key] (.getProperty props key nil))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s])
+  (:import [java.util Properties]))
+(s/fdef sys-size :args (s/cat :key string?) :ret int?)
+(defn sys-size [key] (.length ^String (a/system-text key)))
+(s/fdef props-size :args (s/cat :key string?) :ret int?)
+(defn props-size [key] (.length ^String (a/properties-text (Properties.) key)))
+(s/fdef must-have :args (s/cat :key string?) :ret string?)
+(defn must-have [key] (a/properties-maybe (Properties.) key))
+(s/fdef guard-system :args (s/cat :key string?) :ret (s/nilable int?))
+(defn guard-system [key] (when-let [value (a/system-maybe key)] (.length ^String value)))
+(sys-size \"key\")
+(sys-size 42)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 8 "TSP2322" nil] ["client.clj" 12 "TSP2345" nil]]
+           (mapv issue diagnostics))
+        (pr-str diagnostics))
+    (is (str/includes? (:message (first diagnostics)) "may return nil"))))
+
 (deftest properties-get-property-may-return-nil-across-files
   (let [api (parse/parse-string "api.clj" "(ns api (:import [java.util Properties]))
 (defn property [^Properties props ^String key] (.getProperty props key))

@@ -3609,14 +3609,8 @@
       :var (list-value-type ctx [(t/lit 'var) (quoted-data-type ctx (first children))])
       t/unknown)))
 
-(defn- quoted-type [ctx node]
-  (case (:op node)
-    :sym (t/lit (:val node))
-    :list (quoted-data-type ctx node)
-    t/unknown))
-
 (defmethod special 'quote [ctx node _]
-  (quoted-type ctx (second (:children node))))
+  (quoted-data-type ctx (second (:children node))))
 
 (defn- core-call-result [ctx node]
   (let [head (first (:children node))
@@ -9462,7 +9456,7 @@
                                    (dissoc vty :fresh))]))
                               pairs static-keys))}
              (do (run! #(infer ctx %) (:children node)) (t/prim :map))))
-    :quote (quoted-type ctx (first (:children node)))
+    :quote (quoted-data-type ctx (first (:children node)))
     :fn-lit (infer-callback ctx node nil)
     :list (infer-list ctx node)
     t/unknown))

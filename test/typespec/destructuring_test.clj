@@ -70,6 +70,37 @@
            (read-string {:read-cond :allow} source)
            checked))))
 
+(deftest quoted-collections-check-keys-tuples-and-local-bindings
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::id int?)
+(s/def ::tag symbol?)
+(s/def ::row (s/keys :req-un [::id ::tag]))
+(s/fdef render :args (s/cat :row ::row) :ret string?)
+(defn render [{:keys [id tag]}] (str (inc id) tag))
+(s/fdef summarize :args (s/cat :pair (s/tuple string? int?)) :ret int?)
+(defn summarize [[_ n]] (inc n))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/render '{:id 1 :tag active})
+(a/render (quote {:id 1 :tag active}))
+(a/render '{:id \"1\" :tag active})
+(a/render '{:tag active})
+(a/summarize '[\"ok\" 1])
+(a/summarize (quote [\"ok\" 1]))
+(a/summarize '[\"bad\" missing-var])
+(a/summarize '[\"short\"])
+(let [{:keys [id]} '{:id 2}] (inc id))
+(let [{:keys [id]} '{:id \"bad\"}] (inc id))
+(let [{:syms [path]} '{path \"good\"}] (subs path 1))
+(let [[label value] '[\"ok\" false]] (inc value))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [[4 "TSP2345"] [5 "TSP2741"] [8 "TSP2345"] [9 "TSP330-01"]
+            [11 "TSP2345"] [13 "TSP2345"]]
+           (locations issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues)))
+  (let [{:syms [path]} '{path "good"}]
+    (is (= "ood" (subs path 1)))))
+
 (deftest map-of-supplies-types-for-string-and-symbol-bindings
   (let [api "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::counts (s/map-of string? int?))

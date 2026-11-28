@@ -4794,20 +4794,27 @@
     (key-info ctx source value node true)))
 
 (defn- literal-path-step [ctx source node value]
-  (let [{sets true others false} (group-by set-type? (t/members (:env ctx) source))]
-    (if (empty? sets)
+  (let [env (:env ctx)
+        path-source-kind (fn [member]
+                           (case (get-source-kind member)
+                             :set :set
+                             :fallback :absent
+                             :indexed (if (number? value) :other :absent)
+                             :other))
+        {sets :set absent :absent others :other} (group-by path-source-kind (t/members env source))]
+    (if (and (empty? sets) (empty? absent))
       (non-set-path-step ctx source node value)
       (let [key-type (literal-type value)
             steps (cond->
                    (mapv (fn [member]
-                           (if-let [values (fixed-set-values (:env ctx) member)]
+                           (if-let [values (fixed-set-values env member)]
                              (let [type (set-call-result ctx values key-type t/never)]
                                {:type type :optional? (= t/never type)})
                              {:type (typed-set-call-result ctx member key-type t/never) :optional? true}))
                          sets)
                     (seq others) (conj (non-set-path-step ctx (apply t/union others) node value)))]
         {:type (apply t/union (map :type steps))
-         :optional? (boolean (some :optional? steps))}))))
+         :optional? (boolean (or (seq absent) (some :optional? steps)))}))))
 
 (defn- computed-path-step [ctx source node key-type]
   (let [env (:env ctx)

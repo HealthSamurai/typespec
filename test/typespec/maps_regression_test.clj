@@ -1237,6 +1237,28 @@
         issues (:diagnostics (check/check-files [file] {}))]
     (is (empty? issues) (pr-str issues))))
 
+(deftest get-in-uses-defaults-after-unsupported-steps-across-files
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(defn metrics [] {:counts (int-array [1 2]) :text \"abc\" :opaque (Object.)})
+(defn choice [flag] (if flag (int-array [1]) {:n 42}))
+(s/fdef read-value :args (s/cat :flag boolean?) :ret int?)
+(defn read-value [flag] (get-in (choice flag) [:n] 0))
+(s/fdef accept :args (s/cat :n int?) :ret int?)
+(defn accept [n] n)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/accept (get-in (a/metrics) [:counts :missing] 7))
+(a/accept (get-in (a/metrics) [:opaque 0] 7))
+(a/accept (get-in (a/metrics) [:opaque :key] 7))
+(a/accept (get-in (a/metrics) [:counts :missing]))
+(subs (get-in (a/metrics) [:opaque 0] 42) 0)
+(inc (get-in (a/metrics) [:counts 0] :wrong))
+(a/accept (a/read-value false))
+(a/accept (a/read-value true))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2531"] ["client.clj" 6 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
+
 (deftest get-returns-defaults-from-known-nonlookup-values
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::n int?)

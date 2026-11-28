@@ -1,5 +1,5 @@
 {:review
- "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check. The slurp return type resolves two previously unchecked string calls. Two TSP210-01 messages reflect the some? receiver contract for string predicates. F233 checks the set and first composition in select-accept-header.",
+ "F610 checks register-endpoint arguments with the original endpoint Spec. Five calls pass and the dynamic endpoint in register-ns-endpoints has an incomplete compatibility check. The slurp return type resolves two previously unchecked string calls. Two TSP210-01 messages reflect the some? receiver contract for string predicates. F233 checks the set and first composition in select-accept-header. The TSP210-01 at http/formats.clj:204:19 includes false in the blank? input type.",
  :counts {:warning 37},
  :coverage
  [{:file "src/http.clj",
@@ -186,9 +186,9 @@
    {:row 204, :col 19, :end-row 204, :end-col 31}
    :warning
    "TSP210-01"
-   "compatibility not checked: t/unknown to (s/nilable java.lang.CharSequence) (unknown)"
+   "compatibility not checked: t/unknown to (s/nilable (t/or false java.lang.CharSequence)) (unknown)"
    #{:unknown}
-   "2fcb4b17179fbd74736b641fbff5aac0"]
+   "392378db4756211907f9d0ebaf4d599e"]
   ["src/http/formats.clj"
    {:row 207, :col 58, :end-row 207, :end-col 70}
    :warning

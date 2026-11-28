@@ -18,7 +18,7 @@
                 "(s/capitalize (StringBuilder. \"ab\"))"
                 "(s/trim (StringBuilder. \" ab \"))"
                 "(s/reverse (StringBuilder. \"ab\"))"
-                "(blank? nil)" "(s/blank? (StringBuilder.))"
+                "(blank? nil)" "(blank? false)" "(s/blank? (StringBuilder.))"
                 "(s/split (StringBuilder. \"a,b\") #\",\")"
                 "(s/split \"a,b\" #\",\" 2)"
                 "(s/split-lines (StringBuilder. \"a\\nb\"))"
@@ -43,7 +43,7 @@
 
 (deftest rejected-contracts
   (doseq [form ["(s/upper-case nil)" "(s/lower-case nil)" "(s/capitalize nil)"
-                "(s/trim nil)" "(s/reverse 42)" "(blank? false)"
+                "(s/trim nil)" "(s/reverse 42)" "(blank? true)" "(blank? 0)"
                 "(join 42)" "(join false)" "(join (Object.))" "(join (new Object))"
                 "(join (java.lang.Object.))" "(join (new java.lang.Object))"
                 "(s/split \"abc\" \",\")" "(s/split nil #\",\")"
@@ -109,6 +109,22 @@
          [(str/upper-case :label) (str/upper-case false) (str/lower-case 42) (str/capitalize :HELLO)]))
   (is (thrown? NullPointerException (str/lower-case nil)))
   (is (thrown? ClassCastException (str/reverse 42))))
+
+(deftest blank-accepts-false-from-another-namespace
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef disabled :args (s/cat) :ret false?)
+(defn disabled [] false)
+(s/fdef flag :args (s/cat) :ret boolean?)
+(defn flag [] true)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as s]))
+(s/blank? (a/disabled))
+(s/blank? (a/flag))")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 3 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (true? (str/blank? false)))
+  (is (thrown? ClassCastException (str/blank? true))))
 
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))

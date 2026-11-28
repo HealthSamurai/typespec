@@ -9,7 +9,8 @@
  clojure.string/capitalize  [some? :-> string?]
  clojure.string/trim        [java.lang.CharSequence :-> string?]
  clojure.string/reverse     [java.lang.CharSequence :-> string?]
- clojure.string/blank?      [(s/nilable java.lang.CharSequence) :-> boolean?]
+ ;; The receiver is tested for truthiness before CharSequence methods are used.
+ clojure.string/blank?      [(s/nilable (t/or false? java.lang.CharSequence)) :-> boolean?]
  ;; Bounded seqable domain: arrays are not yet represented. Elements and the
  ;; separator are stringified; no element contract or any escape is needed.
  clojure.string/join        ([(t/or nil? java.lang.CharSequence clojure.lang.Seqable java.lang.Iterable java.util.Map) :-> string?]

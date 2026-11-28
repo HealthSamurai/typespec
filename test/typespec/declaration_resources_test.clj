@@ -95,7 +95,7 @@
     clojure.core/inc         ([int? :-> int?] [number? :-> number?])
     clojure.core/random-uuid [:-> uuid?]
     clojure.core/namespace   [clojure.lang.Named :-> (s/nilable string?)]
-    clojure.string/blank?    [(s/nilable java.lang.CharSequence) :-> boolean?]
+    clojure.string/blank?    [(s/nilable (t/or false? java.lang.CharSequence)) :-> boolean?]
     clojure.string/split     ([java.lang.CharSequence java.util.regex.Pattern :-> (s/coll-of string? :kind vector?)]
                               [java.lang.CharSequence java.util.regex.Pattern int? :-> (s/coll-of string? :kind vector?)])
     clojure.string/replace   ([some? java.lang.Character java.lang.Character :-> string?]

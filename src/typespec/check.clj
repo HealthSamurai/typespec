@@ -9337,6 +9337,28 @@
       (let [inputs (or arg-types (mapv #(infer ctx %) args))]
         (or (callable-data-result ctx node target label type args inputs) t/unknown)))))
 
+(defmethod special 'clojure.string/escape [ctx node _]
+  (let [[text mapper :as args] (args-of node)]
+    (if (not= 2 (count args))
+      (second (core-call-result ctx node))
+      (let [env (:env ctx)
+            head (first (:children node))
+            {:keys [type]} (read-var ctx (:val head) head :call)
+            {[text-contract mapper-contract] :params result :ret} (first (:arities type))
+            source (eff ctx (infer ctx text))
+            characters? (and (not= t/never source)
+                             (not (every? #{(t/lit "")} (t/members env source)))
+                             (not= :mismatch (:status (t/sub-result env source text-contract))))
+            inputs [(t/class-type "java.lang.Character")]
+            callback-context (when (and characters? (callback-node? ctx mapper))
+                               (direct-callback-context inputs false))
+            callback (infer ctx mapper callback-context)]
+        (assignable! ctx text source text-contract)
+        (when characters?
+          (assignable! ctx mapper callback mapper-contract)
+          (call-typed-value ctx mapper mapper callback [mapper] inputs))
+        (if (some #{t/never} [source callback]) t/never result)))))
+
 (defn- infer-list [ctx node]
   (let [h (first (:children node))
         args (args-of node)

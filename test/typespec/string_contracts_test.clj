@@ -229,6 +229,45 @@
   (is (= "42" (str/re-quote-replacement 42)))
   (is (thrown? NullPointerException (str/re-quote-replacement nil))))
 
+(deftest escape-checks-character-mappers-and-allows-empty-text
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef escape :args (s/cat :text (s/nilable (partial instance? CharSequence))) :ret string?)
+(defn escape [text] (str/escape text {\\< \"&lt;\" \\> \"&gt;\"}))
+(s/fdef convert :args (s/cat :value char?) :ret any?)
+(defn convert [value] (str value))
+(s/fdef incompatible :args (s/cat :value int?) :ret string?)
+(defn incompatible [value] (str value))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/trim (a/escape (StringBuilder. \"<x>\")))
+(str/escape \"abc\" a/convert)
+(str/escape \"abc\" a/incompatible)
+(str/escape \"abc\" (fn [ch] (.charValue ch)))
+(str/escape \"abc\" (fn [ch] (inc ch)))
+(str/escape \"abc\" (fn [_ _] :bad))
+(str/escape \"abc\" [])
+(str/escape \"abc\" 42)
+(str/escape \"abc\" nil)
+(str/escape :bad {})
+(str/escape [1] {})
+(str/escape \"abc\" #{\\a})
+(str/escape \"abc\" :missing)
+(str/escape nil nil)
+(str/escape \"\" 42)
+(str/escape \"\" (fn [_ _] :unused))
+(str/escape \"abc\")")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 3 "TSP2531"]
+            ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP7023"] ["client.clj" 6 "TSP2345"]
+            ["client.clj" 7 "TSP2554"] ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"]
+            ["client.clj" 10 "TSP2345"] ["client.clj" 11 "TSP2345"] ["client.clj" 12 "TSP2345"]
+            ["client.clj" 15 "TSP2345"] ["client.clj" 18 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues)))
+  (is (= "a42c" (str/escape "abc" {\a false \b 42})))
+  (is (= "" (str/escape "" 42)))
+  (is (thrown? NullPointerException (str/escape nil {})))
+  (is (thrown? IllegalArgumentException (str/escape "abc" []))))
+
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
   (let [writer (java.io.StringWriter.)]

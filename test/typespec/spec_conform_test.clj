@@ -61,6 +61,32 @@
     (is (= [::s/invalid 3 5 ::s/invalid ::s/invalid]
            (mapv #(s/conform range-spec %) [2 3 5 6 7])))))
 
+(deftest conformed-nonempty-collections-preserve-element-types
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::vector (s/and vector? seq))
+(s/def ::labels (s/and (s/coll-of string? :kind vector?) not-empty))
+(s/def ::input (s/keys :req-un [::vector ::labels]))
+(s/fdef read-entry :args (s/cat :input ::input) :ret string?)
+(defn read-entry [{:keys [vector labels]}] (first labels))
+(s/fdef wrong :args (s/cat) :ret ::vector)
+(defn wrong [] [])")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef first-label :args (s/cat :raw any?) :ret (s/nilable string?))
+(defn first-label [raw]
+  (let [labels (s/conform ::a/labels raw)]
+    (when-not (s/invalid? labels) (first labels))))
+(defn wrong [raw]
+  (let [labels (s/conform ::a/labels raw)]
+    (when-not (s/invalid? labels) (inc (first labels)))))
+(first-label [\"ok\"])
+(first-label [])")
+        issues (:diagnostics (check/check-files [api client] {}))
+        labels (s/and (s/coll-of string? :kind vector?) not-empty)]
+    (is (= [["api.clj" 8 "TSP330-01"] ["client.clj" 8 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [["ok"] ::s/invalid] (mapv #(s/conform labels %) [["ok"] []])))))
+
 (deftest conform-predicate-combinations-preserve-successful-values
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::tag (some-fn string? #{:auto false nil}))

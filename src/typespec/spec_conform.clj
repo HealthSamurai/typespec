@@ -106,10 +106,17 @@
                       :s/with-gen (if (= 2 (count args)) (child (first args)) t/unknown)
                       :s/int-in (original-spec-value context form)
                       :s/and (let [stages (mapv child args)
-                                   result (reduce #(retain-through-predicate env %1 %2) t/unknown stages)]
-                               (cond-> (vary-meta result dissoc ::keys-output)
-                                 (not-every? unchanged-value? stages)
-                                 (vary-meta dissoc ::predicate-result ::original-value)))
+                                   scope (assoc context :defined-symbols (get-in env [:ns-defs (:ns context)]))
+                                   nonempty (when (and (= 2 (count args))
+                                                       (#{'seq 'not-empty} (t/core-name scope (second args))))
+                                              (t/nonempty-collection-type (first stages)))]
+                               (if nonempty
+                                 (cond-> nonempty
+                                   (unchanged-value? (first stages)) (vary-meta assoc ::original-value true))
+                                 (let [result (reduce #(retain-through-predicate env %1 %2) t/unknown stages)]
+                                   (cond-> (vary-meta result dissoc ::keys-output)
+                                     (not-every? unchanged-value? stages)
+                                     (vary-meta dissoc ::predicate-result ::original-value)))))
                       :s/nonconforming (if (= 1 (count args))
                                         (vary-meta (t/parse-type (assoc context :fail (constantly nil) :spec? true)
                                                                  (first args))

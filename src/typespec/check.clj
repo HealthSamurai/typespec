@@ -2039,7 +2039,10 @@
       (let [ty (lookup-var-type ctx r)
             names (or (core/stdlib-publics n) (get-in env [:ns-defs n]))]
         (when (and names (not ty) (not (contains? names (symbol (name r)))))
-          (report! ctx node "TSP2305" (str n " has no var " (name r) (hint-suffix (symbol (name r)) names))))
+          (if (core/stdlib-private? r)
+            (when-not (or (:var-reference? ctx) (= n (:ns file)))
+              (report! ctx node "TSP2305" (str "Var " r " is private")))
+            (report! ctx node "TSP2305" (str n " has no var " (name r) (hint-suffix (symbol (name r)) names)))))
         {:sym r :type ty :known-ns? (boolean names)})
       (let [local (symbol (str (:ns file)) (name r))]
         (if (or (contains? (:var-declarations env) local) (get-in env [:vars local])
@@ -3936,7 +3939,7 @@
 
 (defn- var-reference [ctx [target & more]]
   (if (and (= :sym (:op target)) (empty? more))
-    (do (record-var-use! ctx (:sym (resolve-var ctx (:val target) target)) target :var)
+    (do (record-var-use! ctx (:sym (resolve-var (assoc ctx :var-reference? true) (:val target) target)) target :var)
         (t/class-type "clojure.lang.Var"))
     t/unknown))
 

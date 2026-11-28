@@ -58,19 +58,21 @@
                    "(c/stdlib-macro? 'clojure.test/are) "
                    "(c/stdlib-macro? 'clojure.core.async/go) "
                    "(c/stdlib-publics 'clojure.core.async) "
-                   "(contains? (c/stdlib-publics 'clojure.set) 'union)])")]
+                   "(contains? (c/stdlib-publics 'clojure.set) 'union) "
+                   "(c/stdlib-private? 'clojure.core/global-hierarchy)])")]
     (try
       (let [fresh (subprocess root [] query)
             mutated (subprocess root []
                        (str "(require 'clojure.set 'clojure.test) "
                             "(alter-meta! #'clojure.core/str dissoc :tag :arglists) "
                             "(alter-meta! #'clojure.test/deftest dissoc :macro) "
+                            "(alter-meta! #'clojure.core/global-hierarchy dissoc :private) "
                             "(ns-unmap 'clojure.set 'union) "
                             "(create-ns 'clojure.core.async) "
                             "(intern 'clojure.core.async (with-meta 'go {:macro true}) identity) "
                             query))]
         (is (= 0 (:exit fresh)) (:out fresh))
-        (is (= "[true true true false nil true]\n" (:out fresh)))
+        (is (= "[true true true false nil true true]\n" (:out fresh)))
         (is (= 0 (:exit mutated)) (:out mutated))
         ;; clojure.main prints intermediate expression values as well.
         (is (str/ends-with? (:out mutated) (:out fresh)) (:out mutated)))
@@ -88,7 +90,7 @@
                               (load-catalogue (loader []))))
         (spit resource "{}")
         (let [url (.toURL (.toURI resource))]
-          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"versioned public-var"
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"versioned stdlib Var"
                                 (load-catalogue (loader [url]))))
           (is (thrown-with-msg? clojure.lang.ExceptionInfo #"2 copies"
                                 (load-catalogue (loader [url (java.net.URL. "file:/different.edn")])))))

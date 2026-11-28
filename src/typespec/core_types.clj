@@ -85,10 +85,11 @@
 (defn- load-stdlib-metadata [loader]
   (let [resource "typespec/stdlib-metadata.edn"
         data (read-map resource (only-url loader resource))
-        entries (:namespaces data)]
+        entries (:namespaces data)
+        private-vars (:private-vars data)]
     (when-not
-     (and (= #{:format :provenance :namespaces} (set (keys data)))
-          (= 1 (:format data))
+     (and (= #{:format :provenance :namespaces :private-vars} (set (keys data)))
+          (= 2 (:format data))
           (= '{org.clojure/clojure "1.12.4"
                org.clojure/spec.alpha "0.5.238"
                org.clojure/core.specs.alpha "0.4.74"} (:provenance data))
@@ -100,14 +101,21 @@
                                    (and (simple-symbol? s) (map? flags)
                                         (= #{:macro :tagged} (set (keys flags)))
                                         (boolean? (:macro flags))
-                                        (boolean? (:tagged flags)))) vars))) entries))
-      (fail resource :malformed "expected versioned public-var metadata catalogue" {}))
-    entries))
+                                        (boolean? (:tagged flags)))) vars))) entries)
+          (map? private-vars)
+          (= metadata-namespaces (set (keys private-vars)))
+          (every? (fn [[ns names]]
+                    (and (set? names) (every? simple-symbol? names) (not-any? (get entries ns) names)))
+                  private-vars))
+      (fail resource :malformed "expected versioned stdlib Var metadata catalogue" {}))
+    data))
 
 ;; Pinned, inert metadata: independent of namespace loading and metadata mutation.
 ;; Provenance and the isolated regeneration procedure live in the resource.
-(def ^:private stdlib-metadata
+(def ^:private stdlib-catalogue
   (load-stdlib-metadata (clojure.lang.RT/baseLoader)))
+
+(def ^:private stdlib-metadata (:namespaces stdlib-catalogue))
 
 (defn stdlib-tagged?
   "Does a supported standard public var have a return type hint in the pinned
@@ -133,3 +141,11 @@
   [ns-sym]
   (when-let [vars (get stdlib-metadata ns-sym)]
     (set (keys vars))))
+
+(defn stdlib-private?
+  "Checks the pinned catalogue for a qualified private Var name."
+  [sym]
+  (boolean
+   (when (qualified-symbol? sym)
+     (contains? (get-in stdlib-catalogue [:private-vars (symbol (namespace sym))])
+                (symbol (name sym))))))

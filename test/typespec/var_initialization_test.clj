@@ -43,6 +43,20 @@
     (is (= [["consumer.clj" 2] ["consumer.clj" 7]]
            (mapv (juxt :file (comp :row :pos)) (:diagnostics result))))))
 
+(deftest resolves-reference-forms-to-private-standard-vars
+  (let [result (checked ""
+                        "#'clojure.core/global-hierarchy
+(var clojure.core/global-hierarchy)
+#'clojure.core/global-hierarchyy
+clojure.core/global-hierarchy")
+        diagnostics (:diagnostics result)]
+    (is (= [[4 "TSP2305" "clojure.core has no var global-hierarchyy"]
+            [5 "TSP2305" "Var clojure.core/global-hierarchy is private"]]
+           (mapv (juxt (comp :row :pos) :code :message) diagnostics))
+        (pr-str diagnostics))
+    (is (= ["clojure.lang.Var" "clojure.lang.Var"]
+           (mapv #(main/type-at result "consumer.clj" % 1) [2 3])))))
+
 (deftest def-and-defonce-check-their-initializer-hints
   (let [result (checked "(def ^String good \"ready\")
 (def ^String wrong (identity 42))

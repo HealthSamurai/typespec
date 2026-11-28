@@ -392,6 +392,30 @@ api/delayed")
            (mapv (juxt :file (comp :row :pos) :code) ds))
         (pr-str ds))))
 
+(deftest macros-in-load-time-let-are-visible-across-namespaces
+  (let [provider (parse/parse-string
+                  "portable.cljc"
+                  "(ns portable)
+#?(:clj
+   (let [{:keys [answer]} {:answer :done}]
+     (do
+       (let [result answer]
+         (defmacro ignore-form [_] result))
+       (let [defmacro (constantly nil) shadowed nil]
+         (defmacro shadowed [] :unused))))
+   :cljs (defmacro cljs-only [_] :cljs))")
+        client (parse/parse-string
+                "client.clj"
+                "(ns client (:require [portable :as p]))
+#'p/ignore-form
+(p/ignore-form (inc \"unevaluated\"))
+(p/shadowed)
+(p/cljs-only :value)")
+        ds (:diagnostics (check/check-files [client provider] {}))]
+    (is (= [["client.clj" 3 "TSP7031"] ["client.clj" 4 "TSP2305"] ["client.clj" 5 "TSP2305"]]
+           (mapv (juxt :file (comp :row :pos) :code) ds))
+        (pr-str ds))))
+
 (deftest explicit-macro-contracts-on-the-reexport-take-precedence
   (let [provider (parse/parse-string "provider.clj" "(ns provider)
 (defmacro run [[binding] & body] `(let [~binding \"ready\"] ~@body))")

@@ -166,18 +166,9 @@
               [form]))]
     (mapcat forms (:forms file))))
 
-(defn macro-declarations
-  "Qualified names and source forms of macros defined at load time."
-  [file]
-  (for [form (grouped-declaration-forms file)
-        :when (= 'defmacro (head file form))
-        :let [sym (var-name file (second (:children form)))]
-        :when sym]
-    [sym form]))
-
 (declare ^:private parameter-bindings)
 
-(defn- wrapped-functions [file form]
+(defn- load-time-declarations [file form]
   (letfn [(visit [form captured locals wrapped?]
             (when (= :list (:op form))
               (let [[operator bindings & body] (:children form)
@@ -192,7 +183,8 @@
                                              (take-nth 2 (:children bindings)))]
                             (mapcat #(visit % (conj captured bindings) locals true) body)))
                     (defn defn-) (when wrapped?
-                                   [{:form form :bindings captured :locals locals}])
+                                   [{:kind :function :form form :bindings captured :locals locals}])
+                    defmacro [{:kind :macro :form form :locals locals}]
                     nil)))))]
     (visit form [] #{} false)))
 
@@ -209,12 +201,14 @@
                               (keys (protocol-methods file forms))))))))
         (declaration-forms file)))
 
-(defn- index-wrapped-functions [file]
+(defn- index-load-time-declarations [file]
   (let [names (top-level-vars file)
-        context (assoc file :defined-symbols names)]
+        context (assoc file :defined-symbols names)
+        declarations (group-by :kind (mapcat #(load-time-declarations context %)
+                                            (declaration-forms file)))]
     (assoc file ::wrapped-functions
-           (into {} (map (juxt (comp :pos :form) identity))
-                 (mapcat #(wrapped-functions context %) (declaration-forms file)))
+           (into {} (map (juxt (comp :pos :form) identity)) (:function declarations))
+           ::macro-declarations (:macro declarations)
            ::top-level-vars names)))
 
 (def ^:private import-vars-heads
@@ -227,7 +221,8 @@
 (def potemkin-import-macros (into import-vars-heads single-var-imports))
 
 (defn- clj-macro-body [file body]
-  (if (= 'net.cgrand.macrovich/case (head file body))
+  (if (and (= 'net.cgrand.macrovich/case (head file body))
+           (not (contains? (:locals file) (:val (first (:children body))))))
     (let [options (rest (:children body))
           pairs (partition 2 options)
           keys (map (comp :val first) pairs)]
@@ -933,10 +928,12 @@
   ([files] (build files {}))
   ([files contracts]
   (let [diags (atom [])
-        macro-definitions (group-by first (for [file files [sym form] (macro-declarations file)]
-                                            [sym file form]))
+        files (mapv index-load-time-declarations files)
+        macro-definitions (group-by first (for [file files {:keys [form locals]} (::macro-declarations file)
+                                                :let [sym (var-name file (second (:children form)))]
+                                                :when sym]
+                                            [sym (cond-> file (seq locals) (assoc :locals locals)) form]))
         macros (set (keys macro-definitions))
-        files (mapv index-wrapped-functions files)
         names (namespace-vars files macros)
         forwarders (import-vars-forwarders macro-definitions)
         imports (var-imports files (:ns-defs names) forwarders)
@@ -963,7 +960,7 @@
         contracts (externs/normalize-contracts (:specs acc) contracts)
         operator-env {:specs (merge (:specs contracts) (:specs acc))}
         env (assoc names :specs (:specs acc) :opaque-fdefs (:opaque-fdefs acc)
-                   :macros macros :import-vars-forwarders forwarders
+                   :macros macros :macro-definitions macro-definitions :import-vars-forwarders forwarders
                    :root-definitions (:root-definitions acc)
                    :protocols (:protocols acc)
                    :atom-initializers (into {} (filter (fn [[sym]] (= 1 (get-in acc [:root-definitions sym]))))

@@ -255,13 +255,10 @@
 
 (defn infer-spec-contracts
   "Read a fixed syntax-quoted Spec guard and direct function call as an argument check."
-  [env files]
-  (when (seq (:macros env))
-    (let [definitions (for [file files [sym form] (env/macro-declarations file)]
-                        [sym file form])]
-      (into {}
-            (for [[sym [[_ file form] & more]] (group-by first definitions)
-                  :when (and (empty? more) (not (get-in env [:root-definitions sym])))
-                  :let [contract (spec-template-contract env file form)]
-                  :when contract]
-              [sym contract])))))
+  [env]
+  (into {}
+        (for [[sym [[_ file form] & more]] (:macro-definitions env)
+              :when (and (empty? more) (not (get-in env [:root-definitions sym])))
+              :let [contract (spec-template-contract env file form)]
+              :when contract]
+          [sym contract])))

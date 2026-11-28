@@ -10458,7 +10458,7 @@
                        (not= (get-method special %) (get-method special ::none))))
         env-diags (concat env-diags (:diagnostics compiled))
         guard-env (assoc env0 :macro-contracts (:contracts compiled)
-                             :spec-macro-contracts (macros/infer-spec-contracts env0 files)
+                             :spec-macro-contracts (macros/infer-spec-contracts env0)
                              :strict-nil (boolean (:strict-nil opts))
                              :nss (set (map :ns files)))
         guard-result (compile-guards guard-env opts)

@@ -2228,7 +2228,7 @@
               (let [ty (quietly {:env (:env ctx) :file file :opts (:opts ctx) :locals {} :load-time? true} node)]
                 (swap! *rets* assoc sym ty)
                 ty)))
-      (let [{:keys [constant hint]} (env/unique-var-initializer (:env ctx) sym)]
+      (let [{:keys [constant hint literal-regex?]} (env/unique-var-initializer (:env ctx) sym)]
         (or (:type constant)
             (when-let [node (:node constant)]
               (or (get @*rets* sym)
@@ -2237,7 +2237,10 @@
                         type (vary-meta (dissoc (quietly context node) :fresh) assoc ::literal-var true)]
                     (swap! *rets* assoc sym type)
                     type)))
-            (:type hint))))))
+            (:type hint)
+            (when (and literal-regex? (not (:guards-disabled? ctx))
+                       (not (get-in ctx [:env :var-declarations sym :root-may-change?])))
+              (t/class-type "java.util.regex.Pattern")))))))
 
 (defn- why-of [ctx init ty]
   (cond

@@ -121,6 +121,30 @@ p/calculated")
     (is (= "int" (main/type-at result "consumer.clj" 11 1)))
     (is (= "t/unknown" (main/type-at result "consumer.clj" 12 1)))))
 
+(deftest regex-roots-have-a-type-across-namespaces-when-they-are-stable
+  (let [result (checked "(def pattern #\"(x)\")
+(defonce other #\"y\")
+(def ^:dynamic *pattern* #\"x\")
+(def changeable #\"x\")
+(defn change! [] (def changeable :bad))
+(def altered #\"x\")
+(defn alter! [] (alter-var-root #'altered (constantly :bad)))"
+                        "(re-find p/pattern \"x\")
+(.find (re-matcher p/other \"y\"))
+(inc p/pattern)
+(re-find p/*pattern* \"x\")
+(re-find p/changeable \"x\")
+(with-redefs [p/pattern :wrong]
+  (re-find p/pattern \"x\"))
+(re-find p/altered \"x\")")
+        diagnostics (:diagnostics result)]
+    (is (= [["consumer.clj" 4 "TSP2345"] ["consumer.clj" 5 "TSP210-01"]
+            ["consumer.clj" 6 "TSP210-01"] ["consumer.clj" 8 "TSP210-01"]
+            ["consumer.clj" 9 "TSP210-01"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= "java.util.regex.Pattern" (main/type-at result "consumer.clj" 2 10)))))
+
 (deftest follows-local-sequences-without-assuming-calls-to-initializers
   (let [result (checked "(declare root)
                          (def snapshot root)

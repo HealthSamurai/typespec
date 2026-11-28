@@ -95,6 +95,18 @@
   (when (and (= :sym (:op node)) (simple-symbol? (:val node)))
     (symbol (str (:ns file)) (name (:val node)))))
 
+(defn- literal-var-name [file node]
+  (let [symbol-node (case (:op node)
+                      :var (first (:children node))
+                      :list (when (= 'var (head file node)) (second (:children node)))
+                      nil)]
+    (when (= :sym (:op symbol-node))
+      (let [sym (resolve-sym file (:val symbol-node))]
+        (if (namespace sym) sym (var-name file symbol-node))))))
+
+(defn- dynamic-var? [node]
+  (some #(or (= :dynamic (:val %)) (:dynamic (parse/node->data %))) (:meta node)))
+
 (defn- record-factories [file form]
   (let [[_ target fields] (:children form)]
     (when (and (var-name file target) (= :vector (:op fields))
@@ -197,13 +209,22 @@
                           (and name (or data? (and at-load? (#{'defn 'defn-} operator)))) [name])
                   data-initializer (when (and at-load? (#{'def 'defonce} operator))
                                      (initialized-var file form))
+                  value (when (#{'def 'defonce} operator) (definition-initializer form))
+                  later-write (cond
+                                (= 'alter-var-root operator) (literal-var-name file target)
+                                (and (= 'def operator) value (not at-load?)) name)
                   init? (and at-load?
                              (or (seq factories) (#{'defn 'defn-} operator) data-initializer))
                   hint (when data-initializer (hint-type file target))
-                  constant (when data-initializer (constant-initializer file target (definition-initializer form)))
+                  constant (when data-initializer (constant-initializer file target value))
+                  literal-regex? (and data-initializer (= :regex (:op value))
+                                      (not (dynamic-var? target)) (empty? (:directives value))
+                                      (not (tag-node value)))
                   initializer (cond-> {:file (:file file) :pos (:pos form)}
                                 hint (assoc :hint {:type hint :class (hint-class file (tag-node target))})
-                                constant (assoc :constant constant))
+                                constant (assoc :constant constant)
+                                literal-regex? (assoc :literal-regex? true))
+                  by-name (cond-> by-name later-write (assoc-in [later-write :root-may-change?] true))
                   by-name (reduce (fn [acc sym]
                                     (cond-> acc
                                       data? (assoc-in [sym :tracks-root?] true)
@@ -217,7 +238,9 @@
                                           (and (= 'clojure.test/with-test operator)
                                                (identical? child target))))))
                       by-name (expression-children form operator))))]
-    (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files)))
+    (into {}
+          (filter (fn [[_ entry]] (or (:tracks-root? entry) (seq (:initializers entry)))))
+          (reduce (fn [acc file] (reduce #(collect %1 file %2 true) acc (:forms file))) {} files))))
 
 (defn unique-var-initializer [env sym]
   (let [[initializer & others] (get-in env [:var-declarations sym :initializers])]
@@ -598,7 +621,7 @@
              (and (= 'def h) init (contains? (get-in acc [:defns sym]) :factory-arity))
              (update :defns dissoc sym)
              (and (= :list (:op init)) (= 'atom (t/core-name file (:val (first (:children init)))))
-                  (not-any? #(or (= :dynamic (:val %)) (:dynamic (parse/node->data %))) (:meta target)))
+                  (not (dynamic-var? target)))
              (assoc-in [:atom-initializers sym] {:file file :node init})))
 
          :else acc)))

@@ -113,7 +113,8 @@
                (every? #(and (= :sym (:op %)) (simple-symbol? (:val %))) (:children fields)))
       (for [[prefix arity] [["->" (count (:children fields))] ["map->" 1]]]
         [(symbol (str (:ns file)) (str prefix (:val target)))
-         {:file file :pos (:pos target) :factory-arity arity}]))))
+         (cond-> {:file file :pos (:pos target) :factory-arity arity}
+           (= "->" prefix) (assoc :field-nodes (vec (:children fields))))]))))
 
 (defn definition-initializer [form]
   (last (drop 2 (:children form))))
@@ -684,21 +685,31 @@
                                               (for [n arities :when (not (contains? covered n))]
                                                 {:params (vec (repeat n t/unknown)) :ret t/unknown}))}}]))))
 
-(defn- factory-var [sym {:keys [file pos factory-arity]} fdef diags]
+(defn- factory-var [sym {:keys [file pos factory-arity field-nodes]} fdef diags]
   (let [contracts (get-in fdef [:type :arities])
         return-only (get-in fdef [:type :ret])
         matches? (fn [arity] (and (= factory-arity (count (:params arity)))
                                   (not (:rest arity)) (not (:kwargs arity))))
         valid (vec (filter matches? contracts))
-        use-spec? (or (seq valid) return-only)]
+        use-spec? (or (seq valid) return-only)
+        fields (when field-nodes
+                 (mapv (fn [field]
+                         (let [hint (hint-class file (tag-node field))
+                               boxed ({"long" "java.lang.Long" "double" "java.lang.Double"} hint)]
+                           [(keyword (:val field)) (when boxed {:t :class :name boxed})]))
+                       field-nodes))
+        arities (if (seq valid)
+                  valid
+                  [{:params (vec (repeat factory-arity t/unknown)) :ret (or return-only t/unknown)}])]
     (when (and fdef (some (complement matches?) contracts))
       (note diags fdef fdef "TSP2790"
             (str "s/fdef of " sym " must have the generated factory arity " factory-arity)))
     {:file (:file file) :pos pos :factory-arity factory-arity
      :source (if use-spec? :fdef :record)
      :contract (when use-spec? (select-keys fdef [:file :pos]))
-     :type {:t :fn :arities (if (seq valid) valid
-                              [{:params (vec (repeat factory-arity t/unknown)) :ret (or return-only t/unknown)}])}}))
+     :type {:t :fn :arities (mapv #(cond-> %
+                                     (and fields (= t/unknown (:ret %))) (assoc :record-fields fields))
+                                  arities)}}))
 
 (defn- function-var [env operator-env sym d fd diags]
   (let [sig (when (:sig d)

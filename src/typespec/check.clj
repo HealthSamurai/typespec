@@ -2172,6 +2172,11 @@
     (cond
       (:deferred-call arity) (let [result (run-deferred-call ctx node (:deferred-call arity) inputs)]
                                (if steps (run-composition ctx node steps result) result))
+      (:record-fields arity)
+      (let [fields (into {} (map (fn [[key coerced] value] [key (or coerced (dissoc value :fresh))])
+                                 (:record-fields arity) inputs))
+            result (t/with-assumption (assoc empty-map-shape :req fields) (some t/assumption inputs))]
+        (if steps (run-composition ctx node steps result) result))
       steps (let [[input default] inputs]
               (run-composition ctx node steps input default))
       :else (specialize-map-return ctx arity (first arg-types)))))

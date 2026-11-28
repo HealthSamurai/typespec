@@ -8,6 +8,36 @@
                       (parse/parse-string "client.clj" client)]
                      {}))
 
+(deftest positional-record-factories-preserve-field-types-across-files
+  (let [result (checked
+                "(ns records.provider (:require [clojure.spec.alpha :as s]))
+(s/def ::label string?)
+(s/def ::n int?)
+(s/def ::row (s/keys :req-un [::label ::n]))
+(defrecord Row [label n])
+(defrecord Empty [])
+(defrecord Typed [^String label ^long n])
+(s/fdef pack :args (s/cat :label string? :n int?) :ret ::row)
+(defn pack [label n] (->Row label n))
+(s/fdef accept :args (s/cat :row ::row) :ret int?)
+(defn accept [{:keys [n]}] n)"
+                "(ns records.client (:require [records.provider :as a]))
+(subs (:label (a/->Row \"ok\" 42)) 0)
+(inc (:label (a/->Row \"ok\" 42)))
+(inc (:n (apply a/->Row [\"ok\" 42])))
+(inc (:n (a/->Row \"ok\" nil)))
+(a/accept (a/->Row \"ok\" 42))
+(a/accept (a/->Row 42 \"bad\"))
+(subs (:label (a/pack \"ok\" 42)) 0)
+(subs (:value (a/->Empty) \"fallback\") 0)
+(into-array Long [(:n (a/->Typed 42 1.9))])
+(inc (:label (a/->Typed 42 1)))")
+        issues (:diagnostics result)]
+    (is (= [[3 "TSP2345"] [5 "TSP2531"] [7 "TSP2345"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))))
+
 (deftest generated-record-factories-are-callable-across-files
   (let [r (checked
            "(ns records.provider)

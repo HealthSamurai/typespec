@@ -259,6 +259,22 @@
       (contains? (get {:int #{:number} :double #{:number} :vector #{:coll} :set #{:coll}
                        :seq #{:coll} :map #{:coll} :keyword #{:fn}} a) b)))
 
+(def ^:private numeric-predicate-rules
+  {'pos-int? [:int pos-int? pos?]
+   'nat-int? [:int nat-int? #(not (neg? %))]
+   'neg-int? [:int neg-int? neg?]
+   'pos? [:number pos?]
+   'neg? [:number neg?]
+   'zero? [:number zero?]})
+
+(defn- numeric-literal-fits? [{:keys [val ambiguous-number-box?]} predicates]
+  (or (empty? predicates)
+      (and (number? val)
+           (every? (fn [predicate]
+                     (let [[_ exact magnitude] (numeric-predicate-rules predicate)]
+                       ((or (when ambiguous-number-box? magnitude) exact) val)))
+                   predicates))))
+
 (defn map-of-entry [env ty k]
   (when (and (not= 0 (:max-count ty))
              (not= :mismatch (:status (sub-result env (lit k) (:k ty)))))
@@ -450,9 +466,10 @@
       (= :nil tt) false
       (= :lit st) (if (= :lit tt)
                     (= (:val s) (:val t))
-                    (sub1? env (cond-> (lit-prim (:val s))
-                                 (contains? t :qualified?) (assoc :qualified? (name-qualification s)))
-                           t))
+                    (and (numeric-literal-fits? s (:numeric-predicates t))
+                         (sub1? env (cond-> (lit-prim (:val s))
+                                      (contains? t :qualified?) (assoc :qualified? (name-qualification s)))
+                                t)))
       (= :lit tt) false
       (= :prim st) (case tt
                      :prim (and (prim-sub? (:name s) (:name t))
@@ -705,6 +722,16 @@
   (str (when-let [lo (:min-count ty)] (str " :min-count " lo))
        (when-let [hi (:max-count ty)] (str " :max-count " hi))))
 
+(defn- show-primitive [{primitive :name :keys [numeric-predicates] :as ty}]
+  (let [base (str (when (contains? ty :qualified?)
+                    (if (:qualified? ty) "qualified-" "simple-"))
+                  (name primitive) "?")]
+    (if-let [[predicate & more] (seq (sort numeric-predicates))]
+      (if (and (empty? more) (= primitive (first (numeric-predicate-rules predicate))))
+        (str predicate)
+        (str "(s/and " base " " (str/join " " (cons predicate more)) ")"))
+      base)))
+
 (defn show
   "Prints a type in the type language, so it can be pasted back into code."
   [t]
@@ -718,9 +745,7 @@
                                       (if (= :unknown (:t bound)) (str name)
                                         (str "(" name " :< " (show bound) ")"))) (:binders t)))
                 "] " (show (:body t)) ")")
-      :prim (str (when (contains? t :qualified?)
-                   (if (:qualified? t) "qualified-" "simple-"))
-                 (name (:name t)) "?")
+      :prim (show-primitive t)
       :lit (pr-str (:val t))
       :ref (show-kw (:name t))
       :class (:name t)
@@ -765,18 +790,20 @@
 ;; ---- reading the type language ----
 
 (def ^:private pred-prims
-  '{string? :string int? :int integer? :int pos-int? :int nat-int? :int neg-int? :int
-    double? :double float? :double number? :number pos? :number
+  '{string? :string int? :int integer? :int
+    double? :double float? :double number? :number
     keyword? :keyword
     symbol? :symbol boolean? :boolean uuid? :uuid inst? :inst
     map? :map vector? :vector set? :set seq? :seq coll? :coll
     fn? :fn ifn? :fn})
 
 (defn- builtin-predicate-type [predicate]
-  (if-let [primitive (pred-prims predicate)]
-    (cond-> (prim primitive)
-      (#{'pos-int? 'nat-int? 'neg-int? 'pos? 'fn?} predicate)
-      (with-meta {::unchecked-contract true}))
+  (or (when-let [[primitive] (numeric-predicate-rules predicate)]
+        (with-meta (assoc (prim primitive) :numeric-predicates #{predicate})
+          {::unchecked-contract true}))
+    (when-let [primitive (pred-prims predicate)]
+      (cond-> (prim primitive)
+        (= 'fn? predicate) (with-meta {::unchecked-contract true})))
     (case predicate
       any? any
       some? some-t
@@ -848,10 +875,15 @@
       (instance-predicate-type ctx class-form))))
 
 (defn- refine-predicate-type [left right]
-  (cond
-    (and (= some-t right) (nilable? {} left)) (remove-nil {} left)
-    (and (= some-t left) (nilable? {} right)) (remove-nil {} right)
-    :else (or (narrower-scalar-contract {} #{} left right) left)))
+  (let [refined (cond
+                  (and (= some-t right) (nilable? {} left)) (remove-nil {} left)
+                  (and (= some-t left) (nilable? {} right)) (remove-nil {} right)
+                  :else (or (narrower-scalar-contract {} #{} left right) left))
+        predicates (into (:numeric-predicates refined #{})
+                         (concat (:numeric-predicates left) (:numeric-predicates right)))]
+    (cond-> refined
+      (and (seq predicates) (= :prim (:t refined)) (#{:int :double :number} (:name refined)))
+      (assoc :numeric-predicates predicates))))
 
 (defn- predicate-expression-type [ctx parameter? expression]
   (when (seq? expression)
@@ -877,7 +909,8 @@
         (when (and (= 2 (count expression)) (parameter? arg)
                    (contains? '#{list? vector? map? set? seqable? sequential? counted? associative? indexed? string? keyword?
                                  symbol? boolean?
-                                 true? false? nil? some? any? char? bytes? class? int? number?} op))
+                                 true? false? nil? some? any? char? bytes? class? int? number?
+                                 pos-int? nat-int? neg-int? pos? neg? zero?} op))
           (parse-type (dissoc ctx :type-vars) (symbol "clojure.core" (name op))))))))
 
 (defn predicate-spec-type

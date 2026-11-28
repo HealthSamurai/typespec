@@ -274,14 +274,15 @@
         client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
 (a/render \"valid\" 2)
 (a/render :wrong 2)
-(a/render \"valid\" 2.5)")
+(a/render \"valid\" 2.5)
+(a/render \"valid\" 0)")
         issues (:diagnostics (check/check-files [client api] {}))]
-    (is (= [["api.clj" 2 "TSP9002"] ["api.clj" 3 "TSP9002"]
-            ["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]]
+    (is (= [["api.clj" 2 "TSP9002"]
+            ["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))
     (is (re-find #"\(< \(count %\) 8\)" (:message (first issues))))
-    (is (re-find #"\(pos\? n\)" (:message (second issues)))))
+    (is (re-find #"0 is not assignable to :api/count \(\(s/and int\? pos\?\)\)" (:message (last issues)))))
   (let [short-text #(and (string? %) (< (count %) 8))]
     (is (= [true false false]
            (mapv #(s/valid? short-text %) ["valid" :wrong "longer-than-limit"])))))
@@ -312,6 +313,45 @@
         (pr-str diagnostics))
     (is (= [:api/title :schema/alias :schema/maybe-title]
            (get dependencies :schema/maybe-title)))))
+
+(deftest numeric-spec-predicates-check-known-values
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::id pos-int?)
+(s/def ::offset nat-int?)
+(s/def ::adjustment neg-int?)
+(s/def ::retries (s/and int? pos?))
+(s/def ::response (s/keys :req-un [::id ::offset ::adjustment ::retries]))")
+        api (parse/parse-string "api.clj" "(ns api (:require [domain :as d] [clojure.spec.alpha :as s]))
+(s/fdef process-response :args (s/cat :response ::d/response) :ret int?)
+(defn process-response [{:keys [id offset adjustment retries]}] (+ id offset adjustment retries))
+(s/fdef wrong-result :args (s/cat) :ret ::d/id)
+(defn wrong-result [] 0)
+(s/fdef consume :args (s/cat :value (s/and number? neg?)) :ret number?)
+(defn consume [value] value)
+(s/fdef tolerance :args (s/cat :value (s/and number? zero?)) :ret number?)
+(defn tolerance [value] value)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/process-response {:id 1 :offset 0 :adjustment -1 :retries 2})
+(a/process-response {:id 0 :offset 0 :adjustment -1 :retries 2})
+(a/process-response {:id 1 :offset -1 :adjustment -1 :retries 2})
+(a/process-response {:id 1 :offset 0 :adjustment 1 :retries 2})
+(a/process-response {:id 1 :offset 0 :adjustment -1 :retries -2})
+(a/process-response {:id 1N :offset 0 :adjustment -1 :retries 2})
+(a/consume -0.5)
+(a/consume -0.0)
+(a/tolerance -0.0)
+(a/tolerance 0.1)")
+        issues (:diagnostics (check/check-files [client api domain] {}))]
+    (is (= (concat [["api.clj" 5 "TSP2322"]]
+                   (map #(vector "client.clj" % "TSP2322") (range 3 8))
+                   [["client.clj" 9 "TSP2345"] ["client.clj" 11 "TSP2345"]])
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"\(s/and int\? pos\?\)" (:message (nth issues 4)))))
+  (is (= [true false false]
+         (mapv #(s/valid? pos-int? %) [1 0 1N])))
+  (is (= [true true false]
+         (mapv #(s/valid? zero? %) [0 -0.0 0.1]))))
 
 (deftest spec-and-applies-shape-contracts-after-value-preserving-predicates
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))

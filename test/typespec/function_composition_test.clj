@@ -11,6 +11,41 @@
 
 (defn- codes [result] (mapv :code (:diagnostics result)))
 
+(deftest fnil-substitutes-defaults-when-the-call-can-use-them
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::count int?)
+(s/def ::optional (s/keys :opt-un [::count]))
+(s/def ::required (s/keys :req-un [::count]))
+(s/fdef bump :args (s/cat :row ::optional) :ret ::required)
+(defn bump [row] (update row :count (fnil inc 0)))
+(s/fdef bad-default :args (s/cat :row ::optional) :ret map?)
+(defn bad-default [row] (update row :count (fnil inc \"bad\")))
+(s/fdef unused-default :args (s/cat :row ::required) :ret ::required)
+(defn unused-default [row] (update row :count (fnil inc \"unused\")))
+(defn operation [] (fnil inc 0))
+(defn three-defaults [] (fnil + 1 2 3))
+(defn captured [] (partial (fnil + 1 2) nil))
+(defn composed [] (comp inc (fnil inc 0)))
+(defn malformed [] (fnil inc))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (:count (a/bump {})))
+(a/bump {:count \"bad\"})
+(inc ((a/operation) nil))
+(inc ((a/operation) 42))
+((a/operation) false)
+(subs ((a/operation) nil) 1)
+(inc ((a/three-defaults) nil nil))
+((a/three-defaults) nil)
+(inc ((a/captured) nil))
+(inc ((a/composed) nil))
+(inc (second ((fnil (juxt + *) 1 2) nil nil)))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["api.clj" 8 "TSP2345"] ["api.clj" 15 "TSP2554"] ["client.clj" 3 "TSP2322"]
+            ["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2554"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"gets false" (:message (nth issues 3))))))
+
 (deftest juxt-checks-components-and-keeps-result-positions
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::id int?)

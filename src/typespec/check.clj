@@ -3658,10 +3658,17 @@
         inputs (infer-call-arguments ctx node args (matching-arities type (count args)))]
     [inputs (call-fn ctx node (str sym) type args inputs)]))
 
-(defmethod special 'file-seq [ctx node _]
-  (let [[_ result] (core-call-result ctx node)]
-    (cond-> result
-      (= :coll (:t result)) (assoc :jvm-class "clojure.lang.LazySeq"))))
+(doseq [[head class-name] '{file-seq "clojure.lang.LazySeq"
+                            iterator-seq "clojure.lang.LazySeq"
+                            enumeration-seq "clojure.lang.EnumerationSeq"}]
+  (defmethod special head [ctx node _]
+    (let [[_ result] (core-call-result ctx node)]
+      (t/with-assumption
+       (apply t/union
+              (for [member (t/members (:env ctx) result)]
+                (cond-> member
+                  (= :coll (:t member)) (assoc :jvm-class class-name))))
+       (t/assumption result)))))
 
 (defn- core-unary-result [ctx node refine]
   (let [[inputs fallback] (core-call-result ctx node)]

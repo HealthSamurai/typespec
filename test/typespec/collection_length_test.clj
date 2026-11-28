@@ -2466,6 +2466,40 @@
     (is (not (counted? files))))
   (is (thrown? NullPointerException (first (file-seq nil)))))
 
+(deftest java-sequence-adapters-check-inputs-and-emptiness
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]) (:import [java.util Enumeration Iterator]))
+(s/def ::items (s/nilable (s/coll-of any? :kind seq? :min-count 1)))
+(s/fdef consume-enum :args (s/cat :values (partial instance? Enumeration)) :ret ::items)
+(defn consume-enum [values] (enumeration-seq values))
+(s/fdef consume-iterator :args (s/cat :values (partial instance? Iterator)) :ret ::items)
+(defn consume-iterator [values] (iterator-seq values))
+(s/fdef nonempty :args (s/cat :values (s/coll-of any? :kind seq? :min-count 1)) :ret int?)
+(defn nonempty [values] (count values))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]) (:import [java.util ArrayList Collections]))
+(count (a/consume-enum (Collections/enumeration [1 2])))
+(count (a/consume-iterator (.iterator (ArrayList. [1 2]))))
+(when-let [values (enumeration-seq (Collections/enumeration [1 2]))] (a/nonempty values))
+(when-let [values (iterator-seq (.iterator (ArrayList. [1 2])))] (a/nonempty values))
+(a/nonempty (enumeration-seq (Collections/emptyEnumeration)))
+(a/nonempty (iterator-seq (Collections/emptyIterator)))
+(enumeration-seq (.iterator (ArrayList. [1 2])))
+(iterator-seq (Collections/enumeration [1 2]))
+(enumeration-seq nil)
+(iterator-seq [])
+(enumeration-seq)
+(iterator-seq (Collections/emptyIterator) :extra)")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[6 "TSP2531"] [7 "TSP2531"] [8 "TSP2345"] [9 "TSP2345"]
+            [10 "TSP2345"] [11 "TSP2345"] [12 "TSP2554"] [13 "TSP2554"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues)))
+  (is (= [1 2] (vec (iterator-seq (.iterator [1 2])))))
+  (is (= [1 2] (vec (enumeration-seq (java.util.Collections/enumeration [1 2])))))
+  (is (nil? (iterator-seq (java.util.Collections/emptyIterator))))
+  (is (nil? (enumeration-seq (java.util.Collections/emptyEnumeration))))
+  (is (thrown? NullPointerException (enumeration-seq nil))))
+
 (deftest indexed-get-checks-strings-and-arrays-across-namespaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef take-char :args (s/cat :ch char?) :ret char?)

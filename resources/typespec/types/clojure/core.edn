@@ -35,6 +35,8 @@
  clojure.core/counted?   [any? :-> boolean?]
  clojure.core/list       [& any? :-> list?]
  clojure.core/file-seq   [java.io.File :-> (s/coll-of java.io.File :kind seq? :min-count 1)]
+ clojure.core/iterator-seq    [java.util.Iterator :-> (s/nilable (s/coll-of t/unknown :kind seq? :min-count 1))]
+ clojure.core/enumeration-seq [java.util.Enumeration :-> (s/nilable (s/coll-of t/unknown :kind seq? :min-count 1))]
  clojure.core/subs       ([string? int? :-> string?] [string? int? int? :-> string?])
  clojure.core/re-pattern [(t/or string? java.util.regex.Pattern) :-> java.util.regex.Pattern]
  clojure.core/re-matcher [java.util.regex.Pattern java.lang.CharSequence :-> java.util.regex.Matcher]

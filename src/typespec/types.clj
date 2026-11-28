@@ -1055,7 +1055,7 @@
     (case (type-form-op ctx (first form))
       (:s/keys :s/tuple :s/map-of) (parse-type ctx form)
       :s/coll-of (let [{:keys [kind]} (spec-option-map (drop 2 form))]
-                   (when (or (nil? kind) (#{'vector? 'set? 'list? 'seq?} (core-name ctx kind)))
+                   (when (or (nil? kind) (#{'map? 'vector? 'set? 'list? 'seq?} (core-name ctx kind)))
                      (parse-type ctx form)))
       nil)))
 
@@ -1347,21 +1347,42 @@
           upper (if (and exact? (some? count)) (min count (or max-count count)) max-count)]
       (when (or (nil? upper) (<= lower upper)) [lower upper]))))
 
+(defn- entry-tuple-contract [ctx form seen]
+  (cond
+    (qualified-keyword? form) (named-spec-input ctx form seen entry-tuple-contract)
+    (seq? form)
+    (case (type-form-op ctx (first form))
+      :s/tuple (when (= 3 (count form)) (parse-type ctx form))
+      (:s/spec :s/nonconforming) (when (= 2 (count form))
+                                  (recur ctx (second form) seen))
+      :s/with-gen (when (= 3 (count form))
+                    (recur ctx (second form) seen))
+      nil)))
+
 (defn- collection-type [ctx form inner {:keys [kind count distinct] :as opts}]
   (let [kinds '{coll? nil vector? :vector set? :set list? :seq seq? :seq}
         kind-name (if kind (core-name ctx kind) 'coll?)
         kind-type (get kinds kind-name)
+        map-kind? (= 'map? kind-name)
         ;; Spec uses bounded-count for :count. An uncounted seq can satisfy
         ;; it with additional elements, so only counted kinds get an upper bound.
-        exact? (#{:vector :set} kind-type)]
-    (if-let [[lower upper] (when (contains? kinds kind-name) (collection-bounds opts exact?))]
-      (cond-> (length/with-bounds {:t :coll :of (parse-type ctx inner) :kind kind-type} lower upper)
+        exact? (or map-kind? (#{:vector :set} kind-type))
+        [lower upper] (collection-bounds opts exact?)
+        collection (when lower
+                     (cond
+                       map-kind? (when-let [entry (entry-tuple-contract ctx inner #{})]
+                                   (let [[key value] (:items entry)]
+                                     (with-meta {:t :map-of :k key :v value}
+                                       (select-keys (meta entry) [::referenced-specs]))))
+                       (contains? kinds kind-name) {:t :coll :of (parse-type ctx inner) :kind kind-type}))]
+    (if collection
+      (cond-> (length/with-bounds collection lower upper)
         (= 'list? kind-name) (assoc :list-kind? true :jvm-class persistent-list-class)
-        (true? distinct) (assoc :distinct? true)
+        (and (true? distinct) (not map-kind?)) (assoc :distinct? true)
         (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
             (and (some? count) (not exact?))
             (= :s/every (type-form-op ctx (first form))))
-        (with-meta {::unchecked-contract true}))
+        (vary-meta assoc ::unchecked-contract true))
       (do ((:fail ctx) form) unknown))))
 
 (defn- map-of-type [ctx [_ key value :as form] {:keys [kind] :as options}]

@@ -681,6 +681,41 @@
            (mapv (juxt :file (comp :row :pos) :code) issues))
         (pr-str issues))))
 
+(deftest map-kind-collection-specs-use-named-entry-tuples
+  (let [domain (parse/parse-string "domain.clj" "(ns domain (:require [clojure.spec.alpha :as s]))
+(s/def ::entry (s/tuple string? int?))
+(s/def ::entry-alias ::entry)")
+        api (parse/parse-string "api.clj" "(ns api (:refer-clojure :rename {map? index?})
+  (:require [clojure.spec.alpha :as s] [domain :as d]))
+(s/def ::index (s/and index? (s/coll-of ::d/entry-alias :kind index? :count 1)))
+(s/def ::sampled (s/every (s/spec (s/tuple string? int?)) :kind index? :min-count 1))
+(s/fdef total :args (s/cat :entries ::index) :ret number?)
+(defn total [entries] (reduce + (vals entries)))
+(s/fdef sampled :args (s/cat :entries ::sampled) :ret int?)
+(defn sampled [entries] (count entries))
+(s/fdef make-index :args (s/cat) :ret ::index)
+(defn make-index [] {\"good\" 1})")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/total {\"a\" 1})
+(a/total {:a 1})
+(a/total {\"a\" \"1\"})
+(a/total {})
+(a/total {\"a\" 1 \"b\" 2})
+(a/total [[\"a\" 1]])
+(a/sampled {\"a\" 1 \"b\" 2})
+(a/sampled {\"a\" nil})
+(a/sampled [])
+(a/total (a/make-index))")
+        {:keys [diagnostics env]} (check/check-files [client api domain] {})
+        specs (:specs env)]
+    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 4 "TSP2345"]
+            ["client.clj" 5 "TSP330-01"] ["client.clj" 6 "TSP330-01"]
+            ["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2345"] ["client.clj" 10 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= [:api/index :domain/entry-alias :domain/entry]
+           (get (contracts/dependency-paths specs (t/ref-t :api/index)) :domain/entry)))))
+
 (deftest seqable-spec-checks-arrays-and-jvm-collection-interfaces
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::input clojure.core/seqable?)

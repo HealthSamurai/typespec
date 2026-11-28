@@ -4897,11 +4897,13 @@
         path-source-kind (fn [member]
                            (case (get-source-kind member)
                              :set :set
+                             :java-map :java-map
                              :fallback :absent
                              :indexed (if (number? value) :other :absent)
                              :other))
-        {sets :set absent :absent others :other} (group-by path-source-kind (t/members env source))]
-    (if (and (empty? sets) (empty? absent))
+        {sets :set java-maps :java-map absent :absent others :other}
+        (group-by path-source-kind (t/members env source))]
+    (if (and (empty? sets) (empty? java-maps) (empty? absent))
       (non-set-path-step ctx source node value)
       (let [key-type (literal-type value)
             steps (cond->
@@ -4911,23 +4913,26 @@
                                {:type type :optional? (= t/never type)})
                              {:type (typed-set-call-result ctx member key-type t/never) :optional? true}))
                          sets)
+                    (seq java-maps) (conj {:type (read-java-map-get java-maps t/never) :optional? true})
                     (seq others) (conj (non-set-path-step ctx (apply t/union others) node value)))]
         {:type (apply t/union (map :type steps))
          :optional? (boolean (or (seq absent) (some :optional? steps)))}))))
 
 (defn- computed-path-step [ctx source node key-type]
   (let [env (:env ctx)
-        keys (t/members env key-type)]
+        keys (t/members env key-type)
+        members (t/members env source)]
     (cond
-      (every? #(#{:map-of :nil :never} (:t %)) (t/members env source))
-      {:type (read-map-of ctx source key-type t/never) :optional? true}
+      (every? #(or (#{:map-of :nil :never} (:t %)) (second (:java-map-classes %))) members)
+      {:type (apply t/union (map #(or (java-map-value-type %) (read-map-of ctx % key-type t/never)) members))
+       :optional? true}
 
       (every? #(and (finite-value? %) (literal-path-key? (:val %))) keys)
       (let [steps (mapv #(literal-path-step ctx source node (:val %)) keys)]
         {:type (apply t/union (map :type steps))
          :optional? (boolean (some :optional? steps))})
 
-      (some :map-index (t/members env source))
+      (some :map-index members)
       {:type (read-map-of ctx source key-type t/never) :optional? true})))
 
 (defn- path-value [ctx ty path steps not-found]

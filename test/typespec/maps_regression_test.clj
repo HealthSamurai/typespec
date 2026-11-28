@@ -16,6 +16,30 @@
 (defn alternatives [ty] (set (t/members {} ty)))
 (defn map-type [req opt] {:t :map :req req :opt opt})
 
+(deftest get-in-propagates-java-map-values-through-paths
+  (let [api (parse/parse-string "api.clj" "(ns api)
+(defn environment [] (System/getenv))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/def ::environment #(instance? java.util.Map %))
+(s/fdef prefix :args (s/cat :key string?) :ret string?)
+(defn prefix [key] (subs (get-in {::environment (a/environment)} [::environment key] \"\") 0))
+(s/fdef wrong :args (s/cat :key string?) :ret (s/nilable number?))
+(defn wrong [key]
+  (when-let [value (get-in {::environment (a/environment)} [::environment key])] (inc value)))
+(s/fdef unguarded :args (s/cat :key string?) :ret string?)
+(defn unguarded [key] (get-in {::environment (a/environment)} [::environment key]))
+(s/fdef first-char :args (s/cat :key string?) :ret char?)
+(defn first-char [key] (get-in {::environment (a/environment)} [::environment key 0] \\?))
+(prefix \"PATH\")
+(prefix 42)
+(s/fdef fixed-path :args (s/cat) :ret string?)
+(defn fixed-path [] (get-in {::environment (a/environment)} [::environment \"PATH\"] \"\"))")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2322"] ["client.clj" 13 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (re-find #"may return nil" (:message (second issues))))))
+
 (deftest get-propagates-java-map-values-and-missing-keys
   (let [api (parse/parse-string "api.clj" "(ns api)
 (defn environment [] (System/getenv))")

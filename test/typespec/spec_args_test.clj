@@ -819,7 +819,8 @@
 (a/inner [\"valid\" 3])
 (a/inner \"not a packed value\" 3)")
         r (check/check-files [api client] {})]
-    (is (= [["api.clj" 6 "TSP9002"] ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2554"]
+    (is (= [["api.clj" 6 "TSP9002"] ["api.clj" 7 "TSP210-01"]
+            ["client.clj" 4 "TSP2345"] ["client.clj" 5 "TSP2554"]
             ["client.clj" 7 "TSP2345"] ["client.clj" 9 "TSP2554"]]
            (mapv (juxt :file (comp :row :pos) :code) (:diagnostics r)))
         (pr-str (:diagnostics r)))))

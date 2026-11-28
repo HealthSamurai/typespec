@@ -30,6 +30,7 @@ origin: TypeScript
 Каталог `clojure.core` описывает все четыре арности `range`. При целых начале и шаге тип элементов остаётся `int?`, даже если верхняя граница дробная. Для общего числового начала или шага результат имеет элементы `number?`. Обычный `check` проверяет типы аргументов и отвергает лишний аргумент.
 
 `clojure.core/boolean` принимает одно значение, включая `nil`, и возвращает `boolean?`. Этот тип виден в проверке `s/fdef` и обычных вызовов.
+Сигнатура `clojure.core/count` использует `t/count-input`. В этот тип входят `nil`, `Counted`, Clojure-коллекции, `CharSequence`, JVM-массивы, Java-коллекции, мапы и `Map.Entry`. Контракт также действует при передаче `count` как callback.
 
 `clojure.core/re-matcher` проверяет `Pattern` и `CharSequence`, включая `StringBuilder`, и передаёт тип результата `Matcher` в Java interop и возвращаемые значения `s/fdef`.
 `re-pattern` компилирует `String` или возвращает переданный `Pattern`. Тип результата виден при передаче в `re-matcher`.

@@ -44,7 +44,8 @@
 ((comp a/render inc) \"x\")
 (inc ((comp #(inc %) a/size) \"x\"))")
         diagnostics (:diagnostics (check/check-files [client api] {}))]
-    (is (= [["client.clj" 3 "TSP2345"] ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
+    (is (= [["api.clj" 6 "TSP210-01"] ["client.clj" 3 "TSP2345"]
+            ["client.clj" 5 "TSP2345"] ["client.clj" 7 "TSP2345"]]
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
@@ -58,7 +59,7 @@
                          (let [same (comp str/trim)] (same \" a \"))")]
     ;; The rightmost function takes every supplied argument.
     (is (= ["TSP2554"] (codes result)) (pr-str (:diagnostics result)))
-    (is (= "[any? :-> int?]" (main/type-at result "composition.clj" 2 1)))
+    (is (= "[t/count-input :-> int?]" (main/type-at result "composition.clj" 2 1)))
     (is (= "int?" (main/type-at result "composition.clj" 3 26))))
   (let [result (checked "(defn parse-and-slice {:t/sig '[string? int? :-> string?]}
                            [s n] (subs s n))

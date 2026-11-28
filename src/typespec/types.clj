@@ -686,11 +686,20 @@
 (defn show-kw [k]
   (if (and *cur-ns* (= (namespace k) (str *cur-ns*))) (str "::" (name k)) (str k)))
 
+(def ^:private array-class-names
+  ["[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])
+
 (def seqable-type
   "Values accepted by clojure.lang.RT/canSeq, including nil and JVM arrays."
   (apply union nil-t
-         (map class-type ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"
-                          "[Z" "[B" "[C" "[S" "[I" "[J" "[F" "[D" "[Ljava.lang.Object;"])))
+         (map class-type (into ["clojure.lang.Seqable" "java.lang.Iterable" "java.lang.CharSequence" "java.util.Map"]
+                              array-class-names))))
+
+(def ^:private count-input-type
+  (apply union nil-t
+         (map class-type (into ["clojure.lang.Counted" "clojure.lang.IPersistentCollection"
+                                "java.lang.CharSequence" "java.util.Collection" "java.util.Map" "java.util.Map$Entry"]
+                              array-class-names))))
 
 (defn- show-count-bounds [ty]
   (str (when-let [lo (:min-count ty)] (str " :min-count " lo))
@@ -716,14 +725,15 @@
       :ref (show-kw (:name t))
       :class (:name t)
       :atom (str "(t/atom " (show (:of t)) ")")
-      :union (if (= seqable-type t)
-               "seqable?"
-               (let [ts (:types t)
-                     others (remove #(= :nil (:t %)) ts)
-                     core (cond (= 1 (count others)) (show (first others))
-                                (every? #(= :lit (:t %)) others) (str "#{" (str/join " " (map show others)) "}")
-                                :else (str "(t/or " (str/join " " (map show others)) ")"))]
-                 (if (some #(= :nil (:t %)) ts) (str "(s/nilable " core ")") core)))
+      :union (cond
+               (= seqable-type t) "seqable?"
+               (= count-input-type t) "t/count-input"
+               :else (let [ts (:types t)
+                           others (remove #(= :nil (:t %)) ts)
+                           core (cond (= 1 (count others)) (show (first others))
+                                      (every? #(= :lit (:t %)) others) (str "#{" (str/join " " (map show others)) "}")
+                                      :else (str "(t/or " (str/join " " (map show others)) ")"))]
+                       (if (some #(= :nil (:t %)) ts) (str "(s/nilable " core ")") core)))
       :merge (str "(s/merge " (str/join " " (map show (:types t))) ")")
       :map (cond
              (:fresh t)
@@ -1207,6 +1217,7 @@
                            (case nm
                              t/unknown unknown
                              t/never never
+                             t/count-input count-input-type
                              (if-let [c (when-not (:inside-all ctx) (resolve-class (:imports ctx) nm))]
                                (class-type c)
                                (fail)))))

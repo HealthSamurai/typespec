@@ -163,15 +163,18 @@
       (and (= :coll (:t l) (:t r))
            (or (= (:kind l) (:kind r)) (and (nil? (:kind r)) (nil? (:items r))))
            (or (nil? (:items r)) (:items l) (length/constrained? l)))
-      (cond
-        (not (length/subset? l r))
-        [(assoc c :mismatch (if (:items r) :tuple-length :collection-length))]
-        (length/repeated-item? l r)
-        [(assoc c :mismatch :collection-distinctness)]
-        (:items r)
-        (recur-all (map-indexed #(child (get (:items l) %1 (:of l)) %2 [:index %1]) (:items r)))
-        (= 0 (:max-count l)) []
-        :else (recur-all [(child (:of l) (:of r) :of)]))
+      (let [kind-status (t/list-kind-status l r)]
+        (cond
+          (not (length/subset? l r))
+          [(assoc c :mismatch (if (:items r) :tuple-length :collection-length))]
+          (length/repeated-item? l r)
+          [(assoc c :mismatch :collection-distinctness)]
+          (= :mismatch kind-status) [(assoc c :mismatch :sequence-kind)]
+          (= :inconclusive kind-status) [(assoc c :failure :sequence-kind)]
+          (:items r)
+          (recur-all (map-indexed #(child (get (:items l) %1 (:of l)) %2 [:index %1]) (:items r)))
+          (= 0 (:max-count l)) []
+          :else (recur-all [(child (:of l) (:of r) :of)])))
       (and (fixed? l) (fixed? r)
            (= (count (:params (first (:arities l)))) (count (:params (first (:arities r))))))
       (let [a (first (:arities l)) b (first (:arities r))]

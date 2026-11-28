@@ -4886,6 +4886,11 @@
 
 (defn- coll-of [kind ty] {:t :coll :kind kind :of (widen (dissoc ty :fresh))})
 
+(defn- forget-list-kind [type]
+  (if (:list-kind? type)
+    (-> type (dissoc :list-kind? :jvm-class) (assoc :kind nil))
+    type))
+
 (defn- unsupported-sequence-member [ctx ty]
   (some (fn [member]
           (when (#{:int :double :number :boolean :keyword :symbol :uuid :inst}
@@ -7912,7 +7917,8 @@
   (split-reduced ctx (reduction-result ctx f ty args)))
 
 (defn- join-accumulator [ctx acc step]
-  (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step)))
+  (if (and (= :coll (:t acc) (:t step)) (= (:kind acc) (:kind step))
+           (= (:list-kind? acc) (:list-kind? step)))
     (update (dissoc acc :items :min-count :max-count :entry-map) :of t/union (:of step))
     (let [joined (t/union acc step)]
       (or (widen-vector-growth (:env ctx) joined) joined))))
@@ -8385,7 +8391,7 @@
         (if (some #{t/never} items)
           t/never
           (append-to-vectors ctx target members (t/tuple items))))
-      (= :coll (:t member)) (assoc (dissoc member :items :min-count :max-count :entry-map)
+      (= :coll (:t member)) (assoc (dissoc (forget-list-kind member) :items :min-count :max-count :entry-map)
                                    :of (apply t/union (:of member) (map widen types)))
       :else target)))
 
@@ -8593,7 +8599,8 @@
       (apply t/union
              (for [m (t/members (:env ctx) target)]
                (case (:t m)
-                 :coll (let [result (update (dissoc m :fresh :items :min-count :max-count :entry-map) :of t/union out)]
+                 :coll (let [result (update (dissoc (forget-list-kind m) :fresh :items :min-count :max-count :entry-map)
+                                            :of t/union out)]
                          (if output
                            (let [[target-min target-max] (length/bounds m)]
                              (length/with-bounds result target-min

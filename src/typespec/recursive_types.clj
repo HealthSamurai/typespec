@@ -178,6 +178,7 @@
   (let [actual (:items a)
         expected (:items b)]
     (cond
+      (not= (:list-kind? a) (:list-kind? b)) (leaf a b)
       (and (not= (:kind a) (:kind b)) (or (= :sequential (:kind a)) (= :sequential (:kind b))))
       (leaf a b)
       (and expected (nil? actual) (not (length/constrained? a))) (leaf a b)

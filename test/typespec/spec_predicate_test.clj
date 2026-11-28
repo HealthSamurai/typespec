@@ -524,6 +524,51 @@
            (mapv (juxt :file (comp :row :pos) :code) diagnostics))
         (pr-str diagnostics))))
 
+(deftest collection-kind-distinguishes-list-and-seq
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::integers (s/coll-of int? :kind list?))
+(s/def ::sequence (s/every int? :kind seq?))
+(s/fdef list-total :args (s/cat :values ::integers) :ret int?)
+(defn list-total [values] (count values))
+(s/fdef seq-total :args (s/cat :values ::sequence) :ret int?)
+(defn seq-total [values] (count values))
+(s/fdef next-list :args (s/cat :values ::integers) :ret ::integers)
+(defn next-list [values] values)")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(a/list-total (list 1 2))
+(a/list-total '(1 2))
+(a/list-total '())
+(a/list-total (map identity [1 2]))
+(a/seq-total (map identity [1 2]))
+(a/list-total '(1 \"2\"))
+(a/list-total [1 2])
+(a/list-total (a/next-list '(1 2)))
+(s/fdef has-list :args (s/cat :items list?) :ret int?)
+(defn has-list [items] (a/list-total items))
+(defn unknown-list [^clojure.lang.ISeq items] (a/list-total items))
+(s/fdef grow :args (s/cat :items ::a/integers) :ret int?)
+(defn grow [items] (a/list-total (conj items 3)))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [[5 "TSP2345"] [7 "TSP2345"] [8 "TSP2345"]
+            [11 "TSP210-01"] [12 "TSP210-01"] [14 "TSP210-01"]]
+           (mapv (juxt (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (every? #(= "client.clj" (:file %)) issues))
+    (is (= [#{:collection-elements} #{:sequence-kind} #{:sequence-kind}]
+           (mapv :reasons (drop 3 issues)))))
+  (let [custom (reify clojure.lang.IPersistentList
+                 (seq [_] (seq [1]))
+                 (count [_] 1)
+                 (peek [_] 1)
+                 (pop [_] ())
+                 (cons [_ value] [value 1])
+                 (empty [_] ())
+                 (equiv [this other] (identical? this other)))]
+    (is (s/valid? (s/coll-of int? :kind list?) custom))
+    (is (not (s/valid? (s/coll-of int? :kind seq?) custom)))
+    (is (= [2 1] (conj custom 2))))
+  (is (not (s/valid? (s/coll-of int? :kind list?) (map identity [1 2])))))
+
 (deftest collection-distinctness-rejects-proven-repeats
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::tags (s/coll-of keyword? :kind vector? :distinct true))

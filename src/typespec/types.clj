@@ -149,6 +149,7 @@
 
 (def ^:private sequential-class "clojure.lang.Sequential")
 (def ^:private counted-class "clojure.lang.Counted")
+(def ^:private persistent-list-class "clojure.lang.IPersistentList")
 
 (defn class-type [n]
   (cond (= n "void") nil-t
@@ -447,6 +448,16 @@
              nil (inconclusive! :sequence-kind)
              false))))
 
+(defn list-kind-status
+  "Compatibility of list? and seq? for collection shapes with compatible base kinds."
+  [source target]
+  (cond
+    (:list-kind? target) (if-let [class-name (:jvm-class source)]
+                          (if (class-sub? class-name persistent-list-class) :proved :mismatch)
+                          :inconclusive)
+    (and (:list-kind? source) (= :seq (:kind target))) :inconclusive
+    :else :proved))
+
 (defn- sub1? [env s t]
   (let [st (:t s) tt (:t t)]
     (cond
@@ -496,7 +507,8 @@
                                false)
                              (and (contains? #{:vector :set :seq :coll} (:name s))
                                 (or (nil? (:kind t)) (= :coll (:name s)) (= (:kind t) (:name s)))
-                                (cond (:items t) (inconclusive! :tuple-length)
+                                (cond (:list-kind? t) (inconclusive! :sequence-kind)
+                                      (:items t) (inconclusive! :tuple-length)
                                       (length/constrained? t) (inconclusive! :collection-length)
                                       *strict-shapes* (inconclusive! :unsupported)
                                       :else true)))
@@ -515,6 +527,14 @@
                       :map-of (and (length/constrained? t) (class-is-prim? (:name s) :map)
                                    (inconclusive! :collection-length))
                       :coll (cond
+                              (:list-kind? t)
+                              (cond
+                                (class-sub? (:name s) persistent-list-class)
+                                (cond
+                                  (length/constrained? t) (inconclusive! :collection-length)
+                                  (= any (:of t)) true
+                                  :else (inconclusive! :collection-elements))
+                                (= "clojure.lang.ISeq" (:name s)) (inconclusive! :sequence-kind))
                               (and (= :sequential (:kind t)) (class-sub? (:name s) sequential-class))
                               (inconclusive! :tuple-length)
                               (and (= :sequential (:kind t)) (class-is-prim? (:name s) :seq))
@@ -563,19 +583,27 @@
                              (if (= :sequential (:kind s))
                                (when (#{nil :vector :seq} (:kind t))
                                  (inconclusive! :sequence-kind))
-                               (and (or (nil? (:kind t)) (= (:kind s) (:kind t)))
+                               (and (or (nil? (:kind t)) (= (:kind s) (:kind t))
+                                        (and (:list-kind? t) (nil? (:kind s))))
                                     (length/subset? s t)
                                     (not (length/repeated-item? s t))
+                                    (case (list-kind-status s t)
+                                      :proved true
+                                      :inconclusive (inconclusive! :sequence-kind)
+                                      :mismatch false)
                                     (if-let [items (:items s)]
                                       (every? #(sub? env % (:of t)) items)
                                       (or (= 0 (:max-count s)) (sub? env (:of s) (:of t)))))))
-                     :prim (if (= :sequential (:kind s))
-                             (when (#{:coll :vector :seq} (:name t))
-                               (inconclusive! :sequence-kind))
-                             (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}}
-                                             (:kind s) #{:coll}) (:name t)))
+                     :prim (cond
+                             (= :sequential (:kind s))
+                             (when (#{:coll :vector :seq} (:name t)) (inconclusive! :sequence-kind))
+                             (and (:list-kind? s) (= :seq (:name t))) (inconclusive! :sequence-kind)
+                             :else (contains? (get {:vector #{:vector :coll} :set #{:set :coll} :seq #{:seq :coll}}
+                                                   (:kind s) #{:coll}) (:name t)))
                      :class (if-let [c (:jvm-class s)]
-                              (class-sub? c (:name t))
+                              (or (class-sub? c (:name t))
+                                  (when (and (:list-kind? s) (= "clojure.lang.ISeq" (:name t)))
+                                    (inconclusive! :sequence-kind)))
                               (if (= :sequential (:kind s))
                                 (or (class-sub? sequential-class (:name t))
                                     (when (#{counted-class "clojure.lang.IPersistentCollection"} (:name t))
@@ -815,7 +843,8 @@
               (and (:items t) (::tuple-contract (meta t)))
               (str "(s/tuple" (apply str (map #(str " " (show %)) (:items t))) ")")
               :else
-              (str "(s/coll-of " (show (:of t)) (when-let [k (:kind t)] (str " :kind " (name k) "?"))
+              (str "(s/coll-of " (show (:of t))
+                   (when-let [k (if (:list-kind? t) :list (:kind t))] (str " :kind " (name k) "?"))
                    (show-count-bounds t)
                    (when (:distinct? t) " :distinct true")
                    ")"))
@@ -855,7 +884,7 @@
       counted? (assoc (class-type counted-class) :as "counted?")
       associative? (class-type "clojure.lang.Associative")
       indexed? (class-type "clojure.lang.Indexed")
-      list? (class-type "clojure.lang.IPersistentList")
+      list? (class-type persistent-list-class)
       char? (class-type "java.lang.Character")
       bytes? (class-type "[B")
       class? (class-type "java.lang.Class")
@@ -1303,9 +1332,9 @@
         exact? (#{:vector :set} kind-type)]
     (if-let [[lower upper] (when (contains? kinds kind-name) (collection-bounds opts exact?))]
       (cond-> (length/with-bounds {:t :coll :of (parse-type ctx inner) :kind kind-type} lower upper)
+        (= 'list? kind-name) (assoc :list-kind? true :jvm-class persistent-list-class)
         (true? distinct) (assoc :distinct? true)
         (or (some #(not (#{:kind :count :min-count :max-count} %)) (keys opts))
-            (= 'list? kind-name)
             (and (some? count) (not exact?))
             (= :s/every (type-form-op ctx (first form))))
         (with-meta {::unchecked-contract true}))

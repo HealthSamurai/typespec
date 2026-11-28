@@ -31,4 +31,11 @@
                             [some? java.util.regex.Pattern java.lang.CharSequence :-> string?]
                             [some? java.util.regex.Pattern
                              [(t/or string? (s/coll-of (s/nilable string?) :kind vector?)) :-> string?]
-                             :-> string?])}
+                             :-> string?])
+ ;; Character replacement uses str; a CharSequence match uses toString on replacement.
+ clojure.string/replace-first ([some? java.lang.Character t/unknown :-> string?]
+                               [some? java.lang.CharSequence some? :-> string?]
+                               [some? java.util.regex.Pattern java.lang.CharSequence :-> string?]
+                               [some? java.util.regex.Pattern
+                                [(t/or string? (s/coll-of (s/nilable string?) :kind vector?)) :-> string?]
+                                :-> string?])}

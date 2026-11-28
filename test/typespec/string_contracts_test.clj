@@ -166,6 +166,30 @@
   (is (thrown? ClassCastException (str/triml 42)))
   (is (thrown? NullPointerException (str/trimr nil))))
 
+(deftest replace-first-checks-replacement-types-by-match-kind
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s] [clojure.string :as str]))
+(s/fdef label :args (s/cat :v some?) :ret string?)
+(defn label [value] (str/replace-first value \"x\" \"_\"))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.string :as str]))
+(str/trim (a/label :x))
+(str/replace-first \"abc\" \\a nil)
+(str/replace-first \"abc\" \"a\" 42)
+(str/replace-first \"abc\" #\"a\" (fn [_] \"x\"))
+(str/replace-first \"abc\" \"a\" nil)
+(str/replace-first \"abc\" #\"a\" (fn [_] 42))
+(str/replace-first \"abc\" 42 \"x\")
+(str/replace-first nil \\a \\x)")
+        diagnostics (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 6 "TSP2345"] ["client.clj" 7 "TSP2345"]
+            ["client.clj" 8 "TSP2345"] ["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics)))
+  (is (= "bc" (str/replace-first "abc" \a nil)))
+  (is (= "42bc" (str/replace-first "abc" "a" 42)))
+  (is (= "xbc" (str/replace-first "abc" #"a" (fn [_] "x"))))
+  (is (thrown? NullPointerException (str/replace-first "abc" "a" nil)))
+  (is (thrown? ClassCastException (str/replace-first "abc" #"a" (fn [_] 42)))))
+
 (deftest spit-returns-nil
   (is (= ["TSP2531"] (mapv :code (diagnostics "(subs (spit (java.io.StringWriter.) \"ab\") 0)"))))
   (let [writer (java.io.StringWriter.)]

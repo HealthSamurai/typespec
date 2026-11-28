@@ -1087,14 +1087,18 @@
             (refine-path ctx b #(instance-parts ctx c %)))
           [ctx ctx])
 
-      (and (= 'clojure.spec.alpha/valid? h) (= 2 (count args)) (= :kw (:op a)) (plain-local ctx b))
-      [(assoc-in ctx [:locals (plain-local ctx b)] (t/ref-t (:val a))) ctx]
-
       (and (= 'clojure.spec.alpha/valid? h) (= 2 (count args)) (= :kw (:op a)))
-      (let [expected (t/ref-t (:val a))]
-        (or (when-not (#{:unknown :any} (:t (t/resolve-t env expected)))
-              (refine-path ctx b (fn [leaf] [(if (t/sub? env leaf expected) leaf expected) leaf])))
-            [ctx ctx]))
+      (let [expected (t/ref-t (:val a))
+            accepted (fn [current]
+                       (if (and (not (#{:unknown :any} (:t (t/resolve-t env current))))
+                                (t/sub? env current expected))
+                         current
+                         expected))]
+        (if-let [local (plain-local ctx b)]
+          [(update-in ctx [:locals local] accepted) ctx]
+          (or (when-not (#{:unknown :any} (:t (t/resolve-t env expected)))
+                (refine-path ctx b (fn [leaf] [(accepted leaf) leaf])))
+              [ctx ctx])))
 
       (and (= 'clojure.spec.alpha/invalid? h) (= 1 (count args)))
       (or (refine-path ctx a #(invalid-parts ctx %)) [ctx ctx])

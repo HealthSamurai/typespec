@@ -170,6 +170,23 @@
     (is (= [false true false] (mapv #(s/valid? nonempty-vector %) [[] [1] nil])))
     (is (= [false true false] (mapv #(s/valid? nonempty-texts %) [[] ["text"] [1]])))))
 
+(deftest spec-validation-keeps-an-already-narrower-type
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::broad (s/int-in 1 10))
+(s/def ::narrow (s/int-in 3 5))
+(s/fdef keep-range :args (s/cat :x ::narrow) :ret ::narrow)
+(defn keep-range [x]
+  (if (s/valid? ::broad x) x (throw (Exception. \"invalid\"))))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(inc (a/keep-range 3))
+(inc (a/keep-range 4))
+(a/keep-range 5)")
+        issues (:diagnostics (check/check-files [api client] {}))]
+    (is (= [["client.clj" 4 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [true true false] (mapv #(s/valid? (s/int-in 3 5) %) [3 4 5])))))
+
 (deftest spec-validation-refines-a-stable-map-field
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/def ::limit (s/int-in 1 5))

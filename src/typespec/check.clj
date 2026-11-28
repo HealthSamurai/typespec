@@ -3869,8 +3869,12 @@
           :else
           (method-call ctx node receiver member (munge member-name) arg-nodes field-fallback))))))
 
-(doseq [h '[ns comment declare require import in-ns defmacro defprotocol defrecord deftype defmulti
-            definterface clojure.spec.alpha/def clojure.spec.alpha/fdef]]
+(def ^:private opaque-declarations
+  (into '#{ns comment declare require import in-ns defmacro defprotocol defrecord deftype defmulti
+           definterface clojure.spec.alpha/def clojure.spec.alpha/fdef}
+        env/potemkin-record-macros))
+
+(doseq [h opaque-declarations]
   (defmethod special h [_ _ _] t/unknown))
 
 (defmethod special 'clojure.spec.alpha/with-gen [ctx node _]
@@ -10363,10 +10367,8 @@
   [file node]
   (when-not (or (#{:quote :var} (:op node))
                 (and (= :list (:op node))
-                     (contains? '#{quote ns comment declare require import in-ns defmacro
-                                   defprotocol defrecord deftype defmulti definterface set! var
-                                   clojure.spec.alpha/def clojure.spec.alpha/fdef}
-                                (env/head file node))))
+                     (let [head (env/head file node)]
+                       (or (opaque-declarations head) (#{'quote 'set! 'var} head)))))
     (:children node)))
 
 (defn- collect-ignores

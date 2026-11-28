@@ -108,6 +108,9 @@
 (defn- dynamic-var? [node]
   (some #(or (= :dynamic (:val %)) (:dynamic (parse/node->data %))) (:meta node)))
 
+(def potemkin-record-macros
+  '#{potemkin/defrecord+ potemkin.types/defrecord+})
+
 (defn- record-factories [file form]
   (let [[_ target fields] (:children form)]
     (when (and (var-name file target) (= :vector (:op fields))
@@ -292,7 +295,8 @@
             (let [[head-node target] (:children form)
                   name (var-name file target)
                   operator (when-not (contains? macros (var-name file head-node)) (head file form))
-                  factories (when (and at-load? (= 'defrecord operator)) (record-factories file form))
+                  factories (when (and at-load? (or (= 'defrecord operator) (potemkin-record-macros operator)))
+                              (record-factories file form))
                   data? (or (= 'def operator)
                             (and (#{'defonce 'declare} operator)
                                  (or at-load? (namespace (:val head-node)))))
@@ -709,7 +713,8 @@
              (assoc-in acc [:protocols (symbol (str (:ns file)) (name (:val nm)))] (protocol-methods file forms))
              acc))
 
-         (= 'defrecord (t/core-name file (:val (first (:children form)))))
+         (or (potemkin-record-macros h)
+             (= 'defrecord (t/core-name file (:val (first (:children form))))))
          (reduce (fn [acc [sym factory]]
                    (let [prior (get-in acc [:defns sym])
                          prior-defn (if (:parts prior) prior (:prior-defn prior))]

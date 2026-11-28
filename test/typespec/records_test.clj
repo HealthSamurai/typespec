@@ -8,6 +8,23 @@
                       (parse/parse-string "client.clj" client)]
                      {}))
 
+(deftest potemkin-record-factories-preserve-fields-and-arity
+  (let [result (checked
+                "(ns records.provider (:require [potemkin.types :as p] [potemkin :refer [defrecord+]]))
+(p/defrecord+ Reading [^long n ^String label])
+(defrecord+ Pair [left right])"
+                "(ns records.client (:require [records.provider :as a]))
+(inc (:n (a/->Reading 41 \"valid\")))
+(a/->Reading 1)
+(a/map->Reading {:n 3 :label \"valid\"})
+(a/map->Reading {:n \"invalid\" :label \"valid\"})
+(inc (:left (a/->Pair 1 2)))
+(a/->Pair 1)")
+        issues (:diagnostics result)]
+    (is (= [[3 "TSP2554" nil] [5 "TSP2345" [:n]] [7 "TSP2554" nil]]
+           (mapv (juxt (comp :row :pos) :code :type-path) issues))
+        (pr-str issues))))
+
 (deftest map-record-factories-check-the-exact-primitive-boxes
   (let [result (checked
                 "(ns records.provider (:require [clojure.spec.alpha :as s]))

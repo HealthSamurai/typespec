@@ -30,6 +30,36 @@
     (is (= #{:unknown} (get-in result [:diagnostics 3 :reasons])))
     (is (= [7 29 "TSP210-01" :error] (last (issues (checked source {:strict true})))))))
 
+(deftest ordinary-calls-propagate-failure-to-evaluate-eager-forms
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/fdef accept :args (s/cat :value int?) :ret int?)
+(defn accept [value] value)
+(s/fdef run-callback :args (s/cat :f any?) :ret int?)
+(defn run-callback [f]
+  (if (f (throw (Exception. \"stop\"))) :wrong 1))
+(s/fdef run-checked :args (s/cat) :ret int?)
+(defn run-checked []
+  (if (accept (throw (Exception. \"stop\"))) :wrong 1))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a] [clojure.spec.alpha :as s]))
+(s/fdef stop-on-arg :args (s/cat) :ret int?)
+(defn stop-on-arg []
+  (if (a/accept (throw (Exception. \"stop\"))) :wrong 1))
+(inc (a/run-callback identity))
+(inc (a/run-checked))
+(inc (stop-on-arg))
+(inc (a/accept 42))
+(a/accept \"wrong\")
+(s/fdef stop-on-function :args (s/cat) :ret int?)
+(defn stop-on-function []
+  (if ((throw (Exception. \"stop\")) 42) :wrong 1))")
+        result (check/check-files [client api] {})
+        diagnostics (:diagnostics result)]
+    (is (= [["client.clj" 9 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) diagnostics))
+        (pr-str diagnostics))
+    (is (= ["t/never" "t/never"] (mapv #(main/type-at result "api.clj" % 3) [6 9])))
+    (is (= ["t/never" "t/never"] (mapv #(main/type-at result "client.clj" % 3) [4 12])))))
+
 (deftest nil-predicates-check-their-single-eager-argument
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
 (s/fdef run :args (s/cat) :ret int?)

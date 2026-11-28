@@ -1962,15 +1962,17 @@
     (let [n (count arg-nodes)
           initial-fits (matching-arities ftype n)
           arg-types (or typed-args (infer-call-arguments ctx node arg-nodes initial-fits))
+          stopped? (some #(= :never (:t %)) arg-types)
           target (contextual-call-target ctx ftype arg-types)
           ars (:arities (call-shape target))
           fits (if (identical? ftype target) initial-fits (matching-arities target n))]
     (cond
-      (empty? ars) (or (:ret ftype) t/unknown)
-      (empty? fits) (do (report! ctx node "TSP2554"
+      (and (seq ars) (empty? fits)) (do (report! ctx node "TSP2554"
                                  (str fname " expects " (str/join " or " (distinct (map #(str (t/arity-minimum %) (when (or (:rest %) (:kwargs %)) "+")) ars)))
                                       " argument(s), got " n))
-                        (apply t/union (map :ret ars)))
+                        (if stopped? t/never (apply t/union (map :ret ars))))
+      stopped? t/never
+      (empty? ars) (or (:ret ftype) t/unknown)
       :else (let [problems (map #(arg-problems ctx % arg-nodes arg-types node) fits)
                   passing (keep-indexed (fn [i ps] (when (empty? ps) i)) problems)]
               (if-let [i (first passing)]
@@ -9967,7 +9969,9 @@
     (if (or (#{:fn :all} (:t type)) (seq (:arities type)))
       (call-fn ctx node label type args arg-types)
       (let [inputs (or arg-types (mapv #(infer ctx %) args))]
-        (or (callable-data-result ctx node target label type args inputs) t/unknown)))))
+        (if (some #(= :never (:t %)) (cons type inputs))
+          t/never
+          (or (callable-data-result ctx node target label type args inputs) t/unknown))))))
 
 (defmethod special 'clojure.string/split [ctx node _]
   (let [[inputs result] (core-call-result ctx node)

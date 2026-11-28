@@ -146,6 +146,30 @@
     (is (= [true true false false false false]
            (mapv #(s/valid? runtime-pair %) [[2 3] [4 3N] [3 3] [2 4] [0 3] [2 3.0]])))))
 
+(deftest spec-seq-and-not-empty-refine-known-collection-inputs
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::vector (s/and vector? seq))
+(s/def ::labels (s/and (s/coll-of string? :kind vector?) not-empty))
+(s/def ::input (s/keys :req-un [::vector ::labels]))
+(s/fdef read-entry :args (s/cat :input ::input) :ret string?)
+(defn read-entry [{:keys [vector labels]}] (first labels))
+(s/fdef wrong :args (s/cat) :ret ::vector)
+(defn wrong [] [])")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(subs (a/read-entry {:vector [1] :labels [\"text\"]}) 0)
+(a/read-entry {:vector [] :labels [\"text\"]})
+(a/read-entry {:vector [1] :labels []})
+(a/read-entry {:vector [1] :labels [42]})")
+        issues (:diagnostics (check/check-files [api client] {}))
+        nonempty-vector (s/and vector? seq)
+        nonempty-texts (s/and (s/coll-of string? :kind vector?) not-empty)]
+    (is (= [["api.clj" 8 "TSP330-01"] ["client.clj" 3 "TSP2322"]
+            ["client.clj" 4 "TSP2322"] ["client.clj" 5 "TSP2322"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))
+    (is (= [false true false] (mapv #(s/valid? nonempty-vector %) [[] [1] nil])))
+    (is (= [false true false] (mapv #(s/valid? nonempty-texts %) [[] ["text"] [1]])))))
+
 (deftest spec-predicate-types-agree-with-runtime-on-known-values
   (let [cases (concat
                (for [value [:get :post :put :delete :patch :head :trace "get" nil false]]

@@ -1505,6 +1505,25 @@
       (collection-type ctx form (list 'clojure.spec.alpha/tuple key value) options)
       (do ((:fail ctx) form) unknown))))
 
+(defn nonempty-collection-type
+  "Nonempty alternatives of a known vector, set or sequence type."
+  [type]
+  (let [kind (case (:t type) :prim (:name type) :coll (:kind type) nil)]
+    (when (#{:vector :set :seq} kind)
+      (let [collection (if (= :coll (:t type)) type {:t :coll :kind kind :of unknown})
+            [minimum maximum] (length/bounds collection)]
+        (with-meta (if (= 0 maximum)
+                     never
+                     (length/with-bounds collection (max 1 minimum) maximum))
+          (meta type))))))
+
+(defn- emptiness-preserving-spec? [ctx form]
+  (or (some? (transparent-predicate-type ctx form #{}))
+      (when (and (seq? form) (#{:s/coll-of :s/every} (type-form-op ctx (first form))))
+        (when-let [options (spec-option-map (drop 2 form))]
+          (let [target (:into options)]
+            (or (nil? target) (vector? target) (set? target) (map? target)))))))
+
 (defn parse-type
   "Reads a type form (plain data). ctx: {:aliases :imports :fail (fn [form])}."
   [ctx form]
@@ -1542,8 +1561,16 @@
         :s/or (vary-meta (apply union (map p (take-nth 2 (drop 2 form))))
                          assoc ::shape-form 's/or ::spec-tags (vec (take-nth 2 (rest form))))
         :t/or (vary-meta (apply union (map p (rest form))) assoc ::shape-form 't/or)
-        :s/and (vary-meta (if (:spec? ctx) (spec-conjunction-type ctx (rest form)) (p (second form)))
-                          assoc ::shape-form (first form) ::unchecked-contract true)
+        :s/and (vary-meta
+                 (if (:spec? ctx)
+                   (let [type (spec-conjunction-type ctx (rest form))]
+                     (or (when (and (= 3 (count form))
+                                    (#{'seq 'not-empty} (core-name ctx (nth form 2)))
+                                    (emptiness-preserving-spec? ctx (second form)))
+                           (nonempty-collection-type type))
+                         type))
+                   (p (second form)))
+                 assoc ::shape-form (first form) ::unchecked-contract true)
         (:t/and :t/exact) (vary-meta (p (second form)) assoc ::shape-form (first form) ::unchecked-contract true)
         :s/spec (or (packed-regex-type ctx form) (p (second form)))
         :s/nonconforming (if (= 2 (count form))

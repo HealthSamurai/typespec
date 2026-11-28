@@ -5336,10 +5336,11 @@
 (defn- constructed-set [types]
   (if (some #{t/never} types)
     t/never
-    (let [size (when (every? finite-value? types) (count (set (map :val types))))]
+    (let [size (when (every? finite-value? types) (count (set (map :val types))))
+          elements (apply t/union types)
+          result (if size {:t :coll :kind :set :of elements} (coll-of :set elements))]
       (t/with-assumption
-       (length/with-bounds (coll-of :set (apply t/union types))
-                           (or size (min 1 (count types))) (or size (count types)))
+       (length/with-bounds result (or size (min 1 (count types))) (or size (count types)))
        (some t/assumption types)))))
 
 (defmethod special 'hash-set [ctx node _]
@@ -9809,11 +9810,15 @@
     :vector (let [items (mapv #(dissoc (infer ctx %) :fresh) (:children node))]
               (t/tuple items (literal-element-type ctx items)))
     :set (let [items (:children node)
+               types (mapv #(infer ctx %) items)
+               elements (if (every? finite-value? types)
+                          (apply t/union types)
+                          (literal-element-type ctx types))
                size (count items)
                minimum (if (every? literal-node? items)
                          (count (set (map :val items)))
                          (if (zero? size) 0 1))]
-           (length/with-bounds {:t :coll :kind :set :of (literal-element-type ctx (map #(infer ctx %) items))}
+           (length/with-bounds {:t :coll :kind :set :of elements}
                                minimum size))
     :map (let [children (:children node)
                pairs (partition 2 children)

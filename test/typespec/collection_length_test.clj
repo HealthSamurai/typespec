@@ -983,7 +983,7 @@
            (mapv (juxt (comp :row :pos) :code) ds))
         (pr-str ds))
     (is (= ["(s/coll-of int? :kind vector? :min-count 1 :max-count 2)"
-            "(s/coll-of int? :kind set? :min-count 1 :max-count 3)"
+            "(s/coll-of (t/or 0 int?) :kind set? :min-count 1 :max-count 3)"
             "(s/nilable (s/coll-of int? :kind seq? :min-count 1 :max-count 2))"
             "nil?"
             "(s/coll-of int? :kind vector? :min-count 1)"
@@ -2971,6 +2971,29 @@
                           (Integer/parseInt p)
                           nil))" {})]
     (is (= ["TSP2531"] (codes r)) (pr-str (:diagnostics r)))))
+
+(deftest finite-sets-retain-members-in-spec-contracts
+  (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
+(s/def ::states (s/coll-of #{:ready :blocked} :kind set? :count 2))
+(s/fdef states :args (s/cat) :ret ::states)
+(defn states [] #{:ready :blocked})
+(s/fdef constructed :args (s/cat) :ret ::states)
+(defn constructed [] (hash-set :ready :blocked))
+(s/fdef apply-constructed :args (s/cat) :ret ::states)
+(defn apply-constructed [] (apply hash-set [:ready :blocked]))
+(s/fdef accept :args (s/cat :values ::states) :ret int?)
+(defn accept [values] (count values))")
+        client (parse/parse-string "client.clj" "(ns client (:require [api :as a]))
+(a/accept #{:ready :blocked})
+(a/accept (hash-set :ready :blocked))
+(a/accept (a/states))
+(a/accept #{:ready :other})
+(a/accept (hash-set :ready :ready))
+(a/accept (apply hash-set [:other :blocked]))")
+        issues (:diagnostics (check/check-files [client api] {}))]
+    (is (= [["client.clj" 5 "TSP2345"] ["client.clj" 6 "TSP330-01"] ["client.clj" 7 "TSP2345"]]
+           (mapv (juxt :file (comp :row :pos) :code) issues))
+        (pr-str issues))))
 
 (deftest tree-seq-checks-children-and-preserves-possible-node-types
   (let [api (parse/parse-string "api.clj" "(ns api (:require [clojure.spec.alpha :as s]))
